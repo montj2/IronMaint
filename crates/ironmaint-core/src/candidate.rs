@@ -22,6 +22,7 @@
 use std::fmt;
 
 use blake3::Hasher;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -50,7 +51,7 @@ const FINGERPRINT_NAMESPACE: &[u8] = b"ironmaint-candidate-v1\0";
 /// actual hash computation lives behind the module-private
 /// [`compute_fingerprint`] helper and is reachable only through
 /// [`SourceCandidate::new`] or [`SourceCandidate::new_revision`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct CandidateFingerprint(String);
 
@@ -142,7 +143,7 @@ fn compute_fingerprint(
 /// Constructed only through [`SourceCandidate::new`] or
 /// [`SourceCandidate::new_revision`]. Fields are private; the only way
 /// to read a field is via an accessor.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SourceCandidate {
     id: CandidateId,
     job_id: JobId,
@@ -151,6 +152,7 @@ pub struct SourceCandidate {
     commit: GitObjectId,
     tree: GitObjectId,
     fingerprint: CandidateFingerprint,
+    #[schemars(with = "crate::json_schema_impls::Rfc3339DateTime")]
     created_at: OffsetDateTime,
     parent_candidate: Option<CandidateId>,
 }

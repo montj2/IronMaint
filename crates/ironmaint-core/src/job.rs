@@ -4,6 +4,7 @@
 //! blockers) is in `ironmaint-state` (lands in 0A.3). This module
 //! holds only the value types.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -31,7 +32,9 @@ use crate::package::PackageIdentity;
 /// operator may edit packaging files there without invalidating the
 /// state machine. The state machine in 0A.3 will encode the rules
 /// for entering and leaving this state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
     EventDetected,
@@ -141,12 +144,13 @@ impl JobState {
 /// Immutable (§15: "Do not put mutable current workflow state directly
 /// into this immutable domain identity"). The mutable projection is
 /// [`JobProjection`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct MaintenanceJob {
     pub id: JobId,
     pub package: PackageIdentity,
     pub initiating_event: MaintenanceEventId,
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "crate::json_schema_impls::Rfc3339DateTime")]
     pub created_at: OffsetDateTime,
 }
 
@@ -174,7 +178,7 @@ impl MaintenanceJob {
 /// may produce an accepted `StateTransitioned` event"). 0A.2 only
 /// defines the value type; 0A.3 introduces the engine that mutates
 /// it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct JobProjection {
     pub job: MaintenanceJob,
     pub state: JobState,
@@ -186,6 +190,7 @@ pub struct JobProjection {
     /// engine on every accepted transition (§17).
     pub version: u64,
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "crate::json_schema_impls::Rfc3339DateTime")]
     pub updated_at: OffsetDateTime,
 }
 

@@ -11,10 +11,11 @@
 use std::collections::BTreeSet;
 
 use ironmaint_core::DistributionFamily;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Self-description of an adapter (§44).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AdapterDescriptor {
     pub family: DistributionFamily,
     pub implementation_name: String,
@@ -23,7 +24,7 @@ pub struct AdapterDescriptor {
 }
 
 /// Set of [`AdapterCapability`] values the adapter claims (§44).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema, Default)]
 #[serde(transparent)]
 pub struct AdapterCapabilities {
     inner: BTreeSet<AdapterCapability>,
@@ -74,7 +75,9 @@ impl FromIterator<AdapterCapability> for AdapterCapabilities {
 /// The 13 variants exactly match the spec list. Adding a variant is a
 /// spec change; this enum is `non_exhaustive` so future extensions
 /// don't break downstream adapters.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AdapterCapability {

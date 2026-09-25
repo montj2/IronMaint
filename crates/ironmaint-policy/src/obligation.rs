@@ -11,6 +11,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use ironmaint_core::{CandidateFingerprint, EvidenceId, ObligationId, SchemaVersion};
@@ -23,7 +24,7 @@ use crate::policy::PolicyReference;
 /// `Recommended` / `BestPractice` / `Procedural` / `LegalReview` /
 /// `LocalPolicy` carry distinct normative weights that adapters
 /// may rank, but none of them block on `Fail`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ObligationStrength {
     Mandatory,
@@ -58,7 +59,7 @@ impl ObligationStrength {
 ///
 /// Three-valued: `Unknown` is the pre-evaluation default, `Applicable`
 /// counts toward §35, `NotApplicable` exempts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Applicability {
     Unknown,
@@ -72,7 +73,7 @@ pub enum Applicability {
 /// exists (§35). The state machine checks for that record when it
 /// evaluates the obligation; without it, `ExceptionApproved` is
 /// treated as `Fail`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ObligationStatus {
     NotEvaluated,
@@ -101,7 +102,7 @@ impl ObligationStatus {
 /// crate intentionally does NOT depend on `ironmaint-evidence` and
 /// never inspects evidence values. Linking evidence to obligations
 /// is a runtime concern.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct Obligation {
     pub id: ObligationId,
     pub candidate: CandidateFingerprint,

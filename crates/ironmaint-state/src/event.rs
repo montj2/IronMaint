@@ -6,6 +6,7 @@
 //! variant exists. Adapter- and policy-originated events
 //! ([`JobEvent::Domain`]) are placeholders until 0A.4.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -19,11 +20,12 @@ use crate::transition::Transition;
 /// `projection_after` carries the new [`JobProjection`] (state,
 /// bumped version, `request.now` stamped on `updated_at`) so the
 /// caller can persist it without recomputing the bumps.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StateTransitioned {
     pub transition: Transition,
     pub projection_after: JobProjection,
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "ironmaint_core::json_schema_impls::Rfc3339DateTime")]
     pub occurred_at: OffsetDateTime,
     /// Wire-format schema version (§60). Always serializes as
     /// `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.
@@ -53,7 +55,7 @@ impl StateTransitioned {
 /// (those produced by adapters and the policy engine outside the
 /// state machine) are referenced by id in 0A.3; richer union members
 /// land with the executor in 0B.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum JobEvent {
     Transitioned(StateTransitioned),

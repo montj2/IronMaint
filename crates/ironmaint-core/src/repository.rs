@@ -5,6 +5,7 @@
 //! It never carries a host-local absolute path: that's the spec's
 //! "Never persist host-local absolute paths as package identity" rule.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use url::Url;
 
@@ -18,7 +19,7 @@ const REPO_PATH_MAX: usize = 4096;
 /// adapter implements them — adding a variant does NOT require
 /// changes to core code (the type is exhaustively switched only by
 /// adapter capability ports, not by `ironmaint-core`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum VcsKind {
     Git,
@@ -31,7 +32,7 @@ pub enum VcsKind {
 /// or `https://src.fedoraproject.org/rpms/foo.git` for a Fedora
 /// package). The URL must have a scheme — relative URLs are
 /// rejected because they can't be canonicalized.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct RepositoryRef {
     pub vcs: VcsKind,
     pub canonical_url: Url,
@@ -75,7 +76,7 @@ fn validate_url(url: &Url) -> Result<(), CoreError> {
 /// - NUL byte
 ///
 /// Maximum length 4096 bytes.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct RepoPath(String);
 

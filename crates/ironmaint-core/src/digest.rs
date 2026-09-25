@@ -11,6 +11,7 @@
 //!   distinguishes "this is a Git object hash, not an arbitrary
 //!   digest".
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
@@ -36,7 +37,7 @@ fn validate_hex(field: &str, value: &str, expected_len: usize) -> Result<(), Cor
 }
 
 /// Digest algorithm used by [`Digest`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DigestAlgorithm {
     /// BLAKE3-256. Default for `CandidateFingerprint` (PHASE-0A.md §12).
@@ -84,7 +85,7 @@ impl std::fmt::Display for DigestAlgorithm {
 /// `value` must be the lowercase (or uppercase) hexadecimal string of
 /// length matching `algorithm.hex_length()`. Both cases are accepted
 /// at construction; the canonical lowercase form is stored.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct Digest {
     pub algorithm: DigestAlgorithm,
     pub value: String,
@@ -123,7 +124,7 @@ impl Digest {
 /// [`DigestAlgorithm`] because the wire shape for a Git object
 /// reference carries different semantics than a generic artifact
 /// digest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GitHashAlgorithm {
     Sha1,
@@ -159,7 +160,7 @@ impl std::fmt::Display for GitHashAlgorithm {
 /// The shape (`algorithm` + `hex_value`) is the same as [`Digest`],
 /// but the algorithm enum is narrower: only the two algorithms Git
 /// actually uses today.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct GitObjectId {
     pub algorithm: GitHashAlgorithm,
     pub value: String,

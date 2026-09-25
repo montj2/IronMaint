@@ -15,6 +15,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use ironmaint_core::{ApprovalId, CandidateFingerprint, OperationId};
@@ -25,7 +26,7 @@ use ironmaint_core::{ApprovalId, CandidateFingerprint, OperationId};
 /// is set by the privileged service after collecting the required
 /// approvals. `Executing` is set when the external action begins;
 /// terminal states are `Succeeded`, `Failed`, `Cancelled`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorizationState {
     Proposed,
@@ -67,7 +68,7 @@ impl fmt::Display for AuthorizationState {
 /// `Other(String)` is the explicit escape hatch for adapter- or
 /// org-specific actions the core vocabulary doesn't enumerate
 /// (e.g. `debian.dak.acceptance`, `fedora.packit.create-update`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum PrivilegedOperationKind {
     IssueTrackerMutation,
@@ -108,7 +109,7 @@ impl fmt::Display for PrivilegedOperationKind {
 /// in `Approved` before [`AuthorizationState`] may advance past
 /// `Proposed`. Agents create operations here; only the privileged
 /// service may mutate the [`AuthorizationState`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct PrivilegedOperation {
     pub id: OperationId,
     pub kind: PrivilegedOperationKind,

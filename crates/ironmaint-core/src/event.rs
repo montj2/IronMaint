@@ -7,6 +7,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -23,7 +24,7 @@ const EXTERNAL_REFERENCE_MAX: usize = 1024;
 /// "UpstreamRelease" is intentionally distribution-neutral: a new
 /// upstream release triggers the same kind of work whether the
 /// package is in Debian, Fedora, or anywhere else.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum MaintenanceEventType {
     UpstreamRelease,
@@ -46,7 +47,7 @@ pub enum MaintenanceEventType {
 ///
 /// Free-form string with the same validation as [`crate::package::PackageName`]:
 /// non-empty, no control characters, ≤ 256 bytes.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct EventSource(String);
 
@@ -91,7 +92,7 @@ impl std::str::FromStr for EventSource {
 
 /// A maintenance event: one observation that may initiate or modify a
 /// [`MaintenanceJob`](crate::job::MaintenanceJob).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct MaintenanceEvent {
     pub id: MaintenanceEventId,
     pub package: PackageIdentity,
@@ -100,6 +101,7 @@ pub struct MaintenanceEvent {
     /// RFC3339 UTC. The `time` crate serializer emits a normalized
     /// `+00:00` offset.
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "crate::json_schema_impls::Rfc3339DateTime")]
     pub observed_at: OffsetDateTime,
     /// Optional external-system reference (e.g. a BTS bug number,
     /// Bugzilla id, GitHub issue id). When present, validated

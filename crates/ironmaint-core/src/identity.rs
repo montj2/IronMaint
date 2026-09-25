@@ -9,6 +9,7 @@
 //! wrap an arbitrary existing UUID (`ID::from_uuid(...)`) for replay
 //! and testing.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
@@ -24,6 +25,7 @@ macro_rules! define_uuid_id {
     ($name:ident) => {
         #[derive(
             Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+            JsonSchema,
         )]
         #[serde(transparent)]
         #[doc = concat!("Strongly-typed identifier (UUIDv7-backed).")]

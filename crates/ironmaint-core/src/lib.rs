@@ -61,3 +61,10 @@ pub use job::{JobProjection, JobState, MaintenanceJob};
 pub use package::{PackageIdentity, PackageName, PackageRevision, PackageVersion};
 pub use repository::{RepoPath, RepositoryRef, VcsKind};
 pub use schema::SchemaVersion;
+
+// Schema-only newtypes used as `#[schemars(with = "...")]` overrides
+// on wire fields whose underlying type (e.g. `time::OffsetDateTime`)
+// doesn't have a `JsonSchema` impl we can legally provide under the
+// orphan rule. The `uuid08` and `url` features on `schemars` handle
+// `uuid::Uuid` and `url::Url` directly.
+pub mod json_schema_impls;

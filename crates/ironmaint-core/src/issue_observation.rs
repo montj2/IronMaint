@@ -13,6 +13,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -31,7 +32,7 @@ const EXTERNAL_ID_MAX: usize = 128;
 /// `external_id` is validated: `1..=128` chars, no control
 /// characters. The pattern is intentionally permissive — bug tracker
 /// identifiers vary wildly and the spec leaves them opaque.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct IssueRef {
     pub provider: IssueProviderId,
     pub external_id: String,
@@ -87,7 +88,7 @@ impl fmt::Display for IssueRef {
 /// Covers the common lifecycle seen across BTS, Bugzilla, and trackers
 /// of record. The `Other(String)` arm absorbs provider-specific states
 /// (e.g. Bodhi `stable`, Koji `failed`).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum IssueState {
@@ -125,7 +126,7 @@ impl fmt::Display for IssueState {
 /// equivalent for. Core does not enforce any invariant linking
 /// `distribution` to `package.distribution`; that's the adapter's
 /// problem.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct IssueSnapshot {
     pub issue: IssueRef,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -139,6 +140,7 @@ pub struct IssueSnapshot {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "crate::json_schema_impls::Rfc3339DateTime")]
     pub observed_at: OffsetDateTime,
 }
 

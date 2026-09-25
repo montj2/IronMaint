@@ -8,6 +8,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -26,7 +27,7 @@ const NOTES_MAX: usize = 4096;
 /// "we haven't run it yet"); `InfrastructureError` is a host/sandbox
 /// problem that must not be confused with `Fail` (§2.6:
 /// "Tool failure ≠ infrastructure error").
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceStatus {
     Pass,
@@ -74,7 +75,7 @@ impl EvidenceStatus {
 /// Examples (none hard-coded into the type): `sbuild 0.x`, `lintian
 /// 2.x`, `mock 6.x`, `rpmlint 2.x`, `ironmaint-policy-engine 0.1`.
 /// Core sees them as opaque producer labels.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct EvidenceProducer {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -111,7 +112,7 @@ impl EvidenceProducer {
 /// General categories only — individual tools are not encoded into
 /// the enum. A tool like `lintian` or `rpmlint` is captured in the
 /// [`EvidenceProducer::name`], not in the kind.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
     SourceIntegrity,
@@ -163,7 +164,7 @@ impl EvidenceKind {
 /// is a later optimization; for 0A.3 every evidence's `candidate`
 /// must match the gate it's intended to satisfy or
 /// [`crate::gate::GateResult`] will refuse it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct Evidence {
     pub id: EvidenceId,
     pub candidate: CandidateFingerprint,
@@ -178,6 +179,7 @@ pub struct Evidence {
     pub artifacts: Vec<ArtifactRef>,
     pub scope: EvidenceScope,
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "ironmaint_core::json_schema_impls::Rfc3339DateTime")]
     pub observed_at: OffsetDateTime,
     /// Free-form human notes. Capped at 4 KiB; not interpreted.
     #[serde(default, skip_serializing_if = "Option::is_none")]

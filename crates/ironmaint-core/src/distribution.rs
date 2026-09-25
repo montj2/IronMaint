@@ -9,6 +9,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{CoreError, CoreErrorKind};
@@ -22,7 +23,7 @@ const LABEL_MAX: usize = 64;
 /// permits the conventional characters seen across distributions
 /// today (`debian`, `fedora`, `ubuntu`, `epel`, `opensuse`, `arch`,
 /// `mageia`, …) without baking any of them into the type.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct DistributionFamily(String);
 
@@ -76,7 +77,7 @@ impl std::str::FromStr for DistributionFamily {
 ///
 /// Same shape and constraints as [`DistributionFamily`] — kept as a
 /// distinct type so adapters can read intent at the call site.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct DistributionRelease(String);
 
@@ -127,7 +128,7 @@ impl std::str::FromStr for DistributionRelease {
 /// The core represents the authority-target identity as a `family` +
 /// `release` pair. The adapter interprets the pair. Nothing here
 /// encodes Debian-vs-Fedora semantics.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct DistributionRef {
     pub family: DistributionFamily,
     pub release: DistributionRelease,

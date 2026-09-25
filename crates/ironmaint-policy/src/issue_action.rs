@@ -9,6 +9,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use ironmaint_core::{CandidateFingerprint, EvidenceId, IssueActionId, IssueRef};
@@ -22,7 +23,7 @@ const RATIONALE_MAX: usize = 2048;
 /// Adapters translate this vocabulary into provider-specific
 /// semantics. The `non_exhaustive` attribute signals the enum grows
 /// over time — adapters should treat unknown variants as `Other(_)`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum IssueActionKind {
@@ -78,7 +79,7 @@ impl fmt::Display for IssueActionKind {
 /// `evidence` is `Vec<EvidenceId>` — opaque pointers to evidence
 /// values that justify the action. Policy intentionally does NOT
 /// depend on `ironmaint-evidence`; the IDs are passed through.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct IssueAction {
     pub id: IssueActionId,
     pub issue: IssueRef,

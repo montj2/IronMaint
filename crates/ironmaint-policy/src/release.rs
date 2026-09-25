@@ -13,6 +13,7 @@
 //! [`AuthorizationState::Proposed`] here; the privileged service
 //! transitions them forward.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -30,7 +31,7 @@ use crate::{PolicyBaseline, PrivilegedOperation};
 /// machine's `FinalValidation → ReadyForApproval → Approved →
 /// PublicationPending → Published` path completes (and only when all
 /// referenced obligations / gates / issue actions have cleared).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct ReleaseCandidate {
     pub id: ReleaseCandidateId,
     pub job_id: JobId,
@@ -43,6 +44,7 @@ pub struct ReleaseCandidate {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub issue_actions: Vec<IssueActionId>,
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "ironmaint_core::json_schema_impls::Rfc3339DateTime")]
     pub created_at: OffsetDateTime,
     /// Wire-format schema version (§60). Always serializes as
     /// `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.
@@ -97,7 +99,7 @@ impl ReleaseCandidate {
 /// each is `Authorized` / `Executing` / `Succeeded` belongs to the
 /// privileged service and the executor (Phase 0B). IronMaint model
 /// objects only describe what must happen.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct PublicationPlan {
     pub release_candidate: ReleaseCandidateId,
     pub distribution: DistributionRef,
