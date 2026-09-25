@@ -1,0 +1,122 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "PublicationPlan",
+  "description": "The pre-execution bundle of privileged operations required to publish a release (§43).\n\n`operations` carry the side-effects required to publish; whether each is `Authorized` / `Executing` / `Succeeded` belongs to the privileged service and the executor (Phase 0B). IronMaint model objects only describe what must happen.",
+  "type": "object",
+  "required": [
+    "distribution",
+    "release_candidate"
+  ],
+  "properties": {
+    "distribution": {
+      "$ref": "#/definitions/DistributionRef"
+    },
+    "operations": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/PrivilegedOperation"
+      }
+    },
+    "release_candidate": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "schema_version": {
+      "description": "Wire-format schema version (§60). Always serializes as `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.",
+      "default": 1,
+      "type": "integer",
+      "format": "uint16",
+      "minimum": 0.0
+    }
+  },
+  "definitions": {
+    "AuthorizationState": {
+      "description": "Lifecycle state of a [`PrivilegedOperation`] (§39).\n\n`Proposed` is the only state an agent may create. `Authorized` is set by the privileged service after collecting the required approvals. `Executing` is set when the external action begins; terminal states are `Succeeded`, `Failed`, `Cancelled`.",
+      "type": "string",
+      "enum": [
+        "proposed",
+        "authorized",
+        "executing",
+        "succeeded",
+        "failed",
+        "cancelled"
+      ]
+    },
+    "DistributionRef": {
+      "description": "Pair of `DistributionFamily` + `DistributionRelease`.\n\nThe core represents the authority-target identity as a `family` + `release` pair. The adapter interprets the pair. Nothing here encodes Debian-vs-Fedora semantics.",
+      "type": "object",
+      "required": [
+        "family",
+        "release"
+      ],
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "release": {
+          "type": "string"
+        }
+      }
+    },
+    "PrivilegedOperation": {
+      "description": "A privileged side-effect bound to a candidate (§41).\n\n`required_approvals` is the list of [`ApprovalId`]s that must be in `Approved` before [`AuthorizationState`] may advance past `Proposed`. Agents create operations here; only the privileged service may mutate the [`AuthorizationState`].",
+      "type": "object",
+      "required": [
+        "authorization",
+        "candidate",
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "authorization": {
+          "$ref": "#/definitions/AuthorizationState"
+        },
+        "candidate": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/definitions/PrivilegedOperationKind"
+        },
+        "required_approvals": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      }
+    },
+    "PrivilegedOperationKind": {
+      "description": "Kind of privileged operation (§41).\n\n`Other(String)` is the explicit escape hatch for adapter- or org-specific actions the core vocabulary doesn't enumerate (e.g. `debian.dak.acceptance`, `fedora.packit.create-update`).",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "issue_tracker_mutation",
+            "canonical_repository_push",
+            "remote_build_submission",
+            "distribution_update_creation",
+            "signing"
+          ]
+        },
+        {
+          "description": "Adapter- or org-specific kinds.",
+          "type": "object",
+          "required": [
+            "other"
+          ],
+          "properties": {
+            "other": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    }
+  }
+}

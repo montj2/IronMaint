@@ -1,0 +1,178 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Obligation",
+  "description": "A sourced policy assertion bound to a candidate (§34).\n\nThe `evidence` field holds opaque [`EvidenceId`]s — the policy crate intentionally does NOT depend on `ironmaint-evidence` and never inspects evidence values. Linking evidence to obligations is a runtime concern.",
+  "type": "object",
+  "required": [
+    "applicability",
+    "candidate",
+    "id",
+    "reference",
+    "requirement",
+    "status",
+    "strength"
+  ],
+  "properties": {
+    "applicability": {
+      "$ref": "#/definitions/Applicability"
+    },
+    "candidate": {
+      "type": "string"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "reference": {
+      "$ref": "#/definitions/PolicyReference"
+    },
+    "requirement": {
+      "description": "Human-readable assertion text. Capped at 1 KiB.",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Wire-format schema version (§60). Always serializes as `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.",
+      "default": 1,
+      "type": "integer",
+      "format": "uint16",
+      "minimum": 0.0
+    },
+    "status": {
+      "$ref": "#/definitions/ObligationStatus"
+    },
+    "strength": {
+      "$ref": "#/definitions/ObligationStrength"
+    }
+  },
+  "definitions": {
+    "Applicability": {
+      "description": "Whether an obligation applies to a given candidate (§34).\n\nThree-valued: `Unknown` is the pre-evaluation default, `Applicable` counts toward §35, `NotApplicable` exempts.",
+      "type": "string",
+      "enum": [
+        "unknown",
+        "applicable",
+        "not_applicable"
+      ]
+    },
+    "Digest": {
+      "description": "Content digest: `{ algorithm, hex_value }`.\n\n`value` must be the lowercase (or uppercase) hexadecimal string of length matching `algorithm.hex_length()`. Both cases are accepted at construction; the canonical lowercase form is stored.",
+      "type": "object",
+      "required": [
+        "algorithm",
+        "value"
+      ],
+      "properties": {
+        "algorithm": {
+          "$ref": "#/definitions/DigestAlgorithm"
+        },
+        "value": {
+          "type": "string"
+        }
+      }
+    },
+    "DigestAlgorithm": {
+      "description": "Digest algorithm used by [`Digest`].",
+      "oneOf": [
+        {
+          "description": "BLAKE3-256. Default for `CandidateFingerprint` (PHASE-0A.md §12).",
+          "type": "string",
+          "enum": [
+            "blake3"
+          ]
+        },
+        {
+          "description": "SHA-256. Default for artifact digests (PHASE-0A.md §11).",
+          "type": "string",
+          "enum": [
+            "sha256"
+          ]
+        },
+        {
+          "description": "Git SHA-1. Preserved when a digest points at a Git object address from a legacy SHA-1 repository.",
+          "type": "string",
+          "enum": [
+            "git_sha1"
+          ]
+        },
+        {
+          "description": "Git SHA-256. Preserved when a digest points at a Git object address from a SHA-256 repository.",
+          "type": "string",
+          "enum": [
+            "git_sha256"
+          ]
+        }
+      ]
+    },
+    "ObligationStatus": {
+      "description": "Status of an obligation's evaluation (§34).\n\n`ExceptionApproved` is valid only if an explicit approval record exists (§35). The state machine checks for that record when it evaluates the obligation; without it, `ExceptionApproved` is treated as `Fail`.",
+      "type": "string",
+      "enum": [
+        "not_evaluated",
+        "pass",
+        "fail",
+        "requires_review",
+        "exception_approved"
+      ]
+    },
+    "ObligationStrength": {
+      "description": "How strongly an obligation binds (§34).\n\n`Mandatory` is the §35-invariant trigger. The rest are advisory; `Recommended` / `BestPractice` / `Procedural` / `LegalReview` / `LocalPolicy` carry distinct normative weights that adapters may rank, but none of them block on `Fail`.",
+      "type": "string",
+      "enum": [
+        "mandatory",
+        "recommended",
+        "best_practice",
+        "procedural",
+        "legal_review",
+        "local_policy"
+      ]
+    },
+    "PolicyReference": {
+      "description": "Pointer to a specific passage within an authority (§33).\n\n`section`, `title`, `source`, and `content_digest` are all optional — the minimum is just the [`AuthorityId`], which is enough to assert \"Debian Policy says so\". The optional fields exist so a recorded reference can be reproduced without going back to the authority.",
+      "type": "object",
+      "required": [
+        "authority"
+      ],
+      "properties": {
+        "authority": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "content_digest": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/Digest"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "section": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

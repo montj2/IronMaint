@@ -13,4 +13,11 @@ description = "Workspace automation: verify-architecture, verify-schemas, confor
 workspace = true
 
 [dependencies]
+ironmaint-core = { path = "../crates/ironmaint-core" }
+ironmaint-evidence = { path = "../crates/ironmaint-evidence" }
+ironmaint-policy = { path = "../crates/ironmaint-policy" }
+ironmaint-state = { path = "../crates/ironmaint-state" }
+ironmaint-adapter-api = { path = "../crates/ironmaint-adapter-api" }
+schemars = { workspace = true }
+serde_json = { workspace = true }
 toml_edit = "0.22"
