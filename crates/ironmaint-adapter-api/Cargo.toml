@@ -20,6 +20,7 @@ thiserror = { workspace = true }
 [dev-dependencies]
 debian-stub = { path = "../../adapters/debian-stub" }
 fedora-stub = { path = "../../adapters/fedora-stub" }
+ironmaint-testkit = { path = "../../crates/ironmaint-testkit" }
 time = { workspace = true, features = ["macros"] }
 url = { workspace = true }
 

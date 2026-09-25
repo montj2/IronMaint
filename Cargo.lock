@@ -347,6 +347,7 @@ dependencies = [
  "ironmaint-core",
  "ironmaint-evidence",
  "ironmaint-policy",
+ "ironmaint-testkit",
  "serde",
  "serde_json",
  "thiserror",
