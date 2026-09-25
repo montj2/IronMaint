@@ -33,14 +33,18 @@
 
 pub mod approval;
 pub mod authority;
+pub mod issue_action;
 pub mod obligation;
 pub mod policy;
 pub mod privileged;
+pub mod release;
 
 pub use approval::{ApprovalCategory, ApprovalDecision, ApprovalRegistry, ApprovalRequirement};
 pub use authority::{Authority, AuthorityClassification};
+pub use issue_action::{IssueAction, IssueActionKind};
 pub use obligation::{
     Applicability, Obligation, ObligationSet, ObligationStatus, ObligationStrength,
 };
 pub use policy::{PolicyBaseline, PolicyReference};
 pub use privileged::{AuthorizationState, PrivilegedOperation, PrivilegedOperationKind};
+pub use release::{PublicationPlan, ReleaseCandidate};

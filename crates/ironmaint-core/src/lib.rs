@@ -38,6 +38,7 @@ pub mod distribution;
 pub mod error;
 pub mod event;
 pub mod identity;
+pub mod issue_observation;
 pub mod job;
 pub mod package;
 pub mod repository;
@@ -55,6 +56,7 @@ pub use identity::{
     IssueActionId, IssueProviderId, JobId, MaintenanceEventId, ObligationId, OperationId,
     ReleaseCandidateId,
 };
+pub use issue_observation::{IssueRef, IssueSnapshot, IssueState};
 pub use job::{JobProjection, JobState, MaintenanceJob};
 pub use package::{PackageIdentity, PackageName, PackageRevision, PackageVersion};
 pub use repository::{RepoPath, RepositoryRef, VcsKind};

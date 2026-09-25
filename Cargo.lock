@@ -335,6 +335,11 @@ dependencies = [
  "ironmaint-core",
  "ironmaint-evidence",
  "ironmaint-policy",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "time",
+ "url",
 ]
 
 [[package]]
