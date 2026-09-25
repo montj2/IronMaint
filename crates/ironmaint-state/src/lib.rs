@@ -37,10 +37,12 @@
     )
 )]
 
+pub mod apply;
 pub mod engine;
 pub mod event;
 pub mod transition;
 
+pub use apply::ProjectionApply;
 pub use engine::{SYNTHETIC_RULE_INDEX, TRANSITION_RULES, TransitionEngine};
 pub use event::{JobEvent, StateTransitioned};
 pub use transition::{

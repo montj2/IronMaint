@@ -7,6 +7,7 @@ members = [
     "crates/ironmaint-policy",
     "crates/ironmaint-state",
     "crates/ironmaint-adapter-api",
+    "crates/ironmaint-store",
     "crates/ironmaint-testkit",
     "adapters/debian-stub",
     "adapters/fedora-stub",
