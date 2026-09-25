@@ -7,7 +7,14 @@
 //! used by the conformance runner; the bare builders are used by
 //! stub tests.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::map_err_ignore
+)]
 
 use ironmaint_adapter_api::{
     AdapterDescriptor, CandidateContext, PolicyContext, PublicationContext, ReleaseContext,

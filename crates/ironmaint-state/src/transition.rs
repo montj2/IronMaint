@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -28,7 +29,7 @@ pub struct TransitionRequest {
 /// `rule_index` is the index into the engine's static transition
 /// table — useful in logs and audit trails to identify exactly which
 /// §20 rule fired.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Transition {
     pub from: ironmaint_core::JobState,
     pub to: ironmaint_core::JobState,
@@ -160,11 +161,12 @@ pub struct TransitionContext<'a> {
 /// Captured at runtime by the executor; the engine treats it as an
 /// opaque input that bounds which transitions out of an exceptional
 /// state are valid.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ResumeRecord {
     pub from: ironmaint_core::JobState,
     pub to: ironmaint_core::JobState,
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "ironmaint_core::json_schema_impls::Rfc3339DateTime")]
     pub recorded_at: OffsetDateTime,
 }
 

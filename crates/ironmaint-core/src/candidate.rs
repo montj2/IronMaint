@@ -22,6 +22,7 @@
 use std::fmt;
 
 use blake3::Hasher;
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -50,7 +51,7 @@ const FINGERPRINT_NAMESPACE: &[u8] = b"ironmaint-candidate-v1\0";
 /// actual hash computation lives behind the module-private
 /// [`compute_fingerprint`] helper and is reachable only through
 /// [`SourceCandidate::new`] or [`SourceCandidate::new_revision`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct CandidateFingerprint(String);
 
@@ -142,7 +143,19 @@ fn compute_fingerprint(
 /// Constructed only through [`SourceCandidate::new`] or
 /// [`SourceCandidate::new_revision`]. Fields are private; the only way
 /// to read a field is via an accessor.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// - **Represents**: the input to package work — the source commit,
+///   the resulting tree object, the resolved package identity, and the
+///   candidate fingerprint that uniquely identifies this combination.
+/// - **Mutation ownership**: no setters; construction only via
+///   [`SourceCandidate::new`] / [`SourceCandidate::new_revision`].
+///   Any change creates a new candidate with a new fingerprint.
+/// - **Invariants**: the BLAKE3 fingerprint is deterministic over the
+///   constructor inputs; the `parent_candidate` chain is append-only
+///   (a parent is never re-pointed at a different child).
+/// - **Does NOT represent**: NOT a build plan, NOT a workflow state,
+///   NOT a package version, NOT a mutable record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SourceCandidate {
     id: CandidateId,
     job_id: JobId,
@@ -151,6 +164,7 @@ pub struct SourceCandidate {
     commit: GitObjectId,
     tree: GitObjectId,
     fingerprint: CandidateFingerprint,
+    #[schemars(with = "crate::json_schema_impls::Rfc3339DateTime")]
     created_at: OffsetDateTime,
     parent_candidate: Option<CandidateId>,
 }

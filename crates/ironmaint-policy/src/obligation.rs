@@ -11,9 +11,10 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
-use ironmaint_core::{CandidateFingerprint, EvidenceId, ObligationId};
+use ironmaint_core::{CandidateFingerprint, EvidenceId, ObligationId, SchemaVersion};
 
 use crate::policy::PolicyReference;
 
@@ -23,7 +24,7 @@ use crate::policy::PolicyReference;
 /// `Recommended` / `BestPractice` / `Procedural` / `LegalReview` /
 /// `LocalPolicy` carry distinct normative weights that adapters
 /// may rank, but none of them block on `Fail`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ObligationStrength {
     Mandatory,
@@ -58,7 +59,7 @@ impl ObligationStrength {
 ///
 /// Three-valued: `Unknown` is the pre-evaluation default, `Applicable`
 /// counts toward §35, `NotApplicable` exempts.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum Applicability {
     Unknown,
@@ -72,13 +73,18 @@ pub enum Applicability {
 /// exists (§35). The state machine checks for that record when it
 /// evaluates the obligation; without it, `ExceptionApproved` is
 /// treated as `Fail`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ObligationStatus {
+    /// Initial state: no evaluation has run yet.
     NotEvaluated,
+    /// Evaluated and satisfied against the bound evidence.
     Pass,
+    /// Evaluated and violated; mandatory obligations block transitions.
     Fail,
+    /// Evaluated but a human must weigh in (ambiguity, risk).
     RequiresReview,
+    /// Exception approved; valid only when an explicit approval record exists (§35).
     ExceptionApproved,
 }
 
@@ -101,7 +107,27 @@ impl ObligationStatus {
 /// crate intentionally does NOT depend on `ironmaint-evidence` and
 /// never inspects evidence values. Linking evidence to obligations
 /// is a runtime concern.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// - **Represents**: a single policy assertion sourced from a
+///   [`PolicyReference`] and bound to a candidate. Each obligation
+///   carries a strength ([`ObligationStrength`]) and an applicability
+///   window ([`Applicability`]) that together determine whether the
+///   obligation must hold for a given transition.
+/// - **Mutation ownership**: obligations are created by adapters via
+///   the `PolicyCapability::derive_obligation_plan` method (§34-35).
+///   IronMaint core does not synthesize obligation content; it only
+///   reads obligations to evaluate transitions.
+/// - **Invariants**: a `Mandatory` + `Applicable` obligation whose
+///   status is `Fail`, `RequiresReview`, or `NotEvaluated` blocks
+///   any transition requiring policy completion. An
+///   `ExceptionApproved` status is valid only when at least one
+///   matching `ApprovalDecision` exists in the approval registry
+///   (§35); the agent cannot self-grant exceptions.
+/// - **Does NOT represent**: NOT a workflow state, NOT a tool
+///   invocation, NOT an evidence record. An obligation is the
+///   *assertion that must hold*; the obligation status records how
+///   that assertion has been evaluated against evidence.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct Obligation {
     pub id: ObligationId,
     pub candidate: CandidateFingerprint,
@@ -113,6 +139,10 @@ pub struct Obligation {
     pub status: ObligationStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<EvidenceId>,
+    /// Wire-format schema version (§60). Always serializes as
+    /// `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
 }
 
 const REQUIREMENT_MAX: usize = 1024;
@@ -143,6 +173,7 @@ impl Obligation {
             requirement: r,
             status: ObligationStatus::NotEvaluated,
             evidence: Vec::new(),
+            schema_version: SchemaVersion::default(),
         })
     }
 

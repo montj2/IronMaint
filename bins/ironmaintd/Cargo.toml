@@ -1,0 +1,27 @@
+[package]
+name = "ironmaintd"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "ironmaintd daemon: bootstraps the runtime, exposes MCP, drains on SIGTERM (PHASE-0B.md §66-§68)."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "ironmaintd"
+path = "src/main.rs"
+
+[dependencies]
+ironmaint-executor = { path = "../../crates/ironmaint-executor" }
+ironmaint-runtime = { path = "../../crates/ironmaint-runtime" }
+ironmaint-store-sqlite = { path = "../../crates/ironmaint-store-sqlite" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "signal"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "io-util"] }

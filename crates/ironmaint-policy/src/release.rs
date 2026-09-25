@@ -13,12 +13,13 @@
 //! [`AuthorizationState::Proposed`] here; the privileged service
 //! transitions them forward.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use ironmaint_core::{
     CandidateFingerprint, DistributionRef, GateId, IssueActionId, JobId, ObligationId,
-    ReleaseCandidateId,
+    ReleaseCandidateId, SchemaVersion,
 };
 
 use crate::{PolicyBaseline, PrivilegedOperation};
@@ -30,7 +31,7 @@ use crate::{PolicyBaseline, PrivilegedOperation};
 /// machine's `FinalValidation → ReadyForApproval → Approved →
 /// PublicationPending → Published` path completes (and only when all
 /// referenced obligations / gates / issue actions have cleared).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct ReleaseCandidate {
     pub id: ReleaseCandidateId,
     pub job_id: JobId,
@@ -43,7 +44,12 @@ pub struct ReleaseCandidate {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub issue_actions: Vec<IssueActionId>,
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "ironmaint_core::json_schema_impls::Rfc3339DateTime")]
     pub created_at: OffsetDateTime,
+    /// Wire-format schema version (§60). Always serializes as
+    /// `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
 }
 
 impl ReleaseCandidate {
@@ -63,6 +69,7 @@ impl ReleaseCandidate {
             gate_ids: Vec::new(),
             issue_actions: Vec::new(),
             created_at,
+            schema_version: SchemaVersion::default(),
         }
     }
 
@@ -92,12 +99,33 @@ impl ReleaseCandidate {
 /// each is `Authorized` / `Executing` / `Succeeded` belongs to the
 /// privileged service and the executor (Phase 0B). IronMaint model
 /// objects only describe what must happen.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// - **Represents**: the pre-execution bundle of privileged
+///   operations required to publish a [`ReleaseCandidate`] against a
+///   specific [`DistributionRef`]. The bundle is the *what*; the
+///   executor (Phase 0B) is the *when* and *how*.
+/// - **Mutation ownership**: `AuthorizationState` transitions on
+///   contained [`PrivilegedOperation`]s are owned by the privileged
+///   service and the executor (Phase 0B); IronMaint model objects
+///   only describe what must happen (§43). The plan itself is
+///   append-only at the model layer.
+/// - **Invariants**: the bundle carries the side-effects required to
+///   publish; ordering and execution belong to the executor. Every
+///   contained `PrivilegedOperation` starts in `Proposed` and may
+///   not advance until its `required_approvals` are `Approved`.
+/// - **Does NOT represent**: NOT an execution schedule, NOT a queue,
+///   NOT a retry policy, NOT a privilege boundary. The plan is data;
+///   it does not initiate or schedule the side-effects it lists.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct PublicationPlan {
     pub release_candidate: ReleaseCandidateId,
     pub distribution: DistributionRef,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub operations: Vec<PrivilegedOperation>,
+    /// Wire-format schema version (§60). Always serializes as
+    /// `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
 }
 
 impl PublicationPlan {
@@ -107,6 +135,7 @@ impl PublicationPlan {
             release_candidate,
             distribution,
             operations: Vec::new(),
+            schema_version: SchemaVersion::default(),
         }
     }
 

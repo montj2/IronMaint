@@ -1,0 +1,325 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Evidence",
+  "description": "A single piece of evidence about a candidate (§22, §30).\n\n`candidate` is the binding (§30): \"Every evidence object is candidate-bound by default. Phase 0A should deliberately **not** implement cross-candidate evidence reuse.\" Cross-candidate reuse is a later optimization; for 0A.3 every evidence's `candidate` must match the gate it's intended to satisfy or [`crate::gate::GateResult`] will refuse it.\n\n- **Represents**: a single observable fact about a candidate — an artifact produced, a tool output, a fetched URL — plus the producer (deterministic tool or trusted authority) that vouches for it. - **Mutation ownership**: only deterministic tools or trusted authorities create evidence records (§22); IronMaint does not synthesize evidence. Evidence is append-only; corrections are new evidence records that supersede prior ones. - **Invariants**: `candidate` is a binding — every evidence's fingerprint must match the gate's candidate, or the gate refuses it. Cross-candidate evidence reuse is explicitly forbidden in Phase 0A (§30). - **Does NOT represent**: NOT a workflow decision, NOT a build plan, NOT a tool invocation. Evidence is the *result* of observing something; it is not the act of doing it.",
+  "type": "object",
+  "required": [
+    "candidate",
+    "id",
+    "kind",
+    "observed_at",
+    "producer",
+    "scope",
+    "status"
+  ],
+  "properties": {
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ArtifactRef"
+      }
+    },
+    "candidate": {
+      "type": "string"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "kind": {
+      "$ref": "#/definitions/EvidenceKind"
+    },
+    "notes": {
+      "description": "Free-form human notes. Capped at 4 KiB; not interpreted.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "observed_at": {
+      "$ref": "#/definitions/Rfc3339DateTime"
+    },
+    "producer": {
+      "$ref": "#/definitions/EvidenceProducer"
+    },
+    "schema_version": {
+      "description": "Wire-format schema version (§60). Always serializes as `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.",
+      "default": 1,
+      "type": "integer",
+      "format": "uint16",
+      "minimum": 0.0
+    },
+    "scope": {
+      "$ref": "#/definitions/EvidenceScope"
+    },
+    "status": {
+      "$ref": "#/definitions/EvidenceStatus"
+    }
+  },
+  "definitions": {
+    "ArtifactKind": {
+      "description": "Kind of artifact an [`ArtifactRef`] points at.\n\n\"Other\" is the escape hatch for kinds the core vocabulary doesn't enumerate; spec §25 deliberately leaves the variant set open.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "source_archive",
+            "build_artifact",
+            "binary_package",
+            "source_package",
+            "log_file",
+            "report",
+            "signature"
+          ]
+        },
+        {
+          "description": "Adapter-specific kinds the core vocabulary doesn't enumerate.",
+          "type": "object",
+          "required": [
+            "other"
+          ],
+          "properties": {
+            "other": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "ArtifactRef": {
+      "description": "Reference to an artifact: identity, kind, integrity, plus optional media type and size (PHASE-0A.md §25).\n\nThe artifact's bytes live outside this struct; only the metadata needed to find them and verify their integrity is stored.",
+      "type": "object",
+      "required": [
+        "digest",
+        "id",
+        "kind"
+      ],
+      "properties": {
+        "digest": {
+          "$ref": "#/definitions/Digest"
+        },
+        "id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "kind": {
+          "$ref": "#/definitions/ArtifactKind"
+        },
+        "media_type": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "size_bytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
+    "Digest": {
+      "description": "Content digest: `{ algorithm, hex_value }`.\n\n`value` must be the lowercase (or uppercase) hexadecimal string of length matching `algorithm.hex_length()`. Both cases are accepted at construction; the canonical lowercase form is stored.",
+      "type": "object",
+      "required": [
+        "algorithm",
+        "value"
+      ],
+      "properties": {
+        "algorithm": {
+          "$ref": "#/definitions/DigestAlgorithm"
+        },
+        "value": {
+          "type": "string"
+        }
+      }
+    },
+    "DigestAlgorithm": {
+      "description": "Digest algorithm used by [`Digest`].",
+      "oneOf": [
+        {
+          "description": "BLAKE3-256. Default for `CandidateFingerprint` (PHASE-0A.md §12).",
+          "type": "string",
+          "enum": [
+            "blake3"
+          ]
+        },
+        {
+          "description": "SHA-256. Default for artifact digests (PHASE-0A.md §11).",
+          "type": "string",
+          "enum": [
+            "sha256"
+          ]
+        },
+        {
+          "description": "Git SHA-1. Preserved when a digest points at a Git object address from a legacy SHA-1 repository.",
+          "type": "string",
+          "enum": [
+            "git_sha1"
+          ]
+        },
+        {
+          "description": "Git SHA-256. Preserved when a digest points at a Git object address from a SHA-256 repository.",
+          "type": "string",
+          "enum": [
+            "git_sha256"
+          ]
+        }
+      ]
+    },
+    "DistributionRef": {
+      "description": "Pair of `DistributionFamily` + `DistributionRelease`.\n\nThe core represents the authority-target identity as a `family` + `release` pair. The adapter interprets the pair. Nothing here encodes Debian-vs-Fedora semantics.",
+      "type": "object",
+      "required": [
+        "family",
+        "release"
+      ],
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "release": {
+          "type": "string"
+        }
+      }
+    },
+    "EvidenceKind": {
+      "description": "Kind of an evidence value (§26).\n\nGeneral categories only — individual tools are not encoded into the enum. A tool like `lintian` or `rpmlint` is captured in the [`EvidenceProducer::name`], not in the kind.",
+      "oneOf": [
+        {
+          "type": "string",
+          "enum": [
+            "source_integrity",
+            "build",
+            "package_qa",
+            "functional_test",
+            "upgrade_test",
+            "reproducibility",
+            "policy_evaluation",
+            "license_review",
+            "issue_correlation",
+            "release_assembly",
+            "publication_validation"
+          ]
+        },
+        {
+          "description": "Escape hatch for kinds the core vocabulary doesn't enumerate.",
+          "type": "object",
+          "required": [
+            "other"
+          ],
+          "properties": {
+            "other": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "EvidenceProducer": {
+      "description": "Producer of an evidence value (§24).\n\nExamples (none hard-coded into the type): `sbuild 0.x`, `lintian 2.x`, `mock 6.x`, `rpmlint 2.x`, `ironmaint-policy-engine 0.1`. Core sees them as opaque producer labels.",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "execution_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "EvidenceScope": {
+      "description": "Where an [`Evidence`] object's findings apply.\n\n`Candidate` is the default for build/test/reproducibility evidence (bound to one source revision). `Job` covers evidence that accumulates across multiple candidates (rare; e.g. aggregate lint findings). `Distribution` covers evidence about the distribution itself (e.g. archive metadata).",
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "value"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "candidate"
+              ]
+            },
+            "value": {
+              "type": "string"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "value"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "job"
+              ]
+            },
+            "value": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "value"
+          ],
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "distribution"
+              ]
+            },
+            "value": {
+              "$ref": "#/definitions/DistributionRef"
+            }
+          }
+        }
+      ]
+    },
+    "EvidenceStatus": {
+      "description": "Status of an evidence evaluation (§23).\n\n`Pass` and `Fail` are the normal outcomes; `NotApplicable` exempts the producing gate; `Inconclusive` is \"we ran the check but the result wasn't actionable\" (different from `NotEvaluated` which means \"we haven't run it yet\"); `InfrastructureError` is a host/sandbox problem that must not be confused with `Fail` (§2.6: \"Tool failure ≠ infrastructure error\").",
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "not_applicable",
+        "inconclusive",
+        "infrastructure_error"
+      ]
+    },
+    "Rfc3339DateTime": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

@@ -9,13 +9,14 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Adapter error (§54).
 ///
 /// `kind` is the categorical taxonomy; `message` is a free-form
 /// human-readable string with no semantic contract.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct AdapterError {
     pub kind: AdapterErrorKind,
     pub message: String,
@@ -51,7 +52,7 @@ impl std::error::Error for AdapterError {}
 ///   inappropriate.
 /// - `InternalAdapterFailure` — implementation defect or invariant
 ///   failure.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AdapterErrorKind {

@@ -1,0 +1,16 @@
+{
+  "release_candidate": "01a0da10-8043-75fd-ae39-98bf92523692",
+  "distribution": {
+    "family": "debian",
+    "release": "sid"
+  },
+  "operations": [
+    {
+      "id": "01a0da10-8043-75fd-ae39-98c795f7767e",
+      "kind": "canonical_repository_push",
+      "candidate": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "authorization": "proposed"
+    }
+  ],
+  "schema_version": 1
+}

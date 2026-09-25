@@ -9,6 +9,7 @@
 //! wrap an arbitrary existing UUID (`ID::from_uuid(...)`) for replay
 //! and testing.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CoreError;
@@ -24,6 +25,7 @@ macro_rules! define_uuid_id {
     ($name:ident) => {
         #[derive(
             Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
+            JsonSchema,
         )]
         #[serde(transparent)]
         #[doc = concat!("Strongly-typed identifier (UUIDv7-backed).")]
@@ -88,6 +90,13 @@ define_uuid_id!(AuthorityId);
 define_uuid_id!(EvidenceId);
 define_uuid_id!(GateId);
 define_uuid_id!(ObligationId);
+// Check identifier (Phase 0B §45). Identifies a specific check
+// invocation within a candidate's BuildPlan / QaPlan. Allocated by
+// the runtime when materialising an adapter's planned check into a
+// durable, executable record. Phase 0A.4's `PlannedCheck` carries no
+// ID; CheckId is introduced purely additively in 0B for the executor's
+// bookkeeping.
+define_uuid_id!(CheckId);
 
 #[cfg(test)]
 mod tests {

@@ -1,0 +1,102 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ReleaseCandidate",
+  "description": "A snapshot of \"everything required to release\" for one candidate (§42).\n\n`policy_baseline` carries the [`AuthorityId`]s the candidate is held against. The candidate is releasable only after the state machine's `FinalValidation → ReadyForApproval → Approved → PublicationPending → Published` path completes (and only when all referenced obligations / gates / issue actions have cleared).",
+  "type": "object",
+  "required": [
+    "created_at",
+    "id",
+    "job_id",
+    "policy_baseline",
+    "source"
+  ],
+  "properties": {
+    "created_at": {
+      "$ref": "#/definitions/Rfc3339DateTime"
+    },
+    "gate_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "issue_actions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "job_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "obligation_ids": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "format": "uuid"
+      }
+    },
+    "policy_baseline": {
+      "$ref": "#/definitions/PolicyBaseline"
+    },
+    "schema_version": {
+      "description": "Wire-format schema version (§60). Always serializes as `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.",
+      "default": 1,
+      "type": "integer",
+      "format": "uint16",
+      "minimum": 0.0
+    },
+    "source": {
+      "type": "string"
+    }
+  },
+  "definitions": {
+    "DistributionRef": {
+      "description": "Pair of `DistributionFamily` + `DistributionRelease`.\n\nThe core represents the authority-target identity as a `family` + `release` pair. The adapter interprets the pair. Nothing here encodes Debian-vs-Fedora semantics.",
+      "type": "object",
+      "required": [
+        "family",
+        "release"
+      ],
+      "properties": {
+        "family": {
+          "type": "string"
+        },
+        "release": {
+          "type": "string"
+        }
+      }
+    },
+    "PolicyBaseline": {
+      "description": "A snapshot of the trusted authorities for one distribution (§36).\n\n`authorities` is the list adapters consume when they produce [`Obligation`]s; `distribution` identifies which distribution's baseline this is. The baseline is itself produced by the adapter, not by core — core just stores it.",
+      "type": "object",
+      "required": [
+        "authorities",
+        "distribution"
+      ],
+      "properties": {
+        "authorities": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        },
+        "distribution": {
+          "$ref": "#/definitions/DistributionRef"
+        }
+      }
+    },
+    "Rfc3339DateTime": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

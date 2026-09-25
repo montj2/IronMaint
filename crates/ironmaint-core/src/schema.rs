@@ -4,6 +4,7 @@
 //! Internal value objects don't each carry a schema version; only
 //! envelopes do, once they exist in 0A.3+.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Wire schema version.
@@ -11,7 +12,7 @@ use serde::{Deserialize, Serialize};
 /// The first schema version is `1`. Increment when a breaking change
 /// to the wire shape lands; consumers should reject envelopes with
 /// newer versions they don't understand.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct SchemaVersion(pub u16);
 

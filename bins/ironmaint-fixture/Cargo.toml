@@ -1,0 +1,27 @@
+[package]
+name = "ironmaint-fixture"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Fixture binary used by §101 synthetic E2E tests. Reads an ExecutionRequest JSON from stdin and emits an ExecutionRecord JSON on stdout."
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "ironmaint-fixture"
+path = "src/main.rs"
+
+[dependencies]
+ironmaint-adapter-api = { path = "../../crates/ironmaint-adapter-api" }
+ironmaint-executor = { path = "../../crates/ironmaint-executor" }
+serde_json = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "process", "io-util"] }

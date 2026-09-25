@@ -6,7 +6,14 @@
 //! `BTreeMap` / `ObligationSet` locals so the references inside
 //! [`TransitionContext`] stay valid for the closure body.
 
-#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::map_err_ignore
+)]
 
 use std::collections::BTreeMap;
 

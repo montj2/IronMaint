@@ -7,6 +7,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -20,7 +21,7 @@ use crate::evidence::EvidenceKind;
 /// plus `Publication` (the post-Approved segment). Maps 1:1 to the
 /// edges in PHASE-0A.md §20; the state machine's `TransitionRule`
 /// table references these stages.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GateStage {
     SourcePreparation,
@@ -69,7 +70,7 @@ impl GateStage {
 ///
 /// `Pass` is strict — `NotApplicable` does NOT satisfy. `PassOrNotApplicable`
 /// is the "this check is meaningful only for some candidates" variant.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RequiredEvidenceStatus {
     Pass,
@@ -91,14 +92,20 @@ impl fmt::Display for RequiredEvidenceStatus {
 /// `Blocked` means the evaluation couldn't complete (e.g. dependency
 /// missing). `ReviewRequired` means the evaluation ran but a human
 /// needs to weigh in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum GateStatus {
+    /// Initial state: no evaluation has run yet.
     NotEvaluated,
+    /// Evaluation succeeded; gate is satisfied.
     Pass,
+    /// Evaluation ran and found the gate violated.
     Fail,
+    /// Evaluation found the gate not applicable to this candidate.
     NotApplicable,
+    /// Evaluation couldn't complete (missing dependency, tool error).
     Blocked,
+    /// Evaluation ran but requires a human decision.
     ReviewRequired,
 }
 
@@ -128,7 +135,7 @@ impl fmt::Display for GateStatus {
 /// Adapters and the policy engine produce evidence; the gate is
 /// satisfied by the existence of a [`GateResult`] whose status meets
 /// `minimum_status` and whose `candidate` matches.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct GateRequirement {
     pub evidence_kind: EvidenceKind,
     pub minimum_status: RequiredEvidenceStatus,
@@ -148,7 +155,23 @@ impl GateRequirement {
 ///
 /// A gate is "mandatory" when its result blocks transitions if not
 /// satisfied; non-mandatory gates are advisory.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// - **Represents**: a *declaration* of what must be true before a
+///   candidate may advance — the evidence kind required, the
+///   minimum acceptable status, and the gate stage it gates.
+/// - **Mutation ownership**: gate evaluations are produced only by
+///   the deterministic gate-evaluation logic in §29; the definition
+///   itself is a plan, not a result. Creating a `GateDefinition`
+///   does not produce any `GateResult`.
+/// - **Invariants**: `GateDefinition` describes the pre-condition;
+///   it does not invoke tools. The mandatory/non-mandatory bit is
+///   the bridge between gate evaluation and the transition engine:
+///   when a mandatory gate lacks a passing `GateResult`, the
+///   transition is blocked.
+/// - **Does NOT represent**: NOT a tool invocation, NOT an evidence
+///   record, NOT a workflow state. A gate is the *question*; the
+///   matching `GateResult` is the *answer*.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct GateDefinition {
     pub id: GateId,
     pub candidate: CandidateFingerprint,
@@ -181,7 +204,7 @@ impl GateDefinition {
 /// by adapters. Carries the [`EvidenceId`]s that justify the status,
 /// and the candidate fingerprint so the state machine can verify it
 /// matches the active candidate before consulting this result.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct GateResult {
     pub gate_id: GateId,
     pub candidate: CandidateFingerprint,
@@ -189,6 +212,7 @@ pub struct GateResult {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<EvidenceId>,
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "ironmaint_core::json_schema_impls::Rfc3339DateTime")]
     pub evaluated_at: OffsetDateTime,
 }
 

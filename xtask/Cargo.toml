@@ -13,4 +13,15 @@ description = "Workspace automation: verify-architecture, verify-schemas, confor
 workspace = true
 
 [dependencies]
+ironmaint-core = { path = "../crates/ironmaint-core" }
+ironmaint-evidence = { path = "../crates/ironmaint-evidence" }
+ironmaint-policy = { path = "../crates/ironmaint-policy" }
+ironmaint-state = { path = "../crates/ironmaint-state" }
+ironmaint-adapter-api = { path = "../crates/ironmaint-adapter-api" }
+ironmaint-store-sqlite = { path = "../crates/ironmaint-store-sqlite" }
+ironmaint-mcp = { path = "../crates/ironmaint-mcp" }
+schemars = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }
 toml_edit = "0.22"

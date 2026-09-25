@@ -5,6 +5,7 @@
 //! a few kinds apply more broadly (e.g. distribution-wide policy
 //! metadata).
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use ironmaint_core::{CandidateFingerprint, DistributionRef, JobId};
@@ -16,7 +17,7 @@ use ironmaint_core::{CandidateFingerprint, DistributionRef, JobId};
 /// accumulates across multiple candidates (rare; e.g. aggregate
 /// lint findings). `Distribution` covers evidence about the
 /// distribution itself (e.g. archive metadata).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case", tag = "kind", content = "value")]
 pub enum EvidenceScope {
     Candidate(CandidateFingerprint),

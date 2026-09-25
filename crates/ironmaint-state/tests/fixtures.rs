@@ -1,6 +1,14 @@
 //! Shared test fixtures for the engine scenario tests.
 
-#![allow(dead_code, clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![allow(
+    dead_code,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::map_err_ignore
+)]
 
 use ironmaint_core::{
     CandidateFingerprint, DistributionFamily, DistributionRef, DistributionRelease, JobProjection,

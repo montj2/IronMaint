@@ -9,6 +9,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use ironmaint_core::{ApprovalId, CandidateFingerprint};
@@ -17,7 +18,7 @@ use ironmaint_core::{ApprovalId, CandidateFingerprint};
 ///
 /// `Other(String)` is the explicit escape hatch for distribution- or
 /// org-specific categories the core vocabulary doesn't enumerate.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalCategory {
     HumanReview,
@@ -59,7 +60,7 @@ impl fmt::Display for ApprovalCategory {
 /// Agents and adapters cannot record a decision; the privileged
 /// service does. A `Rejected` decision means the corresponding
 /// transition is blocked.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ApprovalDecision {
     Approved,
@@ -89,7 +90,7 @@ const DESCRIPTION_MAX: usize = 2048;
 /// Created when an agent or adapter asserts "this transition needs
 /// an approval of category X". The privileged service eventually
 /// attaches an [`ApprovalDecision`] keyed by the requirement's id.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct ApprovalRequirement {
     pub id: ApprovalId,
     pub candidate: CandidateFingerprint,

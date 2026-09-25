@@ -4,6 +4,7 @@
 //! blockers) is in `ironmaint-state` (lands in 0A.3). This module
 //! holds only the value types.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -31,27 +32,48 @@ use crate::package::PackageIdentity;
 /// operator may edit packaging files there without invalidating the
 /// state machine. The state machine in 0A.3 will encode the rules
 /// for entering and leaving this state.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
+    /// Initial state: a maintenance event has been detected upstream.
     EventDetected,
+    /// Triaging the event: assigning it to a job and target package.
     Intake,
+    /// Reviewing upstream source state (tags, commits, security feeds).
     SourceReview,
+    /// Producing the initial source candidate and packaging inputs.
     CandidateAssembly,
+    /// Manual source-tweak window between initial build and integrity check.
     SourceRevision,
+    /// Verifying the source tree (checksums, signatures, provenance).
     SourceIntegrity,
+    /// Running distribution build (sbuild / Mock) gates.
     BuildValidation,
+    /// Running distribution package QA (Lintian / rpmlint) gates.
     PackageQaValidation,
+    /// Running functional-test gates (autopkgtest / tmt).
     FunctionalValidation,
+    /// Running upgrade-test gates on existing installs.
     UpgradeValidation,
+    /// Reviewing the assembled release metadata (changelog, notes).
     ReleaseReview,
+    /// Cross-cutting final validation before approval.
     FinalValidation,
+    /// All gates passed; awaiting explicit human approval.
     ReadyForApproval,
+    /// Human approval recorded; cleared to publish.
     Approved,
+    /// Publication side-effects proposed; awaiting authorization.
     PublicationPending,
+    /// Success terminal: artifacts are in the canonical repos.
     Published,
+    /// Exceptional: paused for human review (gate ambiguity, risk).
     HumanReviewRequired,
+    /// Exceptional: paused by infrastructure failure (worker / network).
     InfrastructureBlocked,
+    /// Terminal: cancelled by operator or policy.
     Cancelled,
 }
 
@@ -141,12 +163,13 @@ impl JobState {
 /// Immutable (§15: "Do not put mutable current workflow state directly
 /// into this immutable domain identity"). The mutable projection is
 /// [`JobProjection`].
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct MaintenanceJob {
     pub id: JobId,
     pub package: PackageIdentity,
     pub initiating_event: MaintenanceEventId,
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "crate::json_schema_impls::Rfc3339DateTime")]
     pub created_at: OffsetDateTime,
 }
 
@@ -174,7 +197,7 @@ impl MaintenanceJob {
 /// may produce an accepted `StateTransitioned` event"). 0A.2 only
 /// defines the value type; 0A.3 introduces the engine that mutates
 /// it.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct JobProjection {
     pub job: MaintenanceJob,
     pub state: JobState,
@@ -186,6 +209,7 @@ pub struct JobProjection {
     /// engine on every accepted transition (§17).
     pub version: u64,
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "crate::json_schema_impls::Rfc3339DateTime")]
     pub updated_at: OffsetDateTime,
 }
 

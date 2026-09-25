@@ -8,6 +8,7 @@
 //! become concrete publication plans only after candidate IDs and
 //! approval requirements are created".
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use ironmaint_core::DistributionRef;
@@ -17,7 +18,7 @@ use crate::contexts::{PublicationContext, ReleaseContext};
 use crate::error::AdapterError;
 
 /// Pre-execution release-metadata bundle (§52).
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct ReleaseMetadataPlan {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -50,7 +51,7 @@ impl ReleaseMetadataPlan {
 /// the executor materializes it into a
 /// [`ironmaint_policy::PrivilegedOperation`] with the appropriate
 /// ids and approval requirements.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PlannedOperation {
     pub kind: PrivilegedOperationKind,
     pub summary: String,
@@ -67,7 +68,7 @@ impl PlannedOperation {
 }
 
 /// Pre-execution bundle for the publication plan (§52).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PublicationPlanTemplate {
     pub distribution: DistributionRef,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

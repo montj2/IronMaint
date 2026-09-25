@@ -1,0 +1,25 @@
+[package]
+name = "ironmaint-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "MCP tool surface for the IronMaint runtime (PHASE-0B.md §50-§53). Authenticated, Streamable HTTP on 127.0.0.1."
+
+[lints]
+workspace = true
+
+[dependencies]
+ironmaint-core = { path = "../ironmaint-core" }
+ironmaint-evidence = { path = "../ironmaint-evidence" }
+ironmaint-executor = { path = "../ironmaint-executor" }
+ironmaint-policy = { path = "../ironmaint-policy" }
+ironmaint-runtime = { path = "../ironmaint-runtime" }
+ironmaint-workspace = { path = "../ironmaint-workspace" }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

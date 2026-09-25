@@ -1,0 +1,30 @@
+[package]
+name = "ironmaint-executor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Executor primitives: tool registry, retry classes, process environment, durable operation lifecycle (PHASE-0B.md §21-§33)."
+
+[lints]
+workspace = true
+
+[dependencies]
+ironmaint-adapter-api = { path = "../ironmaint-adapter-api" }
+ironmaint-core = { path = "../ironmaint-core" }
+ironmaint-evidence = { path = "../ironmaint-evidence" }
+ironmaint-policy = { path = "../ironmaint-policy" }
+ironmaint-store = { path = "../ironmaint-store" }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt", "io-util"] }
