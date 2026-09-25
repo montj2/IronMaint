@@ -18,6 +18,8 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+debian-stub = { path = "../../adapters/debian-stub" }
+fedora-stub = { path = "../../adapters/fedora-stub" }
 time = { workspace = true, features = ["macros"] }
 url = { workspace = true }
 

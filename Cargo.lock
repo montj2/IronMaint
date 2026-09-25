@@ -147,7 +147,12 @@ name = "fedora-stub"
 version = "0.1.0"
 dependencies = [
  "ironmaint-adapter-api",
+ "ironmaint-core",
+ "ironmaint-evidence",
+ "ironmaint-policy",
  "ironmaint-testkit",
+ "time",
+ "url",
 ]
 
 [[package]]
@@ -337,6 +342,8 @@ dependencies = [
 name = "ironmaint-adapter-api"
 version = "0.1.0"
 dependencies = [
+ "debian-stub",
+ "fedora-stub",
  "ironmaint-core",
  "ironmaint-evidence",
  "ironmaint-policy",

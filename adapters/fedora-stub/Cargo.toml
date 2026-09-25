@@ -11,9 +11,14 @@ description = "DistributionAdapter stub for Fedora. Phase 0A skeleton — no rea
 
 [dependencies]
 ironmaint-adapter-api = { path = "../../crates/ironmaint-adapter-api" }
+ironmaint-core = { path = "../../crates/ironmaint-core" }
+ironmaint-evidence = { path = "../../crates/ironmaint-evidence" }
+ironmaint-policy = { path = "../../crates/ironmaint-policy" }
 
 [dev-dependencies]
 ironmaint-testkit = { path = "../../crates/ironmaint-testkit" }
+time = { workspace = true, features = ["macros"] }
+url = { workspace = true }
 
 [lints]
 workspace = true
