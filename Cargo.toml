@@ -7,9 +7,19 @@ members = [
     "crates/ironmaint-policy",
     "crates/ironmaint-state",
     "crates/ironmaint-adapter-api",
+    "crates/ironmaint-store",
+    "crates/ironmaint-store-sqlite",
+    "crates/ironmaint-artifacts",
+    "crates/ironmaint-workspace",
+    "crates/ironmaint-executor",
+    "crates/ironmaint-runtime",
+    "crates/ironmaint-mcp",
     "crates/ironmaint-testkit",
     "adapters/debian-stub",
     "adapters/fedora-stub",
+    "bins/ironmaintctl",
+    "bins/ironmaint-fixture",
+    "bins/ironmaintd",
 ]
 
 [workspace.package]
@@ -47,7 +57,7 @@ map_err_ignore = "deny"
 all = { level = "warn", priority = -1 }
 
 [workspace.metadata.ironmaint]
-phase = "0A"
+phase = "0B"
 north_star = "Adding support for a new distribution requires implementing that distribution's maintenance contract — not rewriting IronMaint's fundamental trust, evidence, orchestration, or release model."
 
 # -----------------------------------------------------------------------------
@@ -56,8 +66,13 @@ north_star = "Adding support for a new distribution requires implementing that d
 # crates-specific deps as required.
 # -----------------------------------------------------------------------------
 [workspace.dependencies]
-# Phase 0A forbids async in core crates (PHASE-0A.md §84). No tokio, no
-# reqwest, no async-trait. The first runtime deps land in Phase 0B / 1.
+# Phase 0A forbids async in domain crates (PHASE-0A.md §84). The runtime
+# async deps (tokio, sqlx, rmcp, tracing, fs2, tempfile) land in Phase 0B
+# and are consumed only by the infrastructure crates (store, executor,
+# artifacts, workspace, runtime, mcp, daemon) — never by the domain crates
+# (core, evidence, policy, state, adapter-api). PHASE-0B.md §98 enforces this
+# via `cargo xtask verify-architecture`. Native `async fn` in traits is
+# stable on MSRV 1.85, so no `async-trait` dep is needed.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = { version = "0.8", features = ["uuid1", "url"] }
@@ -70,3 +85,13 @@ thiserror = "2"
 regex = "1"
 insta = { version = "1", features = ["json"] }
 pretty_assertions = "1"
+# Phase 0B runtime deps (PHASE-0B.md §86). Listed here so member crates
+# can opt in with `dep = { workspace = true }` and inherit the version.
+# No member yet consumes these — they are pinned for commits 2+.
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "sync", "time", "io-util", "net"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "sqlite", "macros", "json", "time"] }
+rmcp = { version = "3", features = ["server", "transport-streamable-http-server", "macros"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+fs2 = "0.4"
+tempfile = "3"

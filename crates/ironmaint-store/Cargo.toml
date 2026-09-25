@@ -1,0 +1,27 @@
+[package]
+name = "ironmaint-store"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+authors = ["James Montgomery <james@ironmaint.dev>"]
+description = "Persistence contracts (async traits) for IronMaint's event-sourced store."
+publish = false
+
+[dependencies]
+ironmaint-core = { path = "../ironmaint-core" }
+ironmaint-evidence = { path = "../ironmaint-evidence" }
+ironmaint-policy = { path = "../ironmaint-policy" }
+ironmaint-state = { path = "../ironmaint-state" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+url = { workspace = true }
+time = { workspace = true, features = ["macros"] }

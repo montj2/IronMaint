@@ -1,0 +1,67 @@
+[
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "RetryClass": {
+        "enum": [
+          "idempotent",
+          "side_effecting",
+          "destructive"
+        ],
+        "type": "string"
+      }
+    },
+    "properties": {
+      "job_id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "retry_class": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/RetryClass"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "default": null
+      },
+      "tool_key": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "job_id",
+      "tool_key"
+    ],
+    "title": "RunCheckInput",
+    "type": "object"
+  },
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "exit_code": {
+        "format": "int32",
+        "type": "integer"
+      },
+      "stderr": {
+        "type": "string"
+      },
+      "stdout": {
+        "type": "string"
+      },
+      "tool_key": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "exit_code",
+      "stderr",
+      "stdout",
+      "tool_key"
+    ],
+    "title": "RunCheckOutput",
+    "type": "object"
+  }
+]

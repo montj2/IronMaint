@@ -62,8 +62,8 @@ pub use distribution::{DistributionFamily, DistributionRef, DistributionRelease}
 pub use error::{CoreError, CoreErrorKind};
 pub use event::{EventSource, MaintenanceEvent, MaintenanceEventType};
 pub use identity::{
-    ActorId, ApprovalId, ArtifactId, AuthorityId, CandidateId, DomainEventId, EvidenceId, GateId,
-    IssueActionId, IssueProviderId, JobId, MaintenanceEventId, ObligationId, OperationId,
+    ActorId, ApprovalId, ArtifactId, AuthorityId, CandidateId, CheckId, DomainEventId, EvidenceId,
+    GateId, IssueActionId, IssueProviderId, JobId, MaintenanceEventId, ObligationId, OperationId,
     ReleaseCandidateId,
 };
 pub use issue_observation::{IssueRef, IssueSnapshot, IssueState};

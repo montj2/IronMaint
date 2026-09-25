@@ -1,0 +1,33 @@
+[package]
+name = "ironmaint-runtime"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Runtime application service: ties store + artifacts + workspace + executor + adapter into a single async command/query API (PHASE-0B.md §38-§63)."
+
+[lints]
+workspace = true
+
+[dependencies]
+ironmaint-adapter-api = { path = "../ironmaint-adapter-api" }
+ironmaint-core = { path = "../ironmaint-core" }
+ironmaint-evidence = { path = "../ironmaint-evidence" }
+ironmaint-executor = { path = "../ironmaint-executor" }
+ironmaint-policy = { path = "../ironmaint-policy" }
+ironmaint-state = { path = "../ironmaint-state" }
+ironmaint-store = { path = "../ironmaint-store" }
+ironmaint-workspace = { path = "../ironmaint-workspace" }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

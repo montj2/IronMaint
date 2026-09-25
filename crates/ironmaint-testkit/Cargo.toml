@@ -15,6 +15,8 @@ ironmaint-evidence = { path = "../ironmaint-evidence" }
 ironmaint-policy = { path = "../ironmaint-policy" }
 ironmaint-state = { path = "../ironmaint-state" }
 ironmaint-adapter-api = { path = "../ironmaint-adapter-api" }
+ironmaint-runtime = { path = "../ironmaint-runtime" }
+ironmaint-store = { path = "../ironmaint-store" }
 time = { workspace = true, features = ["macros"] }
 url = { workspace = true }
 
@@ -24,7 +26,16 @@ pretty_assertions = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 time = { workspace = true, features = ["macros"] }
+tokio = { workspace = true, features = ["macros", "rt"] }
 url = { workspace = true }
 
 [lints]
 workspace = true
+
+[features]
+integration = []
+
+[[test]]
+name = "synthetic_e2e"
+path = "tests/synthetic_e2e.rs"
+required-features = ["integration"]
