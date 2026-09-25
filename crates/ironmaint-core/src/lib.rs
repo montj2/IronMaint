@@ -32,6 +32,7 @@
 // lint.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod candidate;
 pub mod digest;
 pub mod distribution;
 pub mod error;
@@ -43,8 +44,8 @@ pub mod repository;
 pub mod schema;
 
 // Ergonomic re-exports so callers can use `ironmaint_core::JobId` etc.
-// without naming the source module. (`SourceCandidate` and
-// `CandidateFingerprint` are added in 0A.2 commit 2.)
+// without naming the source module.
+pub use candidate::{CandidateFingerprint, SourceCandidate};
 pub use digest::{Digest, DigestAlgorithm, GitHashAlgorithm, GitObjectId};
 pub use distribution::{DistributionFamily, DistributionRef, DistributionRelease};
 pub use error::{CoreError, CoreErrorKind};
