@@ -15,7 +15,7 @@
 
 use std::path::PathBuf;
 
-use ironmaint_runtime::RuntimeService;
+use ironmaint_runtime::{RuntimeService, SystemClock};
 use ironmaint_store_sqlite::{SqliteStore, SqliteStoreConfig};
 
 #[tokio::main]
@@ -25,7 +25,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing_setup();
     let config = SqliteStoreConfig::new(state_dir.join("ironmaint.db"));
     let store = SqliteStore::open(config).await?;
-    let _service = RuntimeService::new(std::sync::Arc::new(store));
+    let _service =
+        RuntimeService::new(std::sync::Arc::new(store), std::sync::Arc::new(SystemClock));
     tracing_setup_done();
     tokio::signal::ctrl_c().await?;
     tracing_shutdown_received();

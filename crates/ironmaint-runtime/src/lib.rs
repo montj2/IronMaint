@@ -29,6 +29,7 @@
     )
 )]
 
+pub mod clock;
 pub mod command;
 pub mod config;
 pub mod error;
@@ -37,6 +38,7 @@ pub mod orchestrator;
 pub mod query;
 pub mod service;
 
+pub use clock::{Clock, FixedClock, SystemClock};
 pub use command::RuntimeCommand;
 pub use config::RuntimeConfig;
 pub use error::{RuntimeError, RuntimeErrorKind};
