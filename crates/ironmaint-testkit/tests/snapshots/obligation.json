@@ -1,0 +1,12 @@
+{
+  "id": "01a0da10-8043-75fd-ae39-98c892dc2f8a",
+  "candidate": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "reference": {
+    "authority": "01a0da10-8043-75fd-ae39-98c654b0edca"
+  },
+  "strength": "mandatory",
+  "applicability": "applicable",
+  "requirement": "All Rust binaries must link against the secure-libs package.",
+  "status": "not_evaluated",
+  "schema_version": 1
+}

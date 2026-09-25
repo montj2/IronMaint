@@ -1,0 +1,17 @@
+---
+source: crates/ironmaint-testkit/tests/snapshots.rs
+assertion_line: 181
+expression: "&parsed"
+---
+{
+  "id": "01a0da10-8043-75fd-ae39-98c01f20e625",
+  "package": {
+    "distribution": {
+      "family": "debian",
+      "release": "sid"
+    },
+    "source_name": "rust-core"
+  },
+  "initiating_event": "01a0da10-8043-75fd-ae39-98c481659a30",
+  "created_at": "2026-01-15T09:00:00Z"
+}

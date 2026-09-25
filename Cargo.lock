@@ -427,12 +427,15 @@ dependencies = [
 name = "ironmaint-testkit"
 version = "0.1.0"
 dependencies = [
+ "insta",
  "ironmaint-adapter-api",
  "ironmaint-core",
  "ironmaint-evidence",
  "ironmaint-policy",
  "ironmaint-state",
  "pretty_assertions",
+ "serde",
+ "serde_json",
  "time",
  "url",
 ]
