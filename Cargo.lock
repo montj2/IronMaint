@@ -920,11 +920,14 @@ dependencies = [
  "ironmaint-core",
  "ironmaint-evidence",
  "ironmaint-policy",
+ "ironmaint-runtime",
  "ironmaint-state",
+ "ironmaint-store",
  "pretty_assertions",
  "serde",
  "serde_json",
  "time",
+ "tokio",
  "url",
 ]
 
