@@ -778,6 +778,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironmaint-executor"
+version = "0.1.0"
+dependencies = [
+ "ironmaint-adapter-api",
+ "ironmaint-core",
+ "ironmaint-evidence",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "ironmaint-policy"
 version = "0.1.0"
 dependencies = [
