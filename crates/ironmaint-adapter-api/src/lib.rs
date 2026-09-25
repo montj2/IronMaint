@@ -21,7 +21,17 @@
 
 #![forbid(unsafe_code)]
 // Tests legitimately `.unwrap()` / `.expect()` on validated inputs.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::map_err_ignore,
+    )
+)]
 
 pub mod build;
 pub mod contexts;

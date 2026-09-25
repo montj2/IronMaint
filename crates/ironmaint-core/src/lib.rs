@@ -30,7 +30,17 @@
 // which combined with `-D warnings` would deny them in tests too. Allow
 // them under `cfg(test)` only — production paths are still subject to the
 // lint.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::map_err_ignore,
+    )
+)]
 
 pub mod candidate;
 pub mod digest;
