@@ -383,9 +383,15 @@ dependencies = [
 name = "ironmaint-state"
 version = "0.1.0"
 dependencies = [
+ "insta",
  "ironmaint-core",
  "ironmaint-evidence",
  "ironmaint-policy",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "time",
 ]
 
 [[package]]
