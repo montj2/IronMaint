@@ -807,6 +807,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironmaint-mcp"
+version = "0.1.0"
+dependencies = [
+ "ironmaint-core",
+ "ironmaint-evidence",
+ "ironmaint-executor",
+ "ironmaint-policy",
+ "ironmaint-runtime",
+ "ironmaint-workspace",
+ "schemars",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "ironmaint-policy"
 version = "0.1.0"
 dependencies = [
@@ -2150,6 +2166,7 @@ dependencies = [
  "ironmaint-adapter-api",
  "ironmaint-core",
  "ironmaint-evidence",
+ "ironmaint-mcp",
  "ironmaint-policy",
  "ironmaint-state",
  "ironmaint-store-sqlite",

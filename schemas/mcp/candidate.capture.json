@@ -1,0 +1,71 @@
+[
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DistributionRef": {
+        "description": "Pair of `DistributionFamily` + `DistributionRelease`.\n\nThe core represents the authority-target identity as a `family` + `release` pair. The adapter interprets the pair. Nothing here encodes Debian-vs-Fedora semantics.",
+        "properties": {
+          "family": {
+            "type": "string"
+          },
+          "release": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "family",
+          "release"
+        ],
+        "type": "object"
+      },
+      "PackageIdentity": {
+        "description": "Identity of a package — `(distribution, source_name)`.\n\nThis is the durable key. A `PackageRevision` adds a version, but the *identity* (what distribution and what package name) is fixed by `PackageIdentity`. Equality is structural.",
+        "properties": {
+          "distribution": {
+            "$ref": "#/definitions/DistributionRef"
+          },
+          "source_name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "distribution",
+          "source_name"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "job_id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "package": {
+        "$ref": "#/definitions/PackageIdentity"
+      },
+      "repository_url": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "job_id",
+      "package",
+      "repository_url"
+    ],
+    "title": "CaptureInput",
+    "type": "object"
+  },
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "fingerprint": {
+        "type": "string"
+      }
+    },
+    "required": [
+      "fingerprint"
+    ],
+    "title": "CaptureOutput",
+    "type": "object"
+  }
+]

@@ -1,0 +1,138 @@
+[
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "operation_id": {
+        "format": "uuid",
+        "type": "string"
+      }
+    },
+    "required": [
+      "operation_id"
+    ],
+    "title": "GetInput",
+    "type": "object"
+  },
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "AuthorizationState": {
+        "description": "Lifecycle state of a [`PrivilegedOperation`] (§39).\n\n`Proposed` is the only state an agent may create. `Authorized` is set by the privileged service after collecting the required approvals. `Executing` is set when the external action begins; terminal states are `Succeeded`, `Failed`, `Cancelled`.",
+        "oneOf": [
+          {
+            "description": "Initial state: agent-created, awaiting required approvals.",
+            "enum": [
+              "proposed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Privileged service: required approvals collected and verified.",
+            "enum": [
+              "authorized"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Privileged service: external action is in flight.",
+            "enum": [
+              "executing"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Terminal: external action completed successfully.",
+            "enum": [
+              "succeeded"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Terminal: external action attempted and failed.",
+            "enum": [
+              "failed"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Terminal: operator or policy cancelled before authorization.",
+            "enum": [
+              "cancelled"
+            ],
+            "type": "string"
+          }
+        ]
+      },
+      "PrivilegedOperation": {
+        "description": "A privileged side-effect bound to a candidate (§41).\n\n`required_approvals` is the list of [`ApprovalId`]s that must be in `Approved` before [`AuthorizationState`] may advance past `Proposed`. Agents create operations here; only the privileged service may mutate the [`AuthorizationState`].\n\n- **Represents**: one privileged side-effect (BTS comment, Koji submission, Bodhi update, signing key use, canonical push) bound to a candidate, plus the approvals required to authorize it and the current authorization state. - **Mutation ownership**: agents and adapters create operations in `Proposed`; only the privileged service may mutate `AuthorizationState` past `Proposed` (§41). The set of `required_approvals` is fixed at construction; changing authorization requirements means creating a new operation. - **Invariants**: `required_approvals` must all be `Approved` before `AuthorizationState` may advance past `Proposed`. The state machine is `Proposed → Authorized → Executing → Succeeded | Failed | Cancelled`; transitions are owned by the privileged service and the executor (Phase 0B). - **Does NOT represent**: NOT an executed side-effect, NOT an audit log entry, NOT a retry token. The operation is a *plan to perform* a privileged action; performing it is the executor's job.",
+        "properties": {
+          "authorization": {
+            "$ref": "#/definitions/AuthorizationState"
+          },
+          "candidate": {
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/definitions/PrivilegedOperationKind"
+          },
+          "required_approvals": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "authorization",
+          "candidate",
+          "id",
+          "kind"
+        ],
+        "type": "object"
+      },
+      "PrivilegedOperationKind": {
+        "description": "Kind of privileged operation (§41).\n\n`Other(String)` is the explicit escape hatch for adapter- or org-specific actions the core vocabulary doesn't enumerate (e.g. `debian.dak.acceptance`, `fedora.packit.create-update`).",
+        "oneOf": [
+          {
+            "enum": [
+              "issue_tracker_mutation",
+              "canonical_repository_push",
+              "remote_build_submission",
+              "distribution_update_creation",
+              "signing"
+            ],
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "description": "Adapter- or org-specific kinds.",
+            "properties": {
+              "other": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "other"
+            ],
+            "type": "object"
+          }
+        ]
+      }
+    },
+    "properties": {
+      "operation": {
+        "$ref": "#/definitions/PrivilegedOperation"
+      }
+    },
+    "required": [
+      "operation"
+    ],
+    "title": "GetOutput",
+    "type": "object"
+  }
+]

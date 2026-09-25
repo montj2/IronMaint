@@ -13,6 +13,7 @@
 use std::process::ExitCode;
 
 mod architecture;
+mod mcp_schemas;
 mod migrations;
 mod schemas;
 
@@ -20,6 +21,7 @@ enum Command {
     VerifyArchitecture,
     VerifySchemas { write: bool },
     VerifyMigrations { write: bool },
+    VerifyMcpSchemas { write: bool },
     Help,
 }
 
@@ -34,6 +36,10 @@ fn parse_args() -> Command {
         Some("verify-migrations") => {
             let write = args.any(|a| a == "--write" || a == "-w");
             Command::VerifyMigrations { write }
+        }
+        Some("verify-mcp-schemas") => {
+            let write = args.any(|a| a == "--write" || a == "-w");
+            Command::VerifyMcpSchemas { write }
         }
         Some("--help") | Some("-h") | None => Command::Help,
         Some(other) => {
@@ -55,6 +61,8 @@ fn print_help() {
                                   Regenerate JSON schemas; --write accepts drift\n\
              verify-migrations [--write]\n                           \
                                   Assert forward-only migration contract\n\
+             verify-mcp-schemas [--write]\n                          \
+                                  Regenerate MCP tool schemas; --write accepts drift\n\
              -h, --help             Print this help.\n"
     );
 }
@@ -112,6 +120,38 @@ fn main() -> ExitCode {
             }
             Err(err) => {
                 eprintln!("verify-migrations failed: {err}");
+                ExitCode::FAILURE
+            }
+        },
+        Command::VerifyMcpSchemas { write } => match mcp_schemas::run(write) {
+            Ok(report) => {
+                println!(
+                    "MCP schema verify report\n\
+                     =========================\n\
+                     Mode: {}\n\
+                     Committed: {} type(s)\n\
+                     Generated: {} type(s)",
+                    if write {
+                        "write (accepting)"
+                    } else {
+                        "verify (diff)"
+                    },
+                    report.committed.len(),
+                    report.generated.len()
+                );
+                if report.is_clean() {
+                    println!("No drift.");
+                    ExitCode::SUCCESS
+                } else {
+                    eprintln!(
+                        "verify-mcp-schemas: {} mismatch(es); run with --write to accept.",
+                        report.mismatches.len()
+                    );
+                    ExitCode::FAILURE
+                }
+            }
+            Err(err) => {
+                eprintln!("verify-mcp-schemas failed: {err}");
                 ExitCode::FAILURE
             }
         },

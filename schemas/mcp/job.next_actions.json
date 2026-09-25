@@ -1,0 +1,186 @@
+[
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "job_id": {
+        "format": "uuid",
+        "type": "string"
+      }
+    },
+    "required": [
+      "job_id"
+    ],
+    "title": "NextActionsInput",
+    "type": "object"
+  },
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "ActionBlocker": {
+        "oneOf": [
+          {
+            "description": "Job is already in a terminal state; no further moves.",
+            "enum": [
+              "terminal"
+            ],
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A mandatory gate's evidence is still `NotEvaluated`.",
+            "properties": {
+              "gate_pending": {
+                "properties": {
+                  "tool_key": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "tool_key"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "gate_pending"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "A mandatory gate's evidence is `Fail` and no exception is on file.",
+            "properties": {
+              "gate_failed": {
+                "properties": {
+                  "tool_key": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "tool_key"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "gate_failed"
+            ],
+            "type": "object"
+          },
+          {
+            "additionalProperties": false,
+            "description": "An obligation with `RequiresReview` is unsatisfied.",
+            "properties": {
+              "obligation_pending": {
+                "properties": {
+                  "reference": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "reference"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "obligation_pending"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The active candidate has not been captured yet.",
+            "enum": [
+              "no_active_candidate"
+            ],
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "description": "The state machine refused the transition; details are in the message.",
+            "properties": {
+              "state_machine_blocked": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "state_machine_blocked"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "AllowedAction": {
+        "oneOf": [
+          {
+            "enum": [
+              "capture_candidate",
+              "apply_patch",
+              "mark_obligation_satisfied",
+              "request_approval",
+              "authorize_operation",
+              "publish"
+            ],
+            "type": "string"
+          },
+          {
+            "additionalProperties": false,
+            "properties": {
+              "run_check": {
+                "properties": {
+                  "tool_key": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "tool_key"
+                ],
+                "type": "object"
+              }
+            },
+            "required": [
+              "run_check"
+            ],
+            "type": "object"
+          }
+        ]
+      },
+      "JobNextActions": {
+        "properties": {
+          "allowed": {
+            "items": {
+              "$ref": "#/definitions/AllowedAction"
+            },
+            "type": "array"
+          },
+          "blockers": {
+            "items": {
+              "$ref": "#/definitions/ActionBlocker"
+            },
+            "type": "array"
+          },
+          "job_id": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "required": [
+          "allowed",
+          "blockers",
+          "job_id"
+        ],
+        "type": "object"
+      }
+    },
+    "properties": {
+      "actions": {
+        "$ref": "#/definitions/JobNextActions"
+      }
+    },
+    "required": [
+      "actions"
+    ],
+    "title": "NextActionsOutput",
+    "type": "object"
+  }
+]

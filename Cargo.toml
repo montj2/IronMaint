@@ -13,6 +13,7 @@ members = [
     "crates/ironmaint-workspace",
     "crates/ironmaint-executor",
     "crates/ironmaint-runtime",
+    "crates/ironmaint-mcp",
     "crates/ironmaint-testkit",
     "adapters/debian-stub",
     "adapters/fedora-stub",
