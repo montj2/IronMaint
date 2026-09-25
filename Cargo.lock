@@ -369,7 +369,14 @@ dependencies = [
 name = "ironmaint-policy"
 version = "0.1.0"
 dependencies = [
+ "insta",
  "ironmaint-core",
+ "pretty_assertions",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "time",
+ "url",
 ]
 
 [[package]]
