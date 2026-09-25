@@ -19,14 +19,14 @@ This repository uses Git Flow. Know the branch roles and stay inside them.
 
 | Branch | Purpose | Branches from | Merges to |
 |---|---|---|---|
-| `main` | Production-ready, tagged releases only | — | — |
-| `develop` | Integration branch, always deployable to staging | `main` | — |
+| `master` | Production-ready, tagged releases only | — | — |
+| `develop` | Integration branch, always deployable to staging | `master` | — |
 | `feature/<short-desc>` | New work, one feature per branch | `develop` | `develop` |
-| `release/<version>` | Release stabilization, no new features | `develop` | `main` + `develop` |
-| `hotfix/<short-desc>` | Emergency production fixes | `main` | `main` + `develop` |
+| `release/<version>` | Release stabilization, no new features | `develop` | `master` + `develop` |
+| `hotfix/<short-desc>` | Emergency production fixes | `master` | `master` + `develop` |
 
 Rules:
-- Never commit directly to `main` or `develop`.
+- Never commit directly to `master` or `develop`.
 - Branch names are lowercase, hyphenated, and descriptive: `feature/sbom-diff-cache`, not `feature/fix2`.
 - One feature or fix per branch. Do not stack unrelated work on a single branch.
 - Rebase feature branches on `develop` before opening a PR if `develop` has moved; do not merge `develop` into a stale feature branch as a substitute for rebasing unless the team's convention says otherwise.
@@ -51,16 +51,16 @@ distinct components sharing a name across ecosystems. Key on
 (name, version, purl) instead.
 ```
 
-- Squash fixup commits (`fix typo`, `address review comment`) before merge. Use `git rebase -i` or `git commit --fixup` + autosquash. History on `develop` and `main` should read as a clean sequence of intentional changes, not a session transcript.
-- Never rewrite history on `main`, `develop`, or any shared branch other people have pulled. Force-push is confined to your own feature branches, and only with `--force-with-lease`, never bare `--force`.
+- Squash fixup commits (`fix typo`, `address review comment`) before merge. Use `git rebase -i` or `git commit --fixup` + autosquash. History on `develop` and `master` should read as a clean sequence of intentional changes, not a session transcript.
+- Never rewrite history on `master`, `develop`, or any shared branch other people have pulled. Force-push is confined to your own feature branches, and only with `--force-with-lease`, never bare `--force`.
 
 ## Push Policy
 
 - Push atomic commits to your feature branch as you complete each logical unit of work. Don't hoard a giant unpushed local history.
 - Before pushing, confirm the branch builds and tests pass locally.
-- Push to `origin/<your-branch>`, not to `develop` or `main` directly.
-- Open a PR against `develop` (or `main` for hotfixes) once the branch is ready for review. Include a summary of the change and any testing performed.
-- Never force-push to `main`, `develop`, `release/*`, or any branch other contributors are actively working on.
+- Push to `origin/<your-branch>`, not to `develop` or `master` directly.
+- Open a PR against `develop` (or `master` for hotfixes) once the branch is ready for review. Include a summary of the change and any testing performed.
+- Never force-push to `master`, `develop`, `release/*`, or any branch other contributors are actively working on.
 
 ## Pre-Commit Checklist
 
