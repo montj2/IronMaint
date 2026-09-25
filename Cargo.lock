@@ -849,6 +849,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironmaintctl"
+version = "0.1.0"
+dependencies = [
+ "ironmaint-core",
+ "ironmaint-store",
+ "ironmaint-store-sqlite",
+ "tempfile",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"

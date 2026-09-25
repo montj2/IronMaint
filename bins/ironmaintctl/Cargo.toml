@@ -1,0 +1,23 @@
+[package]
+name = "ironmaintctl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Operator CLI for IronMaint. Phase 0B ships only `rebuild-projections`; the runtime's command surface lands in 0B.13 (commit 4)."
+
+[lints]
+workspace = true
+
+[dependencies]
+ironmaint-core = { path = "../../crates/ironmaint-core" }
+ironmaint-store = { path = "../../crates/ironmaint-store" }
+ironmaint-store-sqlite = { path = "../../crates/ironmaint-store-sqlite" }
+time = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

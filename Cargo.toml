@@ -12,6 +12,7 @@ members = [
     "crates/ironmaint-testkit",
     "adapters/debian-stub",
     "adapters/fedora-stub",
+    "bins/ironmaintctl",
 ]
 
 [workspace.package]
