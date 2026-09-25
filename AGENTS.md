@@ -54,12 +54,29 @@ distinct components sharing a name across ecosystems. Key on
 - Squash fixup commits (`fix typo`, `address review comment`) before merge. Use `git rebase -i` or `git commit --fixup` + autosquash. History on `develop` and `master` should read as a clean sequence of intentional changes, not a session transcript.
 - Never rewrite history on `master`, `develop`, or any shared branch other people have pulled. Force-push is confined to your own feature branches, and only with `--force-with-lease`, never bare `--force`.
 
+## GitHub Operations
+
+All GitHub platform interactions go through the [GitHub CLI](https://cli.github.com) (`gh`) — never the web UI or hand-rolled API calls. This keeps operations scriptable, reviewable, and consistent across contributors.
+
+| Task | Command |
+|---|---|
+| Open a PR against `develop` | `gh pr create --base develop` |
+| Open a hotfix PR against `master` | `gh pr create --base master` |
+| Land an approved PR (squash, drop the branch) | `gh pr merge --squash --delete-branch` |
+| Triage issues | `gh issue create`, `gh issue list` |
+| Cut a tagged release off `master` | `gh release create <tag>` |
+| Inspect CI runs | `gh run list`, `gh run watch <id>` |
+| Clone the repo (new contributors) | `gh repo clone montj2/IronMaint` |
+| Authenticate | `gh auth login` |
+
+If `gh` is missing or your token has expired, run `gh auth status` first and `gh auth login` if needed. See `gh --help` or https://cli.github.com for the full command set.
+
 ## Push Policy
 
 - Push atomic commits to your feature branch as you complete each logical unit of work. Don't hoard a giant unpushed local history.
 - Before pushing, confirm the branch builds and tests pass locally.
 - Push to `origin/<your-branch>`, not to `develop` or `master` directly.
-- Open a PR against `develop` (or `master` for hotfixes) once the branch is ready for review. Include a summary of the change and any testing performed.
+- Open a PR via `gh pr create --base develop` (or `--base master` for hotfixes) once the branch is ready for review. Include a summary of the change and any testing performed.
 - Never force-push to `master`, `develop`, `release/*`, or any branch other contributors are actively working on.
 
 ## Pre-Commit Checklist
