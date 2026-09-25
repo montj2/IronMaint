@@ -7,10 +7,18 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-description = "MaintenanceEvidence and MaintenanceGate evaluation. Distribution-neutral; no Debian/Fedora mechanics."
+description = "Evidence, artifact, gate, and invalidation model. Distribution-neutral; no Debian/Fedora mechanics."
 
 [dependencies]
 ironmaint-core = { path = "../ironmaint-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
 
 [lints]
 workspace = true
