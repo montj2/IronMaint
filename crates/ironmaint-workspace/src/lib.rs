@@ -24,7 +24,9 @@
     )
 )]
 
+pub mod apply;
 pub mod error;
+pub mod git;
 pub mod id;
 pub mod manager;
 pub mod path;
