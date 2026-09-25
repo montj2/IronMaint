@@ -11,7 +11,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use ironmaint_core::{CandidateFingerprint, EvidenceId, OperationId};
+use ironmaint_core::{CandidateFingerprint, EvidenceId, OperationId, SchemaVersion};
 
 use crate::artifact::ArtifactRef;
 use crate::scope::EvidenceScope;
@@ -170,6 +170,10 @@ pub struct Evidence {
     pub kind: EvidenceKind,
     pub status: EvidenceStatus,
     pub producer: EvidenceProducer,
+    /// Wire-format schema version (§60). Always serializes as
+    /// `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub artifacts: Vec<ArtifactRef>,
     pub scope: EvidenceScope,
@@ -200,6 +204,7 @@ impl Evidence {
             kind,
             status,
             producer,
+            schema_version: SchemaVersion::default(),
             artifacts: Vec::new(),
             scope,
             observed_at,

@@ -13,7 +13,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use ironmaint_core::{CandidateFingerprint, EvidenceId, ObligationId};
+use ironmaint_core::{CandidateFingerprint, EvidenceId, ObligationId, SchemaVersion};
 
 use crate::policy::PolicyReference;
 
@@ -113,6 +113,10 @@ pub struct Obligation {
     pub status: ObligationStatus,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub evidence: Vec<EvidenceId>,
+    /// Wire-format schema version (§60). Always serializes as
+    /// `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
 }
 
 const REQUIREMENT_MAX: usize = 1024;
@@ -143,6 +147,7 @@ impl Obligation {
             requirement: r,
             status: ObligationStatus::NotEvaluated,
             evidence: Vec::new(),
+            schema_version: SchemaVersion::default(),
         })
     }
 

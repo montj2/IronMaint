@@ -24,6 +24,7 @@ pub struct AdapterDescriptor {
 
 /// Set of [`AdapterCapability`] values the adapter claims (§44).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(transparent)]
 pub struct AdapterCapabilities {
     inner: BTreeSet<AdapterCapability>,
 }

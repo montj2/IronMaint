@@ -5,13 +5,14 @@
 //! materializes them.
 
 use ironmaint_evidence::EvidenceKind;
+use serde::{Deserialize, Serialize};
 
 use crate::contexts::CandidateContext;
 use crate::error::AdapterError;
 use crate::tool_key::ToolCapabilityKey;
 
 /// A single planned gate / check (§49).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlannedCheck {
     pub key: ToolCapabilityKey,
     pub evidence_kind: EvidenceKind,
@@ -30,7 +31,7 @@ impl PlannedCheck {
 }
 
 /// Bundle of [`PlannedCheck`]s for one build phase (§49).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct BuildPlan {
     pub checks: Vec<PlannedCheck>,
 }
@@ -49,7 +50,7 @@ impl BuildPlan {
 }
 
 /// Bundle of [`PlannedCheck`]s for one QA phase (§49).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct QaPlan {
     pub checks: Vec<PlannedCheck>,
 }

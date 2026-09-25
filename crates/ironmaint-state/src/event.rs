@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
-use ironmaint_core::{DomainEventId, JobProjection};
+use ironmaint_core::{DomainEventId, JobProjection, SchemaVersion};
 
 use crate::transition::Transition;
 
@@ -25,6 +25,10 @@ pub struct StateTransitioned {
     pub projection_after: JobProjection,
     #[serde(with = "time::serde::rfc3339")]
     pub occurred_at: OffsetDateTime,
+    /// Wire-format schema version (§60). Always serializes as
+    /// `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
 }
 
 impl StateTransitioned {
@@ -38,6 +42,7 @@ impl StateTransitioned {
             transition,
             projection_after,
             occurred_at,
+            schema_version: SchemaVersion::default(),
         }
     }
 }

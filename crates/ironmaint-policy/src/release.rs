@@ -18,7 +18,7 @@ use time::OffsetDateTime;
 
 use ironmaint_core::{
     CandidateFingerprint, DistributionRef, GateId, IssueActionId, JobId, ObligationId,
-    ReleaseCandidateId,
+    ReleaseCandidateId, SchemaVersion,
 };
 
 use crate::{PolicyBaseline, PrivilegedOperation};
@@ -44,6 +44,10 @@ pub struct ReleaseCandidate {
     pub issue_actions: Vec<IssueActionId>,
     #[serde(with = "time::serde::rfc3339")]
     pub created_at: OffsetDateTime,
+    /// Wire-format schema version (§60). Always serializes as
+    /// `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
 }
 
 impl ReleaseCandidate {
@@ -63,6 +67,7 @@ impl ReleaseCandidate {
             gate_ids: Vec::new(),
             issue_actions: Vec::new(),
             created_at,
+            schema_version: SchemaVersion::default(),
         }
     }
 
@@ -98,6 +103,10 @@ pub struct PublicationPlan {
     pub distribution: DistributionRef,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub operations: Vec<PrivilegedOperation>,
+    /// Wire-format schema version (§60). Always serializes as
+    /// `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.
+    #[serde(default)]
+    pub schema_version: SchemaVersion,
 }
 
 impl PublicationPlan {
@@ -107,6 +116,7 @@ impl PublicationPlan {
             release_candidate,
             distribution,
             operations: Vec::new(),
+            schema_version: SchemaVersion::default(),
         }
     }
 
