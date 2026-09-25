@@ -796,6 +796,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironmaint-fixture"
+version = "0.1.0"
+dependencies = [
+ "ironmaint-adapter-api",
+ "ironmaint-executor",
+ "serde_json",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "ironmaint-policy"
 version = "0.1.0"
 dependencies = [

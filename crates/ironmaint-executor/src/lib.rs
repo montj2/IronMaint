@@ -32,6 +32,7 @@
 pub mod env;
 pub mod error;
 pub mod executor;
+pub mod fixture;
 pub mod normalizer;
 pub mod operation;
 pub mod record;
@@ -42,6 +43,7 @@ pub mod retry;
 pub use env::ProcessEnvironment;
 pub use error::{ExecutorError, ExecutorErrorKind};
 pub use executor::{Executor, NullExecutor};
+pub use fixture::FixtureNormalizer;
 pub use normalizer::{NormalizationError, NormalizedResult, Observation, ResultNormalizer};
 pub use operation::{OperationLifecycle, RecoveryReport};
 pub use record::ExecutionRecord;

@@ -16,6 +16,7 @@ members = [
     "adapters/debian-stub",
     "adapters/fedora-stub",
     "bins/ironmaintctl",
+    "bins/ironmaint-fixture",
 ]
 
 [workspace.package]
