@@ -32,13 +32,17 @@
 pub mod env;
 pub mod error;
 pub mod executor;
+pub mod normalizer;
 pub mod record;
+pub mod registry;
 pub mod request;
 pub mod retry;
 
 pub use env::ProcessEnvironment;
 pub use error::{ExecutorError, ExecutorErrorKind};
 pub use executor::{Executor, NullExecutor};
+pub use normalizer::{NormalizationError, NormalizedResult, Observation, ResultNormalizer};
 pub use record::ExecutionRecord;
+pub use registry::{RegistryError, ToolDefinition, ToolRegistry};
 pub use request::ExecutionRequest;
 pub use retry::RetryClass;
