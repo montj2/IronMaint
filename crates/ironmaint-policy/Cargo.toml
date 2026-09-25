@@ -1,0 +1,25 @@
+[package]
+name = "ironmaint-policy"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Authority, PolicyReference, PolicyBaseline, Obligation, approval, and privileged operation model. Distribution-neutral policy vocabulary."
+
+[dependencies]
+ironmaint-core = { path = "../ironmaint-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+url = { workspace = true }
+
+[dev-dependencies]
+insta = { workspace = true }
+pretty_assertions = { workspace = true }
+
+[lints]
+workspace = true

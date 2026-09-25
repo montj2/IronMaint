@@ -1,0 +1,24 @@
+[package]
+name = "fedora-stub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "DistributionAdapter stub for Fedora. Phase 0A skeleton — no real RPM EVR comparison / Fedora guidelines."
+
+[dependencies]
+ironmaint-adapter-api = { path = "../../crates/ironmaint-adapter-api" }
+ironmaint-core = { path = "../../crates/ironmaint-core" }
+ironmaint-evidence = { path = "../../crates/ironmaint-evidence" }
+ironmaint-policy = { path = "../../crates/ironmaint-policy" }
+
+[dev-dependencies]
+ironmaint-testkit = { path = "../../crates/ironmaint-testkit" }
+time = { workspace = true, features = ["macros"] }
+url = { workspace = true }
+
+[lints]
+workspace = true
