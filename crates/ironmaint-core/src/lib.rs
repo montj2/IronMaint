@@ -1,23 +1,60 @@
 //! `ironmaint-core` — distribution-neutral value types.
 //!
-//! This crate is the **bottom of the Phase 0A dependency graph**. It must
-//! not depend on any other workspace crate (PHASE-0A.md §5, §45). It owns
-//! the type vocabulary that is genuinely distribution-neutral: identifiers
-//! (UUIDv7 newtypes), distribution identity, package identity, repository
-//! references, digests, and source candidates.
+//! This crate is the **bottom of the Phase 0A dependency graph**. It
+//! must not depend on any other workspace crate (PHASE-0A.md §5, §45).
+//! It owns the type vocabulary that is genuinely distribution-neutral:
+//! identifiers (UUIDv7 newtypes), distribution identity, package
+//! identity, repository references, digests, source candidates, jobs,
+//! events, and the [`CoreError`] type.
 //!
 //! ## What this crate explicitly does NOT contain
 //!
 //! Per PHASE-0A.md §45, this crate is "deliberately boring":
 //!
-//! - No Debian package fields, RPM tags, BTS semantics, or Bugzilla
-//!   semantics.
+//! - No per-distribution package formats, version-compare semantics, or
+//!   issue-tracker integrations.
 //! - No build commands, policy evaluation, or state-transition logic.
 //! - No network, MCP, or filesystem access.
 //!
-//! ## Phase 0A.1 status
+//! ## Phase 0A.2 status
 //!
-//! Skeleton only. Value types, identifiers, and the candidate fingerprint
-//! land in 0A.2.
+//! All value types are in place: identifiers, distribution, package,
+//! repository, digest, event, job, schema, error, candidate. The
+//! state machine itself lives in `ironmaint-state` (0A.3). The
+//! adapter API lives in `ironmaint-adapter-api` (0A.4).
 
 #![forbid(unsafe_code)]
+// Tests in this crate legitimately `.unwrap()` / `.expect()` on values whose
+// constructors we've already validated by construction. The workspace
+// `[lints.clippy]` table promotes `unwrap_used` and `expect_used` to `warn`,
+// which combined with `-D warnings` would deny them in tests too. Allow
+// them under `cfg(test)` only — production paths are still subject to the
+// lint.
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+
+pub mod digest;
+pub mod distribution;
+pub mod error;
+pub mod event;
+pub mod identity;
+pub mod job;
+pub mod package;
+pub mod repository;
+pub mod schema;
+
+// Ergonomic re-exports so callers can use `ironmaint_core::JobId` etc.
+// without naming the source module. (`SourceCandidate` and
+// `CandidateFingerprint` are added in 0A.2 commit 2.)
+pub use digest::{Digest, DigestAlgorithm, GitHashAlgorithm, GitObjectId};
+pub use distribution::{DistributionFamily, DistributionRef, DistributionRelease};
+pub use error::{CoreError, CoreErrorKind};
+pub use event::{EventSource, MaintenanceEvent, MaintenanceEventType};
+pub use identity::{
+    ActorId, ApprovalId, ArtifactId, AuthorityId, CandidateId, DomainEventId, EvidenceId, GateId,
+    IssueActionId, IssueProviderId, JobId, MaintenanceEventId, ObligationId, OperationId,
+    ReleaseCandidateId,
+};
+pub use job::{JobProjection, JobState, MaintenanceJob};
+pub use package::{PackageIdentity, PackageName, PackageRevision, PackageVersion};
+pub use repository::{RepoPath, RepositoryRef, VcsKind};
+pub use schema::SchemaVersion;
