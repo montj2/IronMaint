@@ -6,6 +6,7 @@
 //! `ironmaint-workspace` (commit 6 of Phase 0B).
 
 use ironmaint_core::JobId;
+use serde::{Deserialize, Serialize};
 
 use crate::error::StoreError;
 
@@ -16,7 +17,7 @@ use crate::error::StoreError;
 pub type WorkspaceHandle = String;
 
 /// Current state of a workspace managed by `ironmaint-workspace`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WorkspaceState {
     pub handle: WorkspaceHandle,
     pub job_id: JobId,

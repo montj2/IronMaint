@@ -6,12 +6,13 @@
 //! covers the metadata side.
 
 use ironmaint_core::{ArtifactId, JobId};
+use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::error::StoreError;
 
 /// Metadata about a single artifact.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArtifactRecord {
     pub id: ArtifactId,
     pub job_id: JobId,
