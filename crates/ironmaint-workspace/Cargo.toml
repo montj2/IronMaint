@@ -1,0 +1,27 @@
+[package]
+name = "ironmaint-workspace"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Per-job Git workspace manager with path confinement (PHASE-0B.md §18) and optimistic-concurrency WorkspaceRevision (PHASE-0B.md §32)."
+
+[lints]
+workspace = true
+
+[dependencies]
+ironmaint-core = { path = "../ironmaint-core" }
+ironmaint-store = { path = "../ironmaint-store" }
+schemars = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+time = { workspace = true }
+tokio = { workspace = true, features = ["fs", "process"] }
+uuid = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -863,6 +863,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironmaint-workspace"
+version = "0.1.0"
+dependencies = [
+ "ironmaint-core",
+ "ironmaint-store",
+ "schemars",
+ "serde",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "ironmaintctl"
 version = "0.1.0"
 dependencies = [
