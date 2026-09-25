@@ -25,6 +25,7 @@
 )]
 
 pub mod apply;
+pub mod capture;
 pub mod error;
 pub mod git;
 pub mod id;

@@ -20,6 +20,7 @@ serde = { workspace = true }
 thiserror = { workspace = true }
 time = { workspace = true }
 tokio = { workspace = true, features = ["fs", "process"] }
+url = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
