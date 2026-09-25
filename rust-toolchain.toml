@@ -1,0 +1,6 @@
+[toolchain]
+# Phase 0A floor: the first stable Rust with edition 2024 (1.85.0).
+# Newer toolchains are supported; CI and contributors will resolve to the
+# latest compatible stable automatically.
+channel = "1.85.0"
+components = ["rustfmt", "clippy", "rust-src"]

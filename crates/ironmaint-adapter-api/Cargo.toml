@@ -1,0 +1,27 @@
+[package]
+name = "ironmaint-adapter-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "DistributionAdapter trait and capability ports. The contract every distribution adapter implements."
+
+[dependencies]
+ironmaint-core = { path = "../ironmaint-core" }
+ironmaint-evidence = { path = "../ironmaint-evidence" }
+ironmaint-policy = { path = "../ironmaint-policy" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+debian-stub = { path = "../../adapters/debian-stub" }
+fedora-stub = { path = "../../adapters/fedora-stub" }
+time = { workspace = true, features = ["macros"] }
+url = { workspace = true }
+
+[lints]
+workspace = true
