@@ -1,0 +1,18 @@
+[package]
+name = "ironmaint-adapter-api"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "DistributionAdapter trait and capability ports. The contract every distribution adapter implements."
+
+[dependencies]
+ironmaint-core = { path = "../ironmaint-core" }
+ironmaint-evidence = { path = "../ironmaint-evidence" }
+ironmaint-policy = { path = "../ironmaint-policy" }
+
+[lints]
+workspace = true

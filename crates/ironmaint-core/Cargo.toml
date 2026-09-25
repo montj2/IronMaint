@@ -1,0 +1,13 @@
+[package]
+name = "ironmaint-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Distribution-neutral value types, identifiers, and source candidates. Bottom of the Phase 0A dependency graph."
+
+[lints]
+workspace = true

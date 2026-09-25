@@ -1,0 +1,11 @@
+# Thresholds tuned to match the IronClaw reference workspace
+# (doc/vendor/ironclaw/clippy.toml). Tighten further if our own architecture
+# tests demand it.
+#
+# Note: in newer clippy releases the top-level config keys are suffixed with
+# `-threshold` (e.g. `too-many-arguments-threshold`). The bare names below
+# are the canonical spellings and what clippy currently accepts.
+cognitive-complexity-threshold = 15
+too-many-lines-threshold = 100
+too-many-arguments-threshold = 7
+type-complexity-threshold = 250

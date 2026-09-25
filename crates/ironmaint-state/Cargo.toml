@@ -1,0 +1,18 @@
+[package]
+name = "ironmaint-state"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "JobState, JobProjection, TransitionEngine. The only crate allowed to decide workflow state transitions."
+
+[dependencies]
+ironmaint-core = { path = "../ironmaint-core" }
+ironmaint-evidence = { path = "../ironmaint-evidence" }
+ironmaint-policy = { path = "../ironmaint-policy" }
+
+[lints]
+workspace = true

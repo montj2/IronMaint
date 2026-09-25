@@ -1,0 +1,19 @@
+[package]
+name = "debian-stub"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "DistributionAdapter stub for Debian. Phase 0A skeleton — no real dpkg / Debian Policy mechanics."
+
+[dependencies]
+ironmaint-adapter-api = { path = "../../crates/ironmaint-adapter-api" }
+
+[dev-dependencies]
+ironmaint-testkit = { path = "../../crates/ironmaint-testkit" }
+
+[lints]
+workspace = true

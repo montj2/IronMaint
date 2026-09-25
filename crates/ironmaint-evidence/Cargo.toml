@@ -1,0 +1,16 @@
+[package]
+name = "ironmaint-evidence"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "MaintenanceEvidence and MaintenanceGate evaluation. Distribution-neutral; no Debian/Fedora mechanics."
+
+[dependencies]
+ironmaint-core = { path = "../ironmaint-core" }
+
+[lints]
+workspace = true
