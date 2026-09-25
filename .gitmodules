@@ -1,0 +1,4 @@
+[submodule "doc/vendor/ironclaw"]
+	path = doc/vendor/ironclaw
+	url = git@github.com:nearai/ironclaw.git
+	branch = main
