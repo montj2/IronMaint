@@ -76,10 +76,15 @@ pub enum Applicability {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ObligationStatus {
+    /// Initial state: no evaluation has run yet.
     NotEvaluated,
+    /// Evaluated and satisfied against the bound evidence.
     Pass,
+    /// Evaluated and violated; mandatory obligations block transitions.
     Fail,
+    /// Evaluated but a human must weigh in (ambiguity, risk).
     RequiresReview,
+    /// Exception approved; valid only when an explicit approval record exists (§35).
     ExceptionApproved,
 }
 
@@ -102,6 +107,26 @@ impl ObligationStatus {
 /// crate intentionally does NOT depend on `ironmaint-evidence` and
 /// never inspects evidence values. Linking evidence to obligations
 /// is a runtime concern.
+///
+/// - **Represents**: a single policy assertion sourced from a
+///   [`PolicyReference`] and bound to a candidate. Each obligation
+///   carries a strength ([`ObligationStrength`]) and an applicability
+///   window ([`Applicability`]) that together determine whether the
+///   obligation must hold for a given transition.
+/// - **Mutation ownership**: obligations are created by adapters via
+///   the `PolicyCapability::derive_obligation_plan` method (§34-35).
+///   IronMaint core does not synthesize obligation content; it only
+///   reads obligations to evaluate transitions.
+/// - **Invariants**: a `Mandatory` + `Applicable` obligation whose
+///   status is `Fail`, `RequiresReview`, or `NotEvaluated` blocks
+///   any transition requiring policy completion. An
+///   `ExceptionApproved` status is valid only when at least one
+///   matching `ApprovalDecision` exists in the approval registry
+///   (§35); the agent cannot self-grant exceptions.
+/// - **Does NOT represent**: NOT a workflow state, NOT a tool
+///   invocation, NOT an evidence record. An obligation is the
+///   *assertion that must hold*; the obligation status records how
+///   that assertion has been evaluated against evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct Obligation {
     pub id: ObligationId,

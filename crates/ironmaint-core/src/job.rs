@@ -37,24 +37,43 @@ use crate::package::PackageIdentity;
 )]
 #[serde(rename_all = "snake_case")]
 pub enum JobState {
+    /// Initial state: a maintenance event has been detected upstream.
     EventDetected,
+    /// Triaging the event: assigning it to a job and target package.
     Intake,
+    /// Reviewing upstream source state (tags, commits, security feeds).
     SourceReview,
+    /// Producing the initial source candidate and packaging inputs.
     CandidateAssembly,
+    /// Manual source-tweak window between initial build and integrity check.
     SourceRevision,
+    /// Verifying the source tree (checksums, signatures, provenance).
     SourceIntegrity,
+    /// Running distribution build (sbuild / Mock) gates.
     BuildValidation,
+    /// Running distribution package QA (Lintian / rpmlint) gates.
     PackageQaValidation,
+    /// Running functional-test gates (autopkgtest / tmt).
     FunctionalValidation,
+    /// Running upgrade-test gates on existing installs.
     UpgradeValidation,
+    /// Reviewing the assembled release metadata (changelog, notes).
     ReleaseReview,
+    /// Cross-cutting final validation before approval.
     FinalValidation,
+    /// All gates passed; awaiting explicit human approval.
     ReadyForApproval,
+    /// Human approval recorded; cleared to publish.
     Approved,
+    /// Publication side-effects proposed; awaiting authorization.
     PublicationPending,
+    /// Success terminal: artifacts are in the canonical repos.
     Published,
+    /// Exceptional: paused for human review (gate ambiguity, risk).
     HumanReviewRequired,
+    /// Exceptional: paused by infrastructure failure (worker / network).
     InfrastructureBlocked,
+    /// Terminal: cancelled by operator or policy.
     Cancelled,
 }
 

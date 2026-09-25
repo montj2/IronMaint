@@ -164,6 +164,22 @@ impl EvidenceKind {
 /// is a later optimization; for 0A.3 every evidence's `candidate`
 /// must match the gate it's intended to satisfy or
 /// [`crate::gate::GateResult`] will refuse it.
+///
+/// - **Represents**: a single observable fact about a candidate —
+///   an artifact produced, a tool output, a fetched URL — plus the
+///   producer (deterministic tool or trusted authority) that vouches
+///   for it.
+/// - **Mutation ownership**: only deterministic tools or trusted
+///   authorities create evidence records (§22); IronMaint does not
+///   synthesize evidence. Evidence is append-only; corrections are
+///   new evidence records that supersede prior ones.
+/// - **Invariants**: `candidate` is a binding — every evidence's
+///   fingerprint must match the gate's candidate, or the gate
+///   refuses it. Cross-candidate evidence reuse is explicitly
+///   forbidden in Phase 0A (§30).
+/// - **Does NOT represent**: NOT a workflow decision, NOT a build
+///   plan, NOT a tool invocation. Evidence is the *result* of
+///   observing something; it is not the act of doing it.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct Evidence {
     pub id: EvidenceId,

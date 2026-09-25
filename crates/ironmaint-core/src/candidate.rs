@@ -143,6 +143,18 @@ fn compute_fingerprint(
 /// Constructed only through [`SourceCandidate::new`] or
 /// [`SourceCandidate::new_revision`]. Fields are private; the only way
 /// to read a field is via an accessor.
+///
+/// - **Represents**: the input to package work — the source commit,
+///   the resulting tree object, the resolved package identity, and the
+///   candidate fingerprint that uniquely identifies this combination.
+/// - **Mutation ownership**: no setters; construction only via
+///   [`SourceCandidate::new`] / [`SourceCandidate::new_revision`].
+///   Any change creates a new candidate with a new fingerprint.
+/// - **Invariants**: the BLAKE3 fingerprint is deterministic over the
+///   constructor inputs; the `parent_candidate` chain is append-only
+///   (a parent is never re-pointed at a different child).
+/// - **Does NOT represent**: NOT a build plan, NOT a workflow state,
+///   NOT a package version, NOT a mutable record.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SourceCandidate {
     id: CandidateId,

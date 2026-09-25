@@ -81,18 +81,31 @@ impl FromIterator<AdapterCapability> for AdapterCapabilities {
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
 pub enum AdapterCapability {
+    /// Inspect upstream VCS source: clone, walk refs, enumerate commits.
     SourceInspection,
+    /// Validate and compare package versions for this distribution family.
     VersionComparison,
+    /// Discover upstream releases (monitor tags, security feeds).
     UpstreamDiscovery,
+    /// Derive [`PolicyPlan`]s and obligation templates.
     PolicyDerivation,
+    /// Produce [`BuildPlan`]s describing build gates.
     BuildPlanning,
+    /// Produce [`QaPlan`]s describing QA gates.
     PackageQaPlanning,
+    /// Plan functional-test runs.
     FunctionalTestPlanning,
+    /// Plan upgrade-test runs (existing-install path).
     UpgradeTestPlanning,
+    /// Plan reproducibility-test runs.
     ReproducibilityPlanning,
+    /// Read issue tracker state (BTS / Bugzilla).
     IssueRead,
+    /// Mutate issue tracker state (comment, tag, attach).
     IssueWrite,
+    /// Produce release-metadata plans (tags, notes, changelog entries).
     ReleaseMetadata,
+    /// Produce [`PublicationPlanTemplate`]s with privileged operations.
     PublicationPlanning,
 }
 

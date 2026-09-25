@@ -29,11 +29,17 @@ use ironmaint_core::{ApprovalId, CandidateFingerprint, OperationId};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorizationState {
+    /// Initial state: agent-created, awaiting required approvals.
     Proposed,
+    /// Privileged service: required approvals collected and verified.
     Authorized,
+    /// Privileged service: external action is in flight.
     Executing,
+    /// Terminal: external action completed successfully.
     Succeeded,
+    /// Terminal: external action attempted and failed.
     Failed,
+    /// Terminal: operator or policy cancelled before authorization.
     Cancelled,
 }
 
@@ -109,6 +115,26 @@ impl fmt::Display for PrivilegedOperationKind {
 /// in `Approved` before [`AuthorizationState`] may advance past
 /// `Proposed`. Agents create operations here; only the privileged
 /// service may mutate the [`AuthorizationState`].
+///
+/// - **Represents**: one privileged side-effect (BTS comment, Koji
+///   submission, Bodhi update, signing key use, canonical push)
+///   bound to a candidate, plus the approvals required to authorize
+///   it and the current authorization state.
+/// - **Mutation ownership**: agents and adapters create operations
+///   in `Proposed`; only the privileged service may mutate
+///   `AuthorizationState` past `Proposed` (§41). The set of
+///   `required_approvals` is fixed at construction; changing
+///   authorization requirements means creating a new operation.
+/// - **Invariants**: `required_approvals` must all be `Approved`
+///   before `AuthorizationState` may advance past `Proposed`. The
+///   state machine is
+///   `Proposed → Authorized → Executing → Succeeded | Failed | Cancelled`;
+///   transitions are owned by the privileged service and the
+///   executor (Phase 0B).
+/// - **Does NOT represent**: NOT an executed side-effect, NOT an
+///   audit log entry, NOT a retry token. The operation is a *plan
+///   to perform* a privileged action; performing it is the executor's
+///   job.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct PrivilegedOperation {
     pub id: OperationId,

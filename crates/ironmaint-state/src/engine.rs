@@ -185,6 +185,26 @@ pub const TRANSITION_RULES: &[TransitionRule] = &[
 ];
 
 /// The deterministic state machine.
+///
+/// - **Represents**: the only writer of workflow state. Given a
+///   [`TransitionContext`] (current state, evidence, obligations,
+///   approvals), the engine decides whether a transition is
+///   `Allowed` or `Blocked`, and — on `apply` — emits the
+///   [`crate::event::StateTransitioned`] event that downstream
+///   consumers persist.
+/// - **Mutation ownership**: this is the only writer of workflow
+///   state (§§18-21). Adapters MUST NOT mutate `JobState`,
+///   `GateStatus`, `ObligationStatus`, `ApprovalStatus`, or
+///   `PublicationStatus`; IronClaw (when integrated) MUST NOT
+///   directly set those either. The engine is the gate.
+/// - **Invariants**: `evaluate` is pure and synchronous — same
+///   inputs return the same decision. `apply` returns the emitted
+///   `StateTransitioned` event and does not perform I/O. The
+///   caller persists the new projection.
+/// - **Does NOT represent**: NOT a persistence layer, NOT a policy
+///   engine, NOT an adapter dispatcher. The engine decides *what*
+///   may transition and emits the event; it does not store the
+///   result, evaluate policy, or invoke adapters.
 #[derive(Debug, Clone, Copy)]
 pub struct TransitionEngine {
     rules: &'static [TransitionRule],

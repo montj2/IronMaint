@@ -99,6 +99,23 @@ impl ReleaseCandidate {
 /// each is `Authorized` / `Executing` / `Succeeded` belongs to the
 /// privileged service and the executor (Phase 0B). IronMaint model
 /// objects only describe what must happen.
+///
+/// - **Represents**: the pre-execution bundle of privileged
+///   operations required to publish a [`ReleaseCandidate`] against a
+///   specific [`DistributionRef`]. The bundle is the *what*; the
+///   executor (Phase 0B) is the *when* and *how*.
+/// - **Mutation ownership**: `AuthorizationState` transitions on
+///   contained [`PrivilegedOperation`]s are owned by the privileged
+///   service and the executor (Phase 0B); IronMaint model objects
+///   only describe what must happen (§43). The plan itself is
+///   append-only at the model layer.
+/// - **Invariants**: the bundle carries the side-effects required to
+///   publish; ordering and execution belong to the executor. Every
+///   contained `PrivilegedOperation` starts in `Proposed` and may
+///   not advance until its `required_approvals` are `Approved`.
+/// - **Does NOT represent**: NOT an execution schedule, NOT a queue,
+///   NOT a retry policy, NOT a privilege boundary. The plan is data;
+///   it does not initiate or schedule the side-effects it lists.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct PublicationPlan {
     pub release_candidate: ReleaseCandidateId,
