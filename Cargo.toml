@@ -9,6 +9,7 @@ members = [
     "crates/ironmaint-adapter-api",
     "crates/ironmaint-store",
     "crates/ironmaint-store-sqlite",
+    "crates/ironmaint-artifacts",
     "crates/ironmaint-testkit",
     "adapters/debian-stub",
     "adapters/fedora-stub",
