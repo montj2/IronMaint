@@ -53,14 +53,20 @@ impl FixedClock {
 
     /// Move the clock forward (or backward) to `now`.
     pub fn set(&self, now: OffsetDateTime) {
-        let mut guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard = now;
     }
 }
 
 impl Clock for FixedClock {
     fn now_utc(&self) -> OffsetDateTime {
-        let guard = self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = self
+            .inner
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         *guard
     }
 }

@@ -17,6 +17,7 @@ name = "ironmaintd"
 path = "src/main.rs"
 
 [dependencies]
+ironmaint-executor = { path = "../../crates/ironmaint-executor" }
 ironmaint-runtime = { path = "../../crates/ironmaint-runtime" }
 ironmaint-store-sqlite = { path = "../../crates/ironmaint-store-sqlite" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "signal"] }

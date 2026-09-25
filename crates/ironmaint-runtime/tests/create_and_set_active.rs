@@ -10,6 +10,7 @@ use ironmaint_core::{
     GitHashAlgorithm, GitObjectId, JobId, JobState, PackageIdentity, PackageName, PackageRevision,
     PackageVersion, RepositoryRef, SourceCandidate, VcsKind,
 };
+use ironmaint_executor::{NullExecutor, ToolRegistry};
 use ironmaint_runtime::{
     Clock, FixedClock, OrchestratorRef, RuntimeCommand, RuntimeErrorKind, RuntimeQuery,
     RuntimeService,
@@ -59,7 +60,12 @@ async fn seed_candidate(
 #[tokio::test]
 async fn create_job_persists_projection_at_version_zero() {
     let store = Arc::new(MockStore::new());
-    let svc = RuntimeService::new(store.clone(), fixed_clock());
+    let svc = RuntimeService::new(
+        store.clone(),
+        fixed_clock(),
+        Arc::new(NullExecutor),
+        Arc::new(ToolRegistry::new()),
+    );
 
     let result = svc
         .handle_command(RuntimeCommand::CreateJob {
@@ -80,7 +86,12 @@ async fn create_job_persists_projection_at_version_zero() {
 #[tokio::test]
 async fn create_job_then_query_projection_round_trips() {
     let store = Arc::new(MockStore::new());
-    let svc = RuntimeService::new(store.clone(), fixed_clock());
+    let svc = RuntimeService::new(
+        store.clone(),
+        fixed_clock(),
+        Arc::new(NullExecutor),
+        Arc::new(ToolRegistry::new()),
+    );
 
     let result = svc
         .handle_command(RuntimeCommand::CreateJob {
@@ -110,7 +121,12 @@ async fn create_job_then_query_projection_round_trips() {
 #[tokio::test]
 async fn set_active_candidate_attaches_fingerprint_to_projection() {
     let store = Arc::new(MockStore::new());
-    let svc = RuntimeService::new(store.clone(), fixed_clock());
+    let svc = RuntimeService::new(
+        store.clone(),
+        fixed_clock(),
+        Arc::new(NullExecutor),
+        Arc::new(ToolRegistry::new()),
+    );
 
     // 1. Create the job (version 0).
     let create = svc
@@ -147,7 +163,12 @@ async fn set_active_candidate_attaches_fingerprint_to_projection() {
 #[tokio::test]
 async fn set_active_candidate_rejects_unknown_fingerprint() {
     let store = Arc::new(MockStore::new());
-    let svc = RuntimeService::new(store.clone(), fixed_clock());
+    let svc = RuntimeService::new(
+        store.clone(),
+        fixed_clock(),
+        Arc::new(NullExecutor),
+        Arc::new(ToolRegistry::new()),
+    );
 
     let create = svc
         .handle_command(RuntimeCommand::CreateJob {
@@ -172,7 +193,12 @@ async fn set_active_candidate_rejects_unknown_fingerprint() {
 #[tokio::test]
 async fn set_active_candidate_rejects_after_build() {
     let store = Arc::new(MockStore::new());
-    let svc = RuntimeService::new(store.clone(), fixed_clock());
+    let svc = RuntimeService::new(
+        store.clone(),
+        fixed_clock(),
+        Arc::new(NullExecutor),
+        Arc::new(ToolRegistry::new()),
+    );
 
     let create = svc
         .handle_command(RuntimeCommand::CreateJob {
