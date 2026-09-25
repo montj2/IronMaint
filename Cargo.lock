@@ -822,6 +822,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironmaint-runtime"
+version = "0.1.0"
+dependencies = [
+ "ironmaint-adapter-api",
+ "ironmaint-core",
+ "ironmaint-evidence",
+ "ironmaint-executor",
+ "ironmaint-policy",
+ "ironmaint-state",
+ "ironmaint-store",
+ "ironmaint-workspace",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "time",
+ "tokio",
+]
+
+[[package]]
 name = "ironmaint-state"
 version = "0.1.0"
 dependencies = [
