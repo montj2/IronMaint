@@ -856,6 +856,8 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -919,6 +921,7 @@ dependencies = [
  "ironmaint-adapter-api",
  "ironmaint-core",
  "ironmaint-evidence",
+ "ironmaint-executor",
  "ironmaint-policy",
  "ironmaint-runtime",
  "ironmaint-state",
@@ -963,6 +966,7 @@ dependencies = [
 name = "ironmaintd"
 version = "0.1.0"
 dependencies = [
+ "ironmaint-executor",
  "ironmaint-runtime",
  "ironmaint-store-sqlite",
  "tempfile",

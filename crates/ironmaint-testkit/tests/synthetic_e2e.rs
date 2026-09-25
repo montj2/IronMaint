@@ -16,7 +16,8 @@ use ironmaint_core::{
     CandidateFingerprint, DistributionFamily, DistributionRef, DistributionRelease, JobId,
     JobProjection, JobState, MaintenanceEventId, MaintenanceJob, PackageIdentity, PackageName,
 };
-use ironmaint_runtime::{JobNextActions, RuntimeQuery, RuntimeService};
+use ironmaint_executor::{NullExecutor, ToolRegistry};
+use ironmaint_runtime::{JobNextActions, RuntimeQuery, RuntimeService, SystemClock};
 use ironmaint_store::ProjectionStore;
 use ironmaint_store::mock::MockStore;
 use time::OffsetDateTime;
@@ -45,7 +46,12 @@ async fn synthetic_debian_workflow_completes() {
     };
     store.put_projection(&projection, 0).await.expect("seed");
 
-    let svc = RuntimeService::new(store.clone());
+    let svc = RuntimeService::new(
+        store.clone(),
+        std::sync::Arc::new(SystemClock),
+        std::sync::Arc::new(NullExecutor),
+        std::sync::Arc::new(ToolRegistry::new()),
+    );
 
     // Query 1: ListNextActions in CandidateAssembly → should
     // allow CaptureCandidate.

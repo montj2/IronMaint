@@ -8,7 +8,9 @@ use ironmaint_core::{
     DistributionFamily, DistributionRef, DistributionRelease, JobId, JobProjection, JobState,
     MaintenanceEventId, MaintenanceJob, PackageIdentity, PackageName,
 };
-use ironmaint_runtime::{JobNextActions, RuntimeQuery, RuntimeService};
+
+use ironmaint_executor::{NullExecutor, ToolRegistry};
+use ironmaint_runtime::{JobNextActions, RuntimeQuery, RuntimeService, SystemClock};
 use ironmaint_store::ProjectionStore;
 use ironmaint_store::mock::MockStore;
 use time::OffsetDateTime;
@@ -41,7 +43,12 @@ async fn list_next_actions_for_event_detected_allows_capture() {
     let mut p = projection(JobState::EventDetected);
     p.job.id = job_id;
     store.put_projection(&p, 0).await.expect("put projection");
-    let svc = RuntimeService::new(store);
+    let svc = RuntimeService::new(
+        store,
+        Arc::new(SystemClock),
+        Arc::new(NullExecutor),
+        Arc::new(ToolRegistry::new()),
+    );
     let result = svc
         .handle_query(RuntimeQuery::ListNextActions { job_id })
         .await
@@ -62,7 +69,12 @@ async fn list_next_actions_for_published_is_empty() {
     let mut p = projection(JobState::Published);
     p.job.id = job_id;
     store.put_projection(&p, 0).await.expect("put projection");
-    let svc = RuntimeService::new(store);
+    let svc = RuntimeService::new(
+        store,
+        Arc::new(SystemClock),
+        Arc::new(NullExecutor),
+        Arc::new(ToolRegistry::new()),
+    );
     let result = svc
         .handle_query(RuntimeQuery::ListNextActions { job_id })
         .await
