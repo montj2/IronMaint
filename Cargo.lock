@@ -784,6 +784,8 @@ dependencies = [
  "ironmaint-adapter-api",
  "ironmaint-core",
  "ironmaint-evidence",
+ "ironmaint-policy",
+ "ironmaint-store",
  "schemars",
  "serde",
  "serde_json",
