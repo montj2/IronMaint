@@ -4,7 +4,7 @@
 //! - `verify-architecture`: walk the workspace and assert the Phase 0A
 //!   dependency graph (PHASE-0A.md §5, §71).
 //! - `verify-schemas`: regenerate JSON schemas and diff against committed
-//!   snapshots in `doc/schemas/` (PHASE-0A.md §61).
+//!   snapshots in `schemas/` (PHASE-0A.md §61).
 //!
 //! Phase 0A.1 ships the skeleton only; both subcommands are no-ops that
 //! confirm they wire up correctly. They become real in 0A.5 / 0A.6.
@@ -76,7 +76,15 @@ fn main() -> ExitCode {
         Command::VerifySchemas { write } => match schemas::run(write) {
             Ok(report) => {
                 println!("{report}");
-                ExitCode::SUCCESS
+                if report.is_clean() {
+                    ExitCode::SUCCESS
+                } else {
+                    eprintln!(
+                        "verify-schemas: {} mismatch(es); run with --write to accept.",
+                        report.mismatches.len()
+                    );
+                    ExitCode::FAILURE
+                }
             }
             Err(err) => {
                 eprintln!("verify-schemas failed: {err}");

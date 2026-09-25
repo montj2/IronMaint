@@ -6,6 +6,7 @@
 //! and resolve them mechanically; sophisticated propagation lands in
 //! 0A.5+.
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
@@ -17,7 +18,7 @@ use crate::evidence::EvidenceKind;
 ///
 /// Adapters may supply additional rules under [`Self::AdapterSpecific`].
 /// Core itself must not understand `debian/control` or `%files`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ChangeDomain {
     UpstreamSource,
@@ -35,7 +36,7 @@ pub enum ChangeDomain {
 
 /// A rule: "if the change domain is X, invalidate evidence of these
 /// kinds" (§31).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct InvalidationRule {
     pub change_domain: ChangeDomain,
     pub invalidates: Vec<EvidenceKind>,
@@ -61,12 +62,13 @@ impl InvalidationRule {
 ///
 /// The state machine and the conformance suite will eventually produce
 /// these; 0A.3 only stores them.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct InvalidationCause {
     pub domain: ChangeDomain,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub triggering_evidence: Option<EvidenceId>,
     #[serde(with = "time::serde::rfc3339")]
+    #[schemars(with = "ironmaint_core::json_schema_impls::Rfc3339DateTime")]
     pub detected_at: OffsetDateTime,
 }
 

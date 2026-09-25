@@ -10,6 +10,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::error::{AdapterError, AdapterErrorKind};
@@ -17,7 +18,7 @@ use crate::error::{AdapterError, AdapterErrorKind};
 const MAX_LEN: usize = 256;
 
 /// A validated tool capability key (§50).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct ToolCapabilityKey(String);
 

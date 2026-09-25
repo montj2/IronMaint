@@ -7,12 +7,14 @@
 
 use ironmaint_core::IssueProviderId;
 use ironmaint_policy::{IssueAction, IssueActionKind};
+use schemars::JsonSchema;
+use serde::{Deserialize, Serialize};
 
 use crate::error::AdapterError;
 
 /// Bundle of [`IssueAction`]s an adapter proposes for one candidate
 /// cycle. (§4.5 lists this in the adapter-api ownership surface.)
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize, JsonSchema)]
 pub struct IssuePlan {
     pub actions: Vec<IssueAction>,
 }

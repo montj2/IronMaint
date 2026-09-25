@@ -19,7 +19,12 @@ time = { workspace = true, features = ["macros"] }
 url = { workspace = true }
 
 [dev-dependencies]
+insta = { workspace = true }
 pretty_assertions = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+time = { workspace = true, features = ["macros"] }
+url = { workspace = true }
 
 [lints]
 workspace = true

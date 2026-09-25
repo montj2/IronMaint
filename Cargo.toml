@@ -35,14 +35,14 @@ dead_code = "warn"
 
 [workspace.lints.clippy]
 # Panic policy (PHASE-0A.md §85): no unwrap/expect/panic/todo/unimplemented
-# in implemented paths. Promoted to deny by 0A.6; warn during skeleton.
-unwrap_used = "warn"
-expect_used = "warn"
-panic = "warn"
-todo = "warn"
-unimplemented = "warn"
+# in implemented paths. Denied workspace-wide as of 0A.6.
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
 # Map/Result clarity.
-map_err_ignore = "warn"
+map_err_ignore = "deny"
 # Default to deny on the rest of the strong-by-default lints.
 all = { level = "warn", priority = -1 }
 
@@ -60,7 +60,7 @@ north_star = "Adding support for a new distribution requires implementing that d
 # reqwest, no async-trait. The first runtime deps land in Phase 0B / 1.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-schemars = "0.8"
+schemars = { version = "0.8", features = ["uuid1", "url"] }
 uuid = { version = "1", features = ["v7", "serde"] }
 time = { version = "0.3", features = ["serde", "macros", "formatting", "parsing"] }
 url = { version = "2", features = ["serde"] }

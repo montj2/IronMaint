@@ -25,7 +25,17 @@
 // Tests in this crate legitimately `.unwrap()` / `.expect()` on
 // values whose constructors we've already validated. Allow the
 // workspace lint exception for `cfg(test)` only.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::map_err_ignore,
+    )
+)]
 
 pub mod engine;
 pub mod event;

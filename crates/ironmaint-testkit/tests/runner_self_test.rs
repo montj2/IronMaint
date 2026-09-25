@@ -9,7 +9,14 @@
 //! These tests live in `tests/` only — they are never published as
 //! part of `ironmaint_testkit`.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::map_err_ignore
+)]
 
 use ironmaint_adapter_api::{
     AdapterCapabilities, AdapterCapability, AdapterDescriptor, BuildCapability, BuildPlan,

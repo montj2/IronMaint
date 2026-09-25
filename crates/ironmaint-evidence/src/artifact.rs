@@ -7,6 +7,7 @@
 //! adapter's concern (§25: "artifact bytes do not live inside the
 //! domain object").
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use ironmaint_core::{ArtifactId, Digest};
@@ -15,7 +16,7 @@ use ironmaint_core::{ArtifactId, Digest};
 ///
 /// "Other" is the escape hatch for kinds the core vocabulary doesn't
 /// enumerate; spec §25 deliberately leaves the variant set open.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ArtifactKind {
     SourceArchive,
@@ -49,7 +50,7 @@ impl std::fmt::Display for ArtifactKind {
 ///
 /// The artifact's bytes live outside this struct; only the metadata
 /// needed to find them and verify their integrity is stored.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct ArtifactRef {
     pub id: ArtifactId,
     pub kind: ArtifactKind,

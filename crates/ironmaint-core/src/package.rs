@@ -7,6 +7,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::distribution::DistributionRef;
@@ -20,7 +21,9 @@ const PACKAGE_LABEL_MAX: usize = 256;
 /// NUL), and ≤ 256 bytes. Distribution-specific naming rules
 /// (e.g. Debian's `[a-z0-9][a-z0-9.+\-]*`, RPM's richer character
 /// class) are NOT enforced here — that's an adapter concern (§9).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(transparent)]
 pub struct PackageName(String);
 
@@ -73,7 +76,9 @@ impl std::str::FromStr for PackageName {
 /// does NOT provide version ordering, epoch parsing, or any
 /// distribution-specific comparison logic. Adapters expose
 /// `compare_versions` in 0A.4.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
+)]
 #[serde(transparent)]
 pub struct PackageVersion(String);
 
@@ -124,7 +129,7 @@ impl std::str::FromStr for PackageVersion {
 /// This is the durable key. A `PackageRevision` adds a version, but
 /// the *identity* (what distribution and what package name) is fixed
 /// by `PackageIdentity`. Equality is structural.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct PackageIdentity {
     pub distribution: DistributionRef,
     pub source_name: PackageName,
@@ -142,7 +147,7 @@ impl PackageIdentity {
 
 /// A `(PackageIdentity, version)` pair — i.e., one version of one
 /// package in one distribution.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct PackageRevision {
     pub package: PackageIdentity,
     pub version: PackageVersion,

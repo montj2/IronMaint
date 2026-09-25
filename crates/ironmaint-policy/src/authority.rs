@@ -8,6 +8,7 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use ironmaint_core::{AuthorityId, DistributionFamily};
@@ -16,7 +17,7 @@ use ironmaint_core::{AuthorityId, DistributionFamily};
 ///
 /// Adapter-supplied ranking rules apply *over* these labels; the
 /// labels themselves are distribution-neutral.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthorityClassification {
     /// Binding distribution policy (e.g. Debian Policy, Fedora
@@ -67,7 +68,7 @@ impl AuthorityClassification {
 /// cross-distribution authorities (formal specs, generic best
 /// practices). The classifier is distribution-neutral; ranking is
 /// the adapter's job.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct Authority {
     pub id: AuthorityId,
     #[serde(default, skip_serializing_if = "Option::is_none")]

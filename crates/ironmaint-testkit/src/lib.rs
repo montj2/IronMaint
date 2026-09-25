@@ -17,8 +17,10 @@
 //! ## Phase 0A.5 deferred to 0A.6
 //!
 //! - `cargo xtask verify-conformance` subcommand
-//! - JSON schema generation (`schemars`) and `insta` snapshot tests
 //! - Public `fakes` API for downstream consumers
+//!
+//! Landed in 0A.6:
+//! - JSON schema generation (`schemars`) and `insta` snapshot tests
 
 #![forbid(unsafe_code)]
 

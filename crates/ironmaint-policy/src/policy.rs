@@ -6,6 +6,7 @@
 //! distribution X" — the snapshot an adapter consumes when it
 //! builds out [`Obligation`]s for a candidate (§36).
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use ironmaint_core::{AuthorityId, Digest, DistributionRef};
@@ -17,7 +18,7 @@ use ironmaint_core::{AuthorityId, Digest, DistributionRef};
 /// enough to assert "Debian Policy says so". The optional fields
 /// exist so a recorded reference can be reproduced without going
 /// back to the authority.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct PolicyReference {
     pub authority: AuthorityId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -107,7 +108,7 @@ impl PolicyReference {
 /// [`Obligation`]s; `distribution` identifies which distribution's
 /// baseline this is. The baseline is itself produced by the adapter,
 /// not by core — core just stores it.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct PolicyBaseline {
     pub distribution: DistributionRef,
     pub authorities: Vec<ironmaint_core::AuthorityId>,

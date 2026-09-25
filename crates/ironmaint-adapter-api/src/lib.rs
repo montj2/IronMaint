@@ -21,7 +21,17 @@
 
 #![forbid(unsafe_code)]
 // Tests legitimately `.unwrap()` / `.expect()` on validated inputs.
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::panic,
+        clippy::todo,
+        clippy::unimplemented,
+        clippy::map_err_ignore,
+    )
+)]
 
 pub mod build;
 pub mod contexts;
@@ -60,15 +70,62 @@ pub use versioning::VersioningCapability;
 /// Object safety requires `Send + Sync + 'static` and the absence of
 /// generic methods. The `tests/capability_object_safety.rs`
 /// integration test asserts every capability trait is dyn-compatible.
+/// Distribution-shaped adapter contract (§44).
+///
+/// `DistributionAdapter` is the only surface adapters expose to
+/// IronMaint core. Adapters describe what *must* happen; the core
+/// decides whether it does. Concretely:
+///
+/// - **Represents**: a deterministic, distribution-specific
+///   description of how to inspect, plan, and gate a package workflow
+///   for one distribution family.
+/// - **Mutation ownership**: adapters MUST NOT mutate `JobState`,
+///   `GateStatus`, `ObligationStatus`, `ApprovalStatus`, or
+///   `PublicationStatus`. The state machine is owned by
+///   `ironmaint_state::TransitionEngine`. Adapters also MUST NOT
+///   mutate `AuthorizationState`; only the privileged service may
+///   do that.
+/// - **Invariants**: the trait is `Send + Sync + 'static` so adapters
+///   are shareable across threads. The capability set returned by
+///   [`descriptor`](Self::descriptor) MUST match the set of
+///   `Some(&dyn ...)` returns from [`policy`](Self::policy),
+///   [`build`](Self::build), [`issues`](Self::issues), and
+///   [`release`](Self::release); the conformance suite in
+///   `ironmaint_testkit::conformance` enforces this.
+/// - **Does NOT represent**: this trait is NOT a workflow executor,
+///   NOT a state machine, NOT a privileged side-effect initiator,
+///   and NOT a remote-call surface. Adapters produce plans; they do
+///   not execute plans.
 pub trait DistributionAdapter: Send + Sync + 'static {
+    /// Self-description of this adapter (§44). Returned every call;
+    /// must be cheap and side-effect-free.
     fn descriptor(&self) -> AdapterDescriptor;
 
+    /// Versioning capability (§47). MUST be implemented by every
+    /// adapter; it owns version-string validation and comparison for
+    /// its distribution family.
     fn versioning(&self) -> &dyn VersioningCapability;
+    /// Package model capability (§48). MUST be implemented by every
+    /// adapter; it owns package-name validation and change-domain
+    /// classification.
     fn package_model(&self) -> &dyn PackageModelCapability;
 
+    /// Policy derivation capability (§46). Returned only when the
+    /// adapter advertises [`AdapterCapability::PolicyDerivation`]; if
+    /// advertised, this MUST return `Some`.
     fn policy(&self) -> Option<&dyn PolicyCapability>;
+    /// Build / QA planning capability (§49). Returned only when the
+    /// adapter advertises [`AdapterCapability::BuildPlanning`] or
+    /// [`AdapterCapability::PackageQaPlanning`].
     fn build(&self) -> Option<&dyn BuildCapability>;
+    /// Issue-tracker capability (§51). Returned only when the
+    /// adapter advertises [`AdapterCapability::IssueRead`] or
+    /// [`AdapterCapability::IssueWrite`].
     fn issues(&self) -> Option<&dyn IssueCapability>;
+    /// Release-metadata and publication capability (§§52-53).
+    /// Returned only when the adapter advertises
+    /// [`AdapterCapability::ReleaseMetadata`] or
+    /// [`AdapterCapability::PublicationPlanning`].
     fn release(&self) -> Option<&dyn ReleaseCapability>;
 }
 

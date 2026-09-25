@@ -26,7 +26,14 @@
 //! which the adapter itself provided. Conformance runs identically
 //! against any adapter.
 
-#![allow(clippy::unwrap_used, clippy::expect_used)]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::todo,
+    clippy::unimplemented,
+    clippy::map_err_ignore
+)]
 
 use std::cmp::Ordering;
 
