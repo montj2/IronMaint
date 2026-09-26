@@ -56,7 +56,12 @@ impl ArtifactStore {
     /// Open with explicit configuration. The configuration is
     /// read at open time and applied to all subsequent writes;
     /// it is not re-read during the store's lifetime.
+    ///
+    /// As a side effect this sweeps any orphan `.partial`
+    /// tempfiles left behind in `staging/` by a crashed prior
+    /// process (PHASE-0B.md §12, §90 crash-safety claim).
     pub fn open_with(root: ArtifactRoot, config: ArtifactStoreConfig) -> Self {
+        sweep_staging(&root);
         Self { root, config }
     }
 
@@ -155,4 +160,35 @@ async fn write_atomic(
     let produced = root.final_path_for(digest.as_str());
     debug_assert_eq!(&produced, final_path, "digest path mismatch");
     Ok(())
+}
+
+/// Remove orphan `.partial` tempfiles from `staging/`. Called
+/// from [`ArtifactStore::open_with`] to clean up after a
+/// crashed prior process (PHASE-0B.md §12, §90 crash-safety
+/// claim that `path.rs` has documented but never implemented).
+///
+/// Idempotent: a missing or already-clean staging dir is a
+/// no-op. Synchronous: this is a startup hook that runs at
+/// most once per process, so blocking the small initial scan
+/// is acceptable; switching to async would require restructuring
+/// `open_with`'s return type. Best-effort per file: an
+/// unreadable entry is skipped, not surfaced as an error,
+/// because the alternative (refuse to open) is worse than the
+/// problem we're solving.
+fn sweep_staging(root: &ArtifactRoot) {
+    let staging = root.staging();
+    let entries = match std::fs::read_dir(&staging) {
+        Ok(entries) => entries,
+        Err(_) => return, // dir doesn't exist = clean
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_partial = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".partial"));
+        if path.is_file() && is_partial {
+            let _ = std::fs::remove_file(&path);
+        }
+    }
 }

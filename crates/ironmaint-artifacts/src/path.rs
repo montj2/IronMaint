@@ -4,7 +4,9 @@
 //!
 //! ```text
 //! <root>/                (the state-dir subdirectory used for blobs)
-//! ├── staging/           (tempfile staging during writes; GC on next start)
+//! ├── staging/           (tempfile staging during writes; .partial
+//! │                        files are GC'd by ArtifactStore::open_with
+//! │                        on next start)
 //! └── aa/bb/<full-hex>   (the canonical content-addressed path)
 //! ```
 //!
