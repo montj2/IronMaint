@@ -34,4 +34,4 @@ pub mod store;
 pub mod writer;
 
 pub use path::ArtifactRoot;
-pub use store::{ArtifactStore, ArtifactStoreConfig, Record};
+pub use store::{ArtifactStore, ArtifactStoreConfig, Record, StoreError};
