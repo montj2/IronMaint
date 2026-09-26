@@ -7,8 +7,8 @@
 //! 1. Carry out the actual tool invocation (sandboxed subprocess
 //!    or in-process call against a registered capability).
 //! 2. Decide whether a failure is *retryable*, and if so, how
-//!    many times — three retry classes are fixed by §27:
-//!    `Idempotent`, `SideEffecting`, `Destructive`.
+//!    many times — three retry classes are fixed by §28:
+//!    `Safe`, `Conditional`, `Never`.
 //! 3. Materialise the result into a `NormalizedResult` that the
 //!    runtime can persist as evidence.
 //!
@@ -33,9 +33,11 @@ pub mod env;
 pub mod error;
 pub mod executor;
 pub mod fixture;
+pub mod limits;
 pub mod normalizer;
 pub mod operation;
 pub mod record;
+pub mod record_builder;
 pub mod registry;
 pub mod request;
 pub mod retry;
@@ -44,9 +46,11 @@ pub use env::ProcessEnvironment;
 pub use error::{ExecutorError, ExecutorErrorKind};
 pub use executor::{Executor, NullExecutor};
 pub use fixture::FixtureNormalizer;
+pub use limits::{ExecutionClass, ExecutionLimits, LimitsConfig};
 pub use normalizer::{NormalizationError, NormalizedResult, Observation, ResultNormalizer};
 pub use operation::{OperationLifecycle, RecoveryReport};
 pub use record::ExecutionRecord;
+pub use record_builder::ToolDefinitionRecord;
 pub use registry::{RegistryError, ToolDefinition, ToolRegistry};
 pub use request::ExecutionRequest;
 pub use retry::RetryClass;

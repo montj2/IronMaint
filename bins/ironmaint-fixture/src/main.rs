@@ -18,6 +18,9 @@
 //! - Any other tool: emits `exit_code=2` with stderr
 //!   `unknown synthetic tool`.
 //!
+//! Wire-format retry-class strings (PHASE-0B.md §28): `safe`,
+//! `conditional`, `never`. The fixture rejects unknown values.
+//!
 //! The fixture is what the §101 E2E scenario calls; the
 //! `ToolRegistry` registration and `ResultNormalizer` for it
 //! live in `ironmaint-executor` so they can be reused without
@@ -50,7 +53,7 @@ fn main() -> ExitCode {
         .get("retry_class")
         .and_then(serde_json::Value::as_str)
         .and_then(parse_retry_class)
-        .unwrap_or(RetryClass::Idempotent);
+        .unwrap_or(RetryClass::Safe);
 
     let now = OffsetDateTime::now_utc();
     let (exit_code, stdout, stderr) = match tool_key {
@@ -92,9 +95,9 @@ fn main() -> ExitCode {
 
 fn parse_retry_class(s: &str) -> Option<RetryClass> {
     match s {
-        "idempotent" => Some(RetryClass::Idempotent),
-        "side_effecting" => Some(RetryClass::SideEffecting),
-        "destructive" => Some(RetryClass::Destructive),
+        "safe" => Some(RetryClass::Safe),
+        "conditional" => Some(RetryClass::Conditional),
+        "never" => Some(RetryClass::Never),
         _ => None,
     }
 }

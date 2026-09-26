@@ -2,14 +2,19 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::ffi::OsString;
+use std::path::PathBuf;
+use std::sync::Arc;
+
 use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_evidence::EvidenceStatus;
 use ironmaint_executor::{
-    ExecutionRecord, NormalizationError, NormalizedResult, Observation, ResultNormalizer,
-    RetryClass, ToolDefinition, ToolRegistry,
+    ExecutionClass, ExecutionLimits, ExecutionRecord, NormalizationError, NormalizedResult,
+    Observation, ResultNormalizer, RetryClass, ToolDefinitionRecord, ToolRegistry,
 };
 use time::OffsetDateTime;
 
+#[derive(Clone)]
 struct ExitCodeNormalizer;
 impl ResultNormalizer for ExitCodeNormalizer {
     fn normalize(&self, record: &ExecutionRecord) -> Result<NormalizedResult, NormalizationError> {
@@ -36,51 +41,56 @@ impl ResultNormalizer for ExitCodeNormalizer {
     }
 }
 
-struct WithNormalizer;
-impl ToolDefinition for WithNormalizer {
-    fn key(&self) -> &ToolCapabilityKey {
-        static K: std::sync::OnceLock<ToolCapabilityKey> = std::sync::OnceLock::new();
-        K.get_or_init(|| ToolCapabilityKey::new("synthetic.build.with_norm").unwrap())
+fn make_record(key: &str, normalizer: bool) -> ToolDefinitionRecord {
+    let mut rec = ToolDefinitionRecord::new(
+        ToolCapabilityKey::new(key).unwrap(),
+        PathBuf::from("/usr/bin/ironmaint-fixture"),
+        vec![OsString::from("--validate")],
+        ExecutionClass::Check,
+        ExecutionLimits::default(),
+    );
+    if normalizer {
+        rec = rec.with_normalizer(Arc::new(ExitCodeNormalizer));
     }
-    fn normalizer(&self) -> Option<Box<dyn ResultNormalizer>> {
-        Some(Box::new(ExitCodeNormalizer))
-    }
-}
-
-struct NoNormalizer;
-impl ToolDefinition for NoNormalizer {
-    fn key(&self) -> &ToolCapabilityKey {
-        static K: std::sync::OnceLock<ToolCapabilityKey> = std::sync::OnceLock::new();
-        K.get_or_init(|| ToolCapabilityKey::new("synthetic.qa.no_norm").unwrap())
-    }
-    fn normalizer(&self) -> Option<Box<dyn ResultNormalizer>> {
-        None
-    }
+    rec
 }
 
 #[test]
 fn registry_insert_and_get() {
     let mut r = ToolRegistry::new();
-    r.register(Box::new(WithNormalizer)).unwrap();
-    r.register(Box::new(NoNormalizer)).unwrap();
+    r.register(Box::new(make_record("synthetic.build.with_norm", true)))
+        .unwrap();
+    r.register(Box::new(make_record("synthetic.qa.no_norm", false)))
+        .unwrap();
     assert_eq!(r.len(), 2);
     let key = ToolCapabilityKey::new("synthetic.build.with_norm").unwrap();
     let tool = r.get(&key).expect("registered");
     assert!(tool.normalizer().is_some());
+    assert_eq!(tool.key().as_str(), "synthetic.build.with_norm");
+    assert_eq!(
+        tool.executable(),
+        PathBuf::from("/usr/bin/ironmaint-fixture").as_path()
+    );
+    assert_eq!(tool.fixed_args(), &[OsString::from("--validate")]);
+    assert_eq!(tool.class(), ExecutionClass::Check);
 }
 
 #[test]
 fn registry_rejects_duplicate() {
     let mut r = ToolRegistry::new();
-    r.register(Box::new(WithNormalizer)).unwrap();
-    assert!(r.register(Box::new(WithNormalizer)).is_err());
+    r.register(Box::new(make_record("synthetic.build.with_norm", true)))
+        .unwrap();
+    assert!(
+        r.register(Box::new(make_record("synthetic.build.with_norm", true)))
+            .is_err()
+    );
 }
 
 fn rec(exit_code: i32, stdout: &str) -> ExecutionRecord {
     let now = OffsetDateTime::now_utc();
     ExecutionRecord {
         tool_key: ToolCapabilityKey::new("synthetic.build.with_norm").unwrap(),
-        retry_class: RetryClass::Idempotent,
+        retry_class: RetryClass::Safe,
         started_at: now,
         finished_at: now,
         exit_code,

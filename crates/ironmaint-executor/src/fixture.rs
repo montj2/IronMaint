@@ -46,7 +46,7 @@ mod tests {
         let now = OffsetDateTime::now_utc();
         ExecutionRecord {
             tool_key: ToolCapabilityKey::new("synthetic.build.validate").unwrap(),
-            retry_class: RetryClass::Idempotent,
+            retry_class: RetryClass::Safe,
             started_at: now,
             finished_at: now,
             exit_code,

@@ -9,7 +9,7 @@ async fn fixture_emits_record_for_synthetic_build_validate() {
     let bin = env!("CARGO_BIN_EXE_ironmaint-fixture");
     let request = serde_json::json!({
         "tool_key": "synthetic.build.validate",
-        "retry_class": "idempotent",
+        "retry_class": "safe",
         "input": {},
         "env_overrides": {}
     });
@@ -47,7 +47,7 @@ async fn fixture_emits_nonzero_for_fail_key() {
     let bin = env!("CARGO_BIN_EXE_ironmaint-fixture");
     let request = serde_json::json!({
         "tool_key": "synthetic.build.fail",
-        "retry_class": "idempotent",
+        "retry_class": "safe",
         "input": {},
         "env_overrides": {}
     });
