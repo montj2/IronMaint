@@ -1,7 +1,7 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "JobEvent",
-  "description": "All events a job can emit.\n\n0A.3 only produces [`JobEvent::Transitioned`]. Domain events (those produced by adapters and the policy engine outside the state machine) are referenced by id in 0A.3; richer union members land with the executor in 0B.",
+  "description": "All events a job can emit.",
   "oneOf": [
     {
       "type": "object",
@@ -24,6 +24,18 @@
         "domain": {
           "type": "string",
           "format": "uuid"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "tool_run_finished"
+      ],
+      "properties": {
+        "tool_run_finished": {
+          "$ref": "#/definitions/ToolRunFinished"
         }
       },
       "additionalProperties": false
@@ -289,6 +301,49 @@
         },
         "transition": {
           "$ref": "#/definitions/Transition"
+        }
+      }
+    },
+    "ToolOutcome": {
+      "description": "Wire-format outcome of a tool subprocess (PHASE-0B.md §32, §92).\n\nMirrors the §92 exit-checkpoint taxonomy. Note this is a *separate* enum from `ironmaint_executor::fixture::Outcome`: the executor crate is downstream of state (per `verify-architecture`) so state defines the canonical wire vocabulary here.",
+      "type": "string",
+      "enum": [
+        "pass",
+        "fail",
+        "timeout",
+        "interrupted",
+        "infrastructure_failed"
+      ]
+    },
+    "ToolRunFinished": {
+      "description": "Audit/observability event for \"a tool subprocess finished running\" (PHASE-0B.md §15 last bullet, §65 partial).\n\n`evidence_id` joins this event to the [`ironmaint_evidence::Evidence`] row persisted by the runtime. `truncated` carries the same `truncated = true` signal the executor observed (PHASE-0B.md §15).",
+      "type": "object",
+      "required": [
+        "evidence_id",
+        "occurred_at",
+        "outcome"
+      ],
+      "properties": {
+        "evidence_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "occurred_at": {
+          "$ref": "#/definitions/Rfc3339DateTime"
+        },
+        "outcome": {
+          "$ref": "#/definitions/ToolOutcome"
+        },
+        "schema_version": {
+          "description": "Wire-format schema version (§60). Always serializes as `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.",
+          "default": 1,
+          "type": "integer",
+          "format": "uint16",
+          "minimum": 0.0
+        },
+        "truncated": {
+          "default": false,
+          "type": "boolean"
         }
       }
     },
