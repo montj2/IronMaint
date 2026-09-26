@@ -782,8 +782,10 @@ name = "ironmaint-executor"
 version = "0.1.0"
 dependencies = [
  "ironmaint-adapter-api",
+ "ironmaint-artifacts",
  "ironmaint-core",
  "ironmaint-evidence",
+ "ironmaint-fixture",
  "ironmaint-policy",
  "ironmaint-store",
  "schemars",
@@ -793,6 +795,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "uuid",
 ]
 
 [[package]]

@@ -5,100 +5,102 @@
 
 #![allow(clippy::expect_used, clippy::unwrap_used)]
 //!
-//! Reads an `ExecutionRequest` JSON from stdin, writes an
-//! `ExecutionRecord` JSON to stdout. Behaviour is keyed off the
-//! request's `tool_key`:
+//! Behaviour is keyed off the first positional argv (the
+//! tool_key). The binary does not read stdin — `ProcessExecutor`
+//! invokes it as a normal subprocess (`executable() +
+//! fixed_args()`); the registered tool's `fixed_args` carries the
+//! key.
 //!
-//! - `synthetic.build.validate`: emits `exit_code=0`,
-//!   stdout `BUILD OK`, stderr ``.
-//! - `synthetic.qa.lintian`: emits `exit_code=0`, stdout
-//!   `lintian: 0 warnings`.
-//! - `synthetic.build.fail`: emits `exit_code=1` so the
-//!   runtime can exercise the failure path.
-//! - Any other tool: emits `exit_code=2` with stderr
-//!   `unknown synthetic tool`.
+//! Supported keys:
 //!
-//! Wire-format retry-class strings (PHASE-0B.md §28): `safe`,
-//! `conditional`, `never`. The fixture rejects unknown values.
+//! - `synthetic.build.validate`: exit 0, stdout `BUILD OK\n`.
+//! - `synthetic.qa.lintian`: exit 0, stdout `lintian: 0 warnings\n`.
+//! - `synthetic.build.fail`: exit 1, stdout `build failed: missing dep\n`.
+//! - `synthetic.qa.fail`: exit 1, stdout `lintian: E: syntax-error\n`.
+//! - `synthetic.build.truncate`: exit 0, stdout 256 KiB of `A`.
+//! - `synthetic.build.timeout`: sleeps 120s, then exit 0. The
+//!   executor's `tokio::time::timeout` is expected to kill it
+//!   well before then.
+//! - `synthetic.build.interrupt`: raises `SIGINT` (exit 130).
+//! - `synthetic.build.infra_fail`: exit 127 (POSIX "command not
+//!   found" — mapped by `outcome_from_record` to
+//!   `InfrastructureFailed`).
+//!
+//! Any other key: exit 2, stderr `unknown synthetic tool: <key>`.
 //!
 //! The fixture is what the §101 E2E scenario calls; the
 //! `ToolRegistry` registration and `ResultNormalizer` for it
 //! live in `ironmaint-executor` so they can be reused without
 //! depending on this binary.
 
-use std::io::{Read, Write};
+use std::io::Write;
 use std::process::ExitCode;
+use std::thread;
+use std::time::Duration;
 
-use ironmaint_executor::{ExecutionRecord, RetryClass};
-use time::OffsetDateTime;
+const TRUNCATE_BYTES: usize = 256 * 1024;
+const TIMEOUT_SLEEP: Duration = Duration::from_secs(120);
 
 fn main() -> ExitCode {
-    let mut buf = String::new();
-    if let Err(e) = std::io::stdin().read_to_string(&mut buf) {
-        eprintln!("fixture: read stdin: {e}");
-        return ExitCode::from(3);
-    }
-    let request: serde_json::Value = match serde_json::from_str(&buf) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("fixture: parse request: {e}");
-            return ExitCode::from(3);
+    let args: Vec<String> = std::env::args().collect();
+    let tool_key = args.get(1).map(String::as_str).unwrap_or("");
+
+    let stdout = std::io::stdout();
+    let mut stdout = stdout.lock();
+    let stderr = std::io::stderr();
+    let mut stderr = stderr.lock();
+
+    match tool_key {
+        "synthetic.build.validate" => {
+            let _ = writeln!(stdout, "BUILD OK");
+            ExitCode::from(0)
         }
-    };
-    let tool_key = request
-        .get("tool_key")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or("");
-    let retry_class = request
-        .get("retry_class")
-        .and_then(serde_json::Value::as_str)
-        .and_then(parse_retry_class)
-        .unwrap_or(RetryClass::Safe);
-
-    let now = OffsetDateTime::now_utc();
-    let (exit_code, stdout, stderr) = match tool_key {
-        "synthetic.build.validate" => (0, "BUILD OK\n".to_string(), String::new()),
-        "synthetic.qa.lintian" => (0, "lintian: 0 warnings\n".to_string(), String::new()),
-        "synthetic.build.fail" => (1, "build failed: missing dep\n".to_string(), String::new()),
-        "synthetic.qa.fail" => (1, "lintian: E: syntax-error\n".to_string(), String::new()),
-        other => (
-            2,
-            String::new(),
-            format!("unknown synthetic tool: {other}\n"),
-        ),
-    };
-
-    let record = ExecutionRecord {
-        tool_key: ironmaint_adapter_api::ToolCapabilityKey::new(tool_key).unwrap_or_else(|_| {
-            ironmaint_adapter_api::ToolCapabilityKey::new("synthetic.unknown").unwrap()
-        }),
-        retry_class,
-        started_at: now,
-        finished_at: now,
-        exit_code,
-        stdout,
-        stderr,
-        retries_exhausted: false,
-        truncated: false,
-    };
-
-    let line = serde_json::to_string(&record).expect("serialize record");
-    if let Err(e) = std::io::stdout().write_all(line.as_bytes()) {
-        eprintln!("fixture: write stdout: {e}");
-        return ExitCode::from(3);
-    }
-    if let Err(e) = std::io::stdout().write_all(b"\n") {
-        eprintln!("fixture: write newline: {e}");
-        return ExitCode::from(3);
-    }
-    ExitCode::from(exit_code as u8)
-}
-
-fn parse_retry_class(s: &str) -> Option<RetryClass> {
-    match s {
-        "safe" => Some(RetryClass::Safe),
-        "conditional" => Some(RetryClass::Conditional),
-        "never" => Some(RetryClass::Never),
-        _ => None,
+        "synthetic.qa.lintian" => {
+            let _ = writeln!(stdout, "lintian: 0 warnings");
+            ExitCode::from(0)
+        }
+        "synthetic.build.fail" => {
+            let _ = writeln!(stdout, "build failed: missing dep");
+            ExitCode::from(1)
+        }
+        "synthetic.qa.fail" => {
+            let _ = writeln!(stdout, "lintian: E: syntax-error");
+            ExitCode::from(1)
+        }
+        "synthetic.build.truncate" => {
+            let chunk = [b'A'; 4096];
+            let mut written = 0usize;
+            while written < TRUNCATE_BYTES {
+                let n = chunk.len().min(TRUNCATE_BYTES - written);
+                if stdout.write_all(&chunk[..n]).is_err() {
+                    break;
+                }
+                written += n;
+            }
+            let _ = stdout.flush();
+            ExitCode::from(0)
+        }
+        "synthetic.build.timeout" => {
+            // Sleep longer than any reasonable timeout. The
+            // executor kills us before we wake up; the OS still
+            // returns 0 if we ever do.
+            thread::sleep(TIMEOUT_SLEEP);
+            ExitCode::from(0)
+        }
+        "synthetic.build.interrupt" => {
+            // POSIX SIGINT exit convention: 128 + signal = 130.
+            // Whether we actually receive SIGINT or simply exit
+            // with that status, the executor sees exit_code 130
+            // and `outcome_from_record` maps it to
+            // `Outcome::Interrupted`. The workspace forbids
+            // `unsafe`, so we use `process::exit(130)` rather
+            // than `libc::raise(SIGINT)`.
+            ExitCode::from(130)
+        }
+        "synthetic.build.infra_fail" => ExitCode::from(127),
+        other => {
+            let _ = writeln!(stderr, "unknown synthetic tool: {other}");
+            ExitCode::from(2)
+        }
     }
 }

@@ -12,6 +12,9 @@ description = "Fixture binary used by §101 synthetic E2E tests. Reads an Execut
 [lints]
 workspace = true
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "ironmaint-fixture"
 path = "src/main.rs"
