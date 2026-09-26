@@ -17,9 +17,9 @@ As of the current `develop`, this repo contains only the design documents, `AGEN
 
 When working in this repo before that lands, expect `cargo` commands run in the repo root to fail with "no Cargo.toml". Use `git ls-files | grep -v '^doc/vendor/ironclaw/'` to see what is actually part of this repo.
 
-## Build / Lint / Test (when Phase 0A workspace lands)
+## Build / Lint / Test
 
-The Phase 0A spec defines the acceptance command set. Run them from the repo root once the workspace exists; treat failures as `cargo`-level blockers, not "no work to do".
+The Phase 0B spec (§97) defines the acceptance command set. Run them from the repo root; treat failures as `cargo`-level blockers, not "no work to do".
 
 ```sh
 cargo fmt --check
@@ -27,6 +27,9 @@ cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
 cargo xtask verify-architecture     # dependency-direction guardrail
 cargo xtask verify-schemas          # JSON schema snapshot check
+cargo xtask verify-migrations       # SQLite migration snapshot check
+cargo xtask verify-mcp-schemas      # MCP tool schema snapshot check
+cargo test --workspace --features integration   # integration suite (synthetic E2E)
 ```
 
 For a single test during development:
