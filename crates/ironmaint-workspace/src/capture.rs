@@ -3,12 +3,12 @@
 //! commit that anchors the capture in the workspace's history.
 //!
 //! §91 exit-checkpoint invariant: the captured candidate's
-//! fingerprint is computed over the *pre-commit* HEAD and
-//! HEAD^{tree}, NOT over the §22 maintenance commit itself. That
-//! keeps capture deterministic — two captures of the same tree
-//! produce different maintenance commits (different OIDs) but
-//! the same fingerprint, because the fingerprint inputs are
-//! unchanged.
+//! fingerprint is computed over the *pre-commit* underlying
+//! commit and the working tree's tree OID, NOT over the §22
+//! maintenance commit itself. That keeps capture deterministic —
+//! two captures of the same tree produce different maintenance
+//! commits (different OIDs) but the same fingerprint, because
+//! the fingerprint inputs are unchanged.
 //!
 //! `capture_candidate` does NOT touch `WorkspaceState.dirty` or
 //! the revision. The revision only reflects `apply_patch`-style
@@ -50,13 +50,17 @@ impl<S: WorkspaceMetadataStore + CandidateStore> WorkspaceManager<S> {
 
         // The fingerprint inputs are the underlying commit
         // (the most recent commit that is NOT a §22 maintenance
-        // commit) and the tree object. The maintenance commit
+        // commit) and the working tree's tree OID (via
+        // `git add -A && git write-tree`). The maintenance commit
         // itself has a different OID per capture and would break
         // capture determinism — two captures of the same tree
         // must produce one fingerprint (§91 exit checkpoint).
+        // The `current_tree` call captures dirty-tree state too:
+        // if `apply_patch` modified files between captures, the
+        // tree OID changes accordingly.
         let inv = GitInvocation::sanitised_env(&ws_root);
         let commit_sha = inv.most_recent_non_maintenance_commit().await?;
-        let tree_sha = inv.tree_sha().await?;
+        let tree_sha = inv.current_tree().await?;
 
         let commit_oid =
             GitObjectId::new(GitHashAlgorithm::Sha1, commit_sha.clone()).map_err(|e| {

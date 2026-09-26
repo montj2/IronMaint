@@ -304,6 +304,43 @@ impl GitInvocation {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
+    /// `git add -A && git write-tree` — stages all working-tree
+    /// changes (modifications, deletions, and additions) and writes
+    /// the resulting tree object, returning its OID. Used by
+    /// `capture_candidate` to derive the fingerprint's `tree_oid`
+    /// from the *current* working tree, not from HEAD^{tree} —
+    /// so that captures taken after an `apply_patch` (which leaves
+    /// the tree dirty) produce a fingerprint that reflects the
+    /// new content. The `add -A` side effect on the index is
+    /// acceptable: capture is the terminal step of the workflow
+    /// for this workspace state.
+    pub async fn current_tree(&self) -> Result<String, WorkspaceError> {
+        let add_out = self
+            .cmd()
+            .arg("add")
+            .arg("-A")
+            .output()
+            .await
+            .map_err(|e| WorkspaceError::new(WorkspaceErrorKind::Command(format!("wait: {e}"))))?;
+        if !add_out.status.success() {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git add -A failed: {}",
+                String::from_utf8_lossy(&add_out.stderr)
+            ))));
+        }
+        let out =
+            self.cmd().arg("write-tree").output().await.map_err(|e| {
+                WorkspaceError::new(WorkspaceErrorKind::Command(format!("wait: {e}")))
+            })?;
+        if !out.status.success() {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git write-tree failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ))));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
     /// `git commit --allow-empty -m <message>` with this
     /// invocation's sanitised environment as author/committer.
     /// The `--allow-empty` flag is required so a capture flow

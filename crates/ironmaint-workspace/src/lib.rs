@@ -24,6 +24,7 @@
     )
 )]
 
+pub mod activate;
 pub mod apply;
 pub mod capture;
 pub mod error;
