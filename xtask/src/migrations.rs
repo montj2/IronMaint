@@ -8,8 +8,13 @@
 //! 2. Sequence ids are monotonic and contiguous, starting at 1.
 //! 3. Every file applies cleanly to a fresh in-memory SQLite
 //!    database (no parse errors).
-//! 4. After all applies, `schema_migrations` records the same set
-//!    the directory carries.
+//! 4. The set of schema objects (tables + indexes) produced by
+//!    applying the migrations matches the committed snapshot in
+//!    `migrations/.expected-schema-objects.txt`. Any drift
+//!    (added object, removed object) fails the verifier.
+//!
+//! With `--write`, the snapshot is regenerated from the live apply
+//! so a deliberate change can be accepted.
 //!
 //! The verifier does **not** apply migrations to the production
 //! state directory — that is the daemon's responsibility.
@@ -22,14 +27,40 @@ use std::path::{Path, PathBuf};
 
 use ironmaint_store_sqlite::apply_to_pool;
 
+const SNAPSHOT_FILE: &str = ".expected-schema-objects.txt";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MigrationMismatchKind {
+    Added,
+    Removed,
+}
+
+impl std::fmt::Display for MigrationMismatchKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Added => write!(f, "added"),
+            Self::Removed => write!(f, "removed"),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct MigrationMismatch {
+    pub kind: MigrationMismatchKind,
+    pub object: String,
+}
+
 #[derive(Debug)]
 pub struct MigrationReport {
-    pub committed: Vec<String>,
-    pub applied: Vec<String>,
-    pub mismatches: Vec<String>,
+    pub committed_migrations: Vec<String>,
+    pub committed_objects: Vec<String>,
+    pub applied_objects: Vec<String>,
+    pub mismatches: Vec<MigrationMismatch>,
+    pub wrote: bool,
 }
 
 impl MigrationReport {
+    #[must_use]
     pub fn is_clean(&self) -> bool {
         self.mismatches.is_empty()
     }
@@ -39,58 +70,108 @@ impl std::fmt::Display for MigrationReport {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         writeln!(
             f,
-            "verify-migrations\n  committed migrations: {}\n  applied schema objects: {}\n  status:                 {}",
-            self.committed.len(),
-            self.applied.len(),
+            "verify-migrations\n  \
+             mode:                  {}\n  \
+             committed migrations:  {}\n  \
+             committed objects:     {}\n  \
+             applied objects:       {}\n  \
+             status:                {}",
+            if self.wrote { "write" } else { "verify (diff)" },
+            self.committed_migrations.len(),
+            self.committed_objects.len(),
+            self.applied_objects.len(),
             if self.is_clean() { "clean" } else { "DRIFT" }
         )?;
         for m in &self.mismatches {
-            writeln!(f, "  - {m}")?;
+            writeln!(f, "  - {} [{}]", m.object, m.kind)?;
         }
         Ok(())
     }
 }
 
-pub fn run(_write: bool) -> Result<MigrationReport, Box<dyn Error>> {
+pub fn run(write: bool) -> Result<MigrationReport, Box<dyn Error>> {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .map_err(|e| format!("tokio runtime: {e}"))?;
-    runtime.block_on(async { run_async().await })
+    runtime.block_on(async { run_async(write).await })
 }
 
-async fn run_async() -> Result<MigrationReport, Box<dyn Error>> {
+async fn run_async(write: bool) -> Result<MigrationReport, Box<dyn Error>> {
     let root = workspace_root()?;
     let migrations_dir = root.join("migrations");
-    let committed = scan_committed(&migrations_dir)?;
-    let mut mismatches = Vec::new();
-    if let Some(first) = committed.first() {
+    let snapshot_path = migrations_dir.join(SNAPSHOT_FILE);
+
+    let committed_migrations = scan_committed(&migrations_dir)?;
+
+    // 1. Filename pattern check.
+    if let Some(first) = committed_migrations.first() {
         if first != "0001_initial.sql" {
-            mismatches.push(format!(
-                "first migration must be 0001_initial.sql, got {first}"
-            ));
+            eprintln!("verify-migrations: first migration must be 0001_initial.sql, got {first}");
         }
     }
-    for (idx, name) in committed.iter().enumerate() {
+    for (idx, name) in committed_migrations.iter().enumerate() {
         let expected_id = idx + 1;
         let prefix = format!("{expected_id:04}_");
         if !name.starts_with(&prefix) {
-            mismatches.push(format!(
-                "expected {prefix}*, got {name} at position {expected_id}"
-            ));
+            eprintln!(
+                "verify-migrations: expected {prefix}*, got {name} at position {expected_id}"
+            );
         }
     }
 
-    let applied = if committed.is_empty() {
+    let applied_objects = if committed_migrations.is_empty() {
         Vec::new()
     } else {
-        apply_and_introspect(&migrations_dir, &committed).await?
+        apply_and_introspect(&migrations_dir).await?
     };
 
+    // 2. Read the committed snapshot.
+    let committed_objects = if snapshot_path.is_file() {
+        let content = fs::read_to_string(&snapshot_path)?;
+        content
+            .lines()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    // 3. Compute object-level diff.
+    let mut object_mismatches = Vec::new();
+    let committed_set: std::collections::BTreeSet<&str> =
+        committed_objects.iter().map(String::as_str).collect();
+    let applied_set: std::collections::BTreeSet<&str> =
+        applied_objects.iter().map(String::as_str).collect();
+    for name in applied_set.difference(&committed_set) {
+        object_mismatches.push(MigrationMismatch {
+            kind: MigrationMismatchKind::Added,
+            object: (*name).to_string(),
+        });
+    }
+    for name in committed_set.difference(&applied_set) {
+        object_mismatches.push(MigrationMismatch {
+            kind: MigrationMismatchKind::Removed,
+            object: (*name).to_string(),
+        });
+    }
+    object_mismatches.sort_by(|a, b| a.object.cmp(&b.object));
+
+    // 4. If --write, regenerate the snapshot from the live apply.
+    let mut wrote = false;
+    if write && !committed_migrations.is_empty() {
+        let body = applied_objects.join("\n") + "\n";
+        fs::write(&snapshot_path, body)?;
+        wrote = true;
+    }
+
     Ok(MigrationReport {
-        committed,
-        applied,
-        mismatches,
+        committed_migrations,
+        committed_objects,
+        applied_objects,
+        mismatches: object_mismatches,
+        wrote,
     })
 }
 
@@ -115,6 +196,10 @@ fn scan_committed(dir: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     for entry in fs::read_dir(dir)? {
         let entry = entry?;
         let path = entry.path();
+        // Skip the snapshot file itself.
+        if path.file_name().and_then(|s| s.to_str()) == Some(SNAPSHOT_FILE) {
+            continue;
+        }
         if path.extension().and_then(|s| s.to_str()) != Some("sql") {
             continue;
         }
@@ -129,10 +214,7 @@ fn scan_committed(dir: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     Ok(names)
 }
 
-async fn apply_and_introspect(
-    migrations_dir: &Path,
-    committed: &[String],
-) -> Result<Vec<String>, Box<dyn Error>> {
+async fn apply_and_introspect(migrations_dir: &Path) -> Result<Vec<String>, Box<dyn Error>> {
     use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
     let opts = SqliteConnectOptions::new()
         .filename(":memory:")
@@ -150,6 +232,5 @@ async fn apply_and_introspect(
     .fetch_all(&pool)
     .await
     .map_err(|e| format!("introspect: {e}"))?;
-    let _ = committed; // committed already validated
     Ok(rows.into_iter().map(|(n,)| n).collect())
 }
