@@ -455,6 +455,13 @@ impl WorkspaceMetadataStore for SqliteStore {
 }
 
 /// Apply any committed migrations that have not been applied yet.
+///
+/// PHASE-0B.md §30 requires the daemon to refuse to run against
+/// a downgraded / drifted migration history. The recorded
+/// `(version, filename)` rows in `schema_migrations` are treated
+/// as an append-only log: every recorded row must correspond to
+/// an `*.sql` file in `migrations_dir` whose numeric version
+/// prefix does not exceed the highest version on disk.
 async fn apply_migrations(
     pool: &SqlitePool,
     migrations_dir: Option<&Path>,
@@ -481,6 +488,55 @@ async fn apply_migrations(
             format!("create schema_migrations: {e}"),
         )
     })?;
+
+    // §30 refusal: detect downgraded or drifted migration history
+    // *before* applying anything. `files` already passed filename
+    // and ordering checks in `collect_migration_files`, so the
+    // disk-side `(version, filename)` set is the authoritative
+    // truth.
+    let disk_entries: std::collections::BTreeSet<(i64, String)> =
+        files.iter().map(|(v, f, _)| (*v, f.clone())).collect();
+    let disk_max = disk_entries.iter().next_back().map(|(v, _)| *v);
+
+    let recorded: Vec<(i64, String)> =
+        sqlx::query_as("SELECT version, filename FROM schema_migrations ORDER BY version")
+            .fetch_all(pool)
+            .await
+            .map_err(|e| {
+                StoreError::new(
+                    StoreErrorKind::Backend,
+                    format!("query schema_migrations: {e}"),
+                )
+            })?;
+
+    for (rv, rf) in &recorded {
+        // Refuse downgraded history: a recorded version higher
+        // than any file on disk means a migration was removed or
+        // the directory was rewound.
+        if let Some(disk_max_v) = disk_max {
+            if *rv > disk_max_v {
+                return Err(StoreError::new(
+                    StoreErrorKind::Corrupt,
+                    format!(
+                        "migration history downgraded: recorded v={rv} ({rf}) \
+                         has no matching file on disk (disk max v={disk_max_v})"
+                    ),
+                ));
+            }
+        }
+        // Refuse drift: every recorded `(version, filename)` pair
+        // must have a matching file on disk. A rename or deletion
+        // of a previously-applied file lands here.
+        if !disk_entries.contains(&(*rv, rf.clone())) {
+            return Err(StoreError::new(
+                StoreErrorKind::Corrupt,
+                format!(
+                    "migration file missing from disk: recorded v={rv} ({rf}) \
+                     not found in migrations dir"
+                ),
+            ));
+        }
+    }
 
     for (version, filename, sql) in files {
         let row: Option<(i64,)> =
