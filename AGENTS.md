@@ -96,3 +96,17 @@ Run before every commit, not just before the PR:
 - You're about to touch CI/CD pipeline definitions, release tagging, or anything that affects other contributors' workflow.
 
 Otherwise, proceed. You have the access and the mandate to do the work end to end: branch, implement, commit atomically, push, open the PR.
+
+## Phase Execution Discipline
+
+Phases are not atomic. A phase like `0B` decomposes into sub-phases — `0B.1`, `0B.2`, ..., `0B.16` — and every spec section in `doc/phases/PHASE-XX.md` is assigned to one of them. The sub-phase boundaries exist for plan cycles, not for narrative.
+
+Rules:
+
+- **Plan per sub-phase.** After the overall phase plan is approved, execution stops at each sub-phase boundary. Before starting sub-phase `N+1`, re-enter plan mode, gather context on the current tree, and write a focused plan for that sub-phase only. Multi-commit plans inside one sub-phase are fine; collapsing execution across two sub-phases into a single uninterrupted run is not.
+- **Definition of done is per sub-phase.** Before opening the PR for sub-phase `N`, every spec item the phase document assigns to `N` must be ticked. If a spec item cannot be ticked, the PR body must list the gap and ask the user whether to scope-cut, defer to a later sub-phase, or keep the sub-phase open until the gap closes. Closing the overall phase requires every sub-phase PR to be merged and every spec item to be ticked or explicitly deferred.
+- **Atomic commits still apply within a sub-phase.** Sub-phase discipline is orthogonal to commit discipline: a sub-phase plan may still produce many commits, each one logical change, each leaving the tree green.
+- **Stubs are not a closing mechanism.** A sub-phase whose spec items cannot be ticked is not "done with follow-up." It is open. Placeholders that compile (`todo!()`, `unimplemented!()`, empty handler bodies) are acceptable inside a feature branch but the sub-phase PR must not be opened against `develop` while any are present in the merged tree.
+- **Stretch goals are explicit.** If a sub-phase plan adds work not assigned by the spec (e.g., a periodic reconcile task, a second binary), the plan body and PR body must call it out as a stretch goal with a separate commit prefix (`feat(stretch):` or similar) so it is easy to identify and remove if scope pressure forces a cut.
+
+Why this exists: collapsing a multi-sub-phase phase into one execution pass produced stubbed handlers in Phase 0B's last commit that had to be repaired in a follow-up PR. Per-sub-phase plan cycles keep the agent honest about what is genuinely done versus what merely compiles.
