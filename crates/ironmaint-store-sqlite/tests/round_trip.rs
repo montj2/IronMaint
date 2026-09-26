@@ -353,3 +353,141 @@ async fn sqlite_and_mock_agree_on_shape() {
     assert_facade(&SqliteStore::open_in_memory().await.unwrap());
     assert_facade(&MockStore::new());
 }
+
+/// Schema FK policy regression-protection (audit gap I).
+///
+/// The trait surface has no `delete_*` methods, so this test
+/// exercises the schema directly via raw SQL on a fresh pool with
+/// migrations applied. Its purpose is to catch a future migration
+/// edit that silently drops or weakens the `ON DELETE` clauses
+/// declared in `migrations/0001_initial.sql`.
+#[tokio::test]
+async fn fk_on_delete_cascade_for_gate_results() {
+    use ironmaint_store_sqlite::apply_to_pool;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(SqliteConnectOptions::new().in_memory(true))
+        .await
+        .unwrap();
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .unwrap();
+    apply_to_pool(&pool, migrations_dir().as_path())
+        .await
+        .unwrap();
+
+    // Insert a projection (FK parent for everything else).
+    sqlx::query("INSERT INTO projections (job_id, package_json, initiating_event_id, state, version, created_at, updated_at) VALUES (?1, '{}', 'event-1', 'intake', 0, '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')")
+        .bind("11111111-1111-1111-1111-111111111111")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Insert a gate_definition.
+    sqlx::query("INSERT INTO gate_definitions (gate_id, job_id, candidate, schema_version, payload_json) VALUES (?1, ?2, 'candidate-1', '0B.3', '{}')")
+        .bind("22222222-2222-2222-2222-222222222222")
+        .bind("11111111-1111-1111-1111-111111111111")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Insert a gate_result referencing the gate_definition.
+    sqlx::query("INSERT INTO gate_results (gate_id, candidate, schema_version, payload_json) VALUES (?1, 'candidate-1', '0B.3', '{}')")
+        .bind("22222222-2222-2222-2222-222222222222")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let count_before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gate_results")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(count_before, 1);
+
+    // Delete the gate_definition. ON DELETE CASCADE should remove
+    // the gate_result row.
+    sqlx::query("DELETE FROM gate_definitions WHERE gate_id = ?1")
+        .bind("22222222-2222-2222-2222-222222222222")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    let count_after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM gate_results")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        count_after, 0,
+        "gate_results row must be removed by ON DELETE CASCADE on gate_definitions"
+    );
+}
+
+/// Schema FK policy regression-protection (audit gap I).
+///
+/// Most child tables reference `projections(job_id)` with
+/// `ON DELETE RESTRICT`. Deleting a projection that has an event
+/// must fail. If a future migration silently drops the RESTRICT
+/// clause (or replaces it with CASCADE), this test will catch it.
+#[tokio::test]
+async fn fk_on_delete_restrict_for_events() {
+    use ironmaint_store_sqlite::apply_to_pool;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+
+    let pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(SqliteConnectOptions::new().in_memory(true))
+        .await
+        .unwrap();
+    sqlx::query("PRAGMA foreign_keys = ON")
+        .execute(&pool)
+        .await
+        .unwrap();
+    apply_to_pool(&pool, migrations_dir().as_path())
+        .await
+        .unwrap();
+
+    sqlx::query("INSERT INTO projections (job_id, package_json, initiating_event_id, state, version, created_at, updated_at) VALUES (?1, '{}', 'event-1', 'intake', 0, '2026-01-01 00:00:00+00:00', '2026-01-01 00:00:00+00:00')")
+        .bind("33333333-3333-3333-3333-333333333333")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    sqlx::query("INSERT INTO events (event_id, job_id, sequence, schema_version, occurred_at, event_type, payload_json) VALUES (?1, ?2, 1, '0B.3', '2026-01-01 00:00:00+00:00', 'transitioned', '{}')")
+        .bind("44444444-4444-4444-4444-444444444444")
+        .bind("33333333-3333-3333-3333-333333333333")
+        .execute(&pool)
+        .await
+        .unwrap();
+
+    // Attempt to delete the projection. RESTRICT must reject this.
+    let res = sqlx::query("DELETE FROM projections WHERE job_id = ?1")
+        .bind("33333333-3333-3333-3333-333333333333")
+        .execute(&pool)
+        .await;
+    assert!(
+        res.is_err(),
+        "DELETE on projections with referencing event must fail under ON DELETE RESTRICT; got {res:?}"
+    );
+
+    // The projection must still exist.
+    let still_there: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM projections WHERE job_id = ?1")
+        .bind("33333333-3333-3333-3333-333333333333")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        still_there, 1,
+        "projection must survive a rejected DELETE attempt"
+    );
+}
+
+/// Path to the committed migrations directory. `apply_to_pool`
+/// needs a real directory (not a `tempdir()`) because the
+/// migrations are part of the source tree. Migrations live at
+/// the workspace root, two levels above this crate.
+fn migrations_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations")
+}
