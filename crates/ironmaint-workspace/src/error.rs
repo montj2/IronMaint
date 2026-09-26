@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum WorkspaceErrorKind {
     #[error("path escapes workspace root (attempted: {0:?})")]
     PathEscapes(PathBuf),

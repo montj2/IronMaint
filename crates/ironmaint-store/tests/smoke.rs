@@ -422,6 +422,10 @@ async fn workspace_metadata_round_trip_with_cas() {
         handle: handle.clone(),
         job_id: jid,
         revision: 0,
+        base_candidate: None,
+        dirty: false,
+        created_at: time::OffsetDateTime::now_utc(),
+        updated_at: time::OffsetDateTime::now_utc(),
     };
 
     // First write requires expected_revision=0.

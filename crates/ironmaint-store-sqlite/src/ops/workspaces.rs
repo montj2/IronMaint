@@ -61,7 +61,7 @@ pub(crate) async fn put(
     .bind(&state.handle)
     .bind(state.job_id.to_string())
     .bind(state.revision as i64)
-    .bind("1")
+    .bind("0B.3")
     .bind(payload)
     .execute(&mut *tx)
     .await
