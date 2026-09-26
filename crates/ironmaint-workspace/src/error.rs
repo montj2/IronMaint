@@ -9,6 +9,8 @@ pub enum WorkspaceErrorKind {
     PathEscapes(PathBuf),
     #[error("absolute paths are not allowed in workspace input")]
     AbsolutePath,
+    #[error("symlink traversal violates workspace policy: {0}")]
+    SymlinkPolicy(String),
     #[error("workspace not found: {0:?}")]
     NotFound(PathBuf),
     #[error("optimistic concurrency conflict (expected {expected}, found {found})")]

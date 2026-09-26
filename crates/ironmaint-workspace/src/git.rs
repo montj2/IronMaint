@@ -182,7 +182,16 @@ impl GitInvocation {
             if line.len() < 3 {
                 continue;
             }
-            let status_char = line.chars().next().unwrap_or(' ');
+            // `git status --porcelain` produces two status chars
+            // followed by a space and the path. The first char is
+            // the staged status, the second the unstaged status.
+            // A non-space char in either position is a real status
+            // we want to surface — ' M' (unstaged modification) is
+            // the most common case after `apply_patch`.
+            let chars: Vec<char> = line.chars().take(2).collect();
+            let staged = chars.first().copied().unwrap_or(' ');
+            let unstaged = chars.get(1).copied().unwrap_or(' ');
+            let status_char = if staged != ' ' { staged } else { unstaged };
             let path = line[3..].to_string();
             let st = match status_char {
                 '?' => GitFileStatus::Untracked,

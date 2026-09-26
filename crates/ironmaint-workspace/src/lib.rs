@@ -32,10 +32,12 @@ pub mod git;
 pub mod id;
 pub mod manager;
 pub mod path;
+pub mod read;
 pub mod revision;
 
 pub use error::{WorkspaceError, WorkspaceErrorKind};
 pub use id::WorkspaceId;
 pub use manager::WorkspaceManager;
 pub use path::{WorkspacePath, path_confinement_root};
+pub use read::{EntryKind, WorkspaceDirEntry};
 pub use revision::WorkspaceRevision;

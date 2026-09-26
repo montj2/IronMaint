@@ -76,12 +76,12 @@ pub async fn fresh_workspace(
     (mgr, id, job, store)
 }
 
-/// A small text patch that flips a single README line. The patch
-/// must be deterministic so two applications produce the same diff.
+/// A small text patch that flips a single README line. Uses
+/// the minimal unified-diff format (no `diff --git` or
+/// `index` lines with placeholder hashes) so `git apply` can
+/// match purely on context.
 pub fn readme_v2_patch() -> String {
-    "diff --git a/README.md b/README.md\n\
-     index 0000001..0000002 100644\n\
-     --- a/README.md\n\
+    "--- a/README.md\n\
      +++ b/README.md\n\
      @@ -1 +1 @@\n\
      -# hello\n\
@@ -91,9 +91,7 @@ pub fn readme_v2_patch() -> String {
 
 /// A second patch to drive C2 → C3.
 pub fn readme_v3_patch() -> String {
-    "diff --git a/README.md b/README.md\n\
-     index 0000002..0000003 100644\n\
-     --- a/README.md\n\
+    "--- a/README.md\n\
      +++ b/README.md\n\
      @@ -1 +1 @@\n\
      -# hello v2\n\

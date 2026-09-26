@@ -63,6 +63,71 @@ impl WorkspacePath {
     pub fn full(&self) -> PathBuf {
         self.root.join(&self.relative)
     }
+
+    /// Resolve `relative` against `root` with a strict no-follow
+    /// symlink policy (PHASE-0B.md §19). Each component of the
+    /// cleaned path is `symlink_metadata`-checked; any component
+    /// whose type is a symlink is rejected with
+    /// `WorkspaceErrorKind::SymlinkPolicy`. Used by write paths
+    /// (apply_patch, capture_candidate, future commit flows)
+    /// where the workspace must not be coaxed into writing
+    /// through a symlink that escapes the root.
+    pub fn resolve_strict_no_follow(root: &Path, relative: &Path) -> Result<Self, WorkspaceError> {
+        let cleaned = Self::resolve(root, relative)?;
+        // Walk each component under the root and check the
+        // type. A component that is a symlink is rejected.
+        let mut acc = PathBuf::new();
+        for comp in cleaned.relative.components() {
+            if let Component::Normal(seg) = comp {
+                acc.push(seg);
+                let candidate = cleaned.root.join(&acc);
+                let md = std::fs::symlink_metadata(&candidate)
+                    .map_err(|e| WorkspaceError::new(WorkspaceErrorKind::Io(e)))?;
+                if md.file_type().is_symlink() {
+                    return Err(WorkspaceError::new(WorkspaceErrorKind::SymlinkPolicy(
+                        format!("component `{}` is a symlink", acc.display()),
+                    )));
+                }
+            }
+        }
+        Ok(cleaned)
+    }
+
+    /// Resolve `relative` against `root` with a read-friendly
+    /// symlink policy (PHASE-0B.md §19). Symlinks may be followed,
+    /// but the resulting canonical path must still be inside the
+    /// root — otherwise the resolution escapes and the call is
+    /// rejected with `WorkspaceErrorKind::SymlinkPolicy`. Used by
+    /// read/list/status paths where following legitimate
+    /// in-workspace symlinks (e.g., `link → dir/`) is desired
+    /// but escape attempts are blocked.
+    pub fn resolve_for_read(root: &Path, relative: &Path) -> Result<Self, WorkspaceError> {
+        let cleaned = Self::resolve(root, relative)?;
+        let candidate = cleaned.full();
+        // canonicalize resolves every symlink in the path. If the
+        // result escapes `root`, the call is a symlink-escape
+        // attempt.
+        let canon = match std::fs::canonicalize(&candidate) {
+            Ok(p) => p,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                // Not-found is not a symlink policy violation; the
+                // read path will produce its own not-found error
+                // when it tries to open the file.
+                return Ok(cleaned);
+            }
+            Err(e) => return Err(WorkspaceError::new(WorkspaceErrorKind::Io(e))),
+        };
+        if !canon.starts_with(cleaned.root.canonicalize().unwrap_or(cleaned.root.clone())) {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::SymlinkPolicy(
+                format!(
+                    "canonical path `{}` escapes root `{}`",
+                    canon.display(),
+                    cleaned.root.display()
+                ),
+            )));
+        }
+        Ok(cleaned)
+    }
 }
 
 /// Construct a non-existing path used for unit tests that exercise
