@@ -3,11 +3,14 @@
 use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum WorkspaceErrorKind {
     #[error("path escapes workspace root (attempted: {0:?})")]
     PathEscapes(PathBuf),
     #[error("absolute paths are not allowed in workspace input")]
     AbsolutePath,
+    #[error("symlink traversal violates workspace policy: {0}")]
+    SymlinkPolicy(String),
     #[error("workspace not found: {0:?}")]
     NotFound(PathBuf),
     #[error("optimistic concurrency conflict (expected {expected}, found {found})")]
