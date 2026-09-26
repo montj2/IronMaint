@@ -15,6 +15,8 @@ pub enum WriteError {
     Io(#[from] std::io::Error),
     #[error("dest already exists at {0}")]
     AlreadyExists(PathBuf),
+    #[error("artifact exceeds limit of {limit} bytes (observed {observed})")]
+    TooLarge { limit: u64, observed: u64 },
 }
 
 static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -28,10 +30,18 @@ static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// never short-circuits. The temp filename is unique within the
 /// staging directory (a counter plus a pid suffix), so two
 /// concurrent writers cannot race to the same temp path.
+///
+/// `max_artifact_bytes` is the per-write byte cap enforced
+/// immediately before each chunk is hashed and written. `None`
+/// disables the check (tests only). When the cap would be
+/// exceeded, the staging temp is removed and `WriteError::TooLarge`
+/// is returned; the partial is never promoted to the final
+/// sharded path. See PHASE-0B.md §15.
 pub async fn write_from<R, B>(
     root: &ArtifactRoot,
     mut reader: R,
     abort: B,
+    max_artifact_bytes: Option<u64>,
 ) -> Result<Sha256Hex, WriteError>
 where
     R: tokio::io::AsyncRead + Unpin,
@@ -53,6 +63,7 @@ where
         .await?;
 
     let mut buf = vec![0u8; 64 * 1024];
+    let mut total: u64 = 0;
     loop {
         if abort.is_aborted() {
             // Best-effort cleanup of the partial file. The
@@ -65,6 +76,22 @@ where
             Ok(n) => n,
             Err(e) => return Err(WriteError::Io(e)),
         };
+        if let Some(limit) = max_artifact_bytes {
+            let next = total.checked_add(n as u64).ok_or(WriteError::TooLarge {
+                limit,
+                observed: u64::MAX,
+            })?;
+            if next > limit {
+                // Reject before hashing/writing so the staging
+                // temp never holds more than `limit` bytes.
+                let _ = fs::remove_file(&tmp_path).await;
+                return Err(WriteError::TooLarge {
+                    limit,
+                    observed: next,
+                });
+            }
+            total = next;
+        }
         hasher.update(&buf[..n]);
         file.write_all(&buf[..n]).await?;
     }
