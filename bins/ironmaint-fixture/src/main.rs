@@ -79,6 +79,7 @@ fn main() -> ExitCode {
         stdout,
         stderr,
         retries_exhausted: false,
+        truncated: false,
     };
 
     let line = serde_json::to_string(&record).expect("serialize record");

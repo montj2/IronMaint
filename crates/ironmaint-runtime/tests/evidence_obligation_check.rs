@@ -289,6 +289,7 @@ async fn run_check_invokes_executor_and_records_evidence() {
         stdout: "OK".to_string(),
         stderr: String::new(),
         retries_exhausted: false,
+        truncated: false,
     };
     let (svc, _registry) = static_service(store.clone(), record);
 

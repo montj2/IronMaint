@@ -18,15 +18,18 @@ use time::OffsetDateTime;
 struct ExitCodeNormalizer;
 impl ResultNormalizer for ExitCodeNormalizer {
     fn normalize(&self, record: &ExecutionRecord) -> Result<NormalizedResult, NormalizationError> {
+        let output_truncated = record.truncated;
         if record.exit_code == 0 {
             Ok(NormalizedResult {
                 evidence_status: EvidenceStatus::Pass,
+                output_truncated,
                 observations: vec![],
                 invalidations: vec![],
             })
         } else {
             Ok(NormalizedResult {
                 evidence_status: EvidenceStatus::Fail,
+                output_truncated,
                 observations: record
                     .stdout
                     .lines()
@@ -97,6 +100,7 @@ fn rec(exit_code: i32, stdout: &str) -> ExecutionRecord {
         stdout: stdout.to_string(),
         stderr: String::new(),
         retries_exhausted: false,
+        truncated: false,
     }
 }
 

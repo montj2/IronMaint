@@ -12,15 +12,18 @@ pub struct FixtureNormalizer;
 
 impl ResultNormalizer for FixtureNormalizer {
     fn normalize(&self, record: &ExecutionRecord) -> Result<NormalizedResult, NormalizationError> {
+        let output_truncated = record.truncated;
         if record.exit_code == 0 {
             Ok(NormalizedResult {
                 evidence_status: EvidenceStatus::Pass,
+                output_truncated,
                 observations: vec![],
                 invalidations: vec![],
             })
         } else {
             Ok(NormalizedResult {
                 evidence_status: EvidenceStatus::Fail,
+                output_truncated,
                 observations: record
                     .stdout
                     .lines()
@@ -53,6 +56,7 @@ mod tests {
             stdout: stdout.to_string(),
             stderr: String::new(),
             retries_exhausted: false,
+            truncated: false,
         }
     }
 

@@ -126,6 +126,7 @@ mod tests {
             ) -> Result<NormalizedResult, NormalizationError> {
                 Ok(NormalizedResult {
                     evidence_status: EvidenceStatus::Pass,
+                    output_truncated: _record.truncated,
                     observations: vec![],
                     invalidations: vec![],
                 })
