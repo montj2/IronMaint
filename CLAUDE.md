@@ -25,12 +25,14 @@ The Phase 0B spec (§97) defines the acceptance command set. Run them from the r
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo test --workspace
-cargo xtask verify-architecture     # dependency-direction guardrail
-cargo xtask verify-schemas          # JSON schema snapshot check
-cargo xtask verify-migrations       # SQLite migration snapshot check
-cargo xtask verify-mcp-schemas      # MCP tool schema snapshot check
+cargo run -p xtask -- verify-architecture     # dependency-direction guardrail
+cargo run -p xtask -- verify-schemas          # JSON schema snapshot check
+cargo run -p xtask -- verify-migrations       # SQLite migration snapshot check
+cargo run -p xtask -- verify-mcp-schemas      # MCP tool schema snapshot check
 cargo test --workspace --features integration   # integration suite (synthetic E2E)
 ```
+
+Note: the workspace defines its own `xtask` crate. Until `cargo install cargo-xtask` lands in CI, invoke each subcommand via `cargo run -p xtask -- verify-…` from the repo root. Running `cargo xtask verify-…` directly produces `help: view all installed commands with 'cargo --list'` and fails.
 
 For a single test during development:
 
