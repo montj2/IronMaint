@@ -245,6 +245,61 @@ async fn operation_store_round_trip() {
     assert_eq!(executing_list, vec![id]);
 }
 
+/// `list_executing_operations` must filter by `AuthorizationState`:
+/// only operations whose `authorization` is `Executing` are
+/// returned. Operations in `Proposed`, `Authorized`, and terminal
+/// states (`Succeeded`) must be excluded. The basic
+/// `operation_store_round_trip` test only proves an Executing op
+/// is in the list; this one proves the others are NOT.
+#[tokio::test]
+async fn list_executing_operations_filters_by_state() {
+    let s = SqliteStore::open_in_memory().await.unwrap();
+    let jid = job_id();
+    create_projection(&s, jid).await;
+
+    let proposed =
+        PrivilegedOperation::proposed(PrivilegedOperationKind::IssueTrackerMutation, fingerprint());
+    let proposed_id = s.put_operation(&proposed, jid).await.unwrap();
+
+    let authorized_op = {
+        let mut op = PrivilegedOperation::proposed(PrivilegedOperationKind::Signing, fingerprint());
+        op.authorization = AuthorizationState::Authorized;
+        op
+    };
+    let authorized_id = s.put_operation(&authorized_op, jid).await.unwrap();
+
+    let executing_op = {
+        let mut op = PrivilegedOperation::proposed(
+            PrivilegedOperationKind::CanonicalRepositoryPush,
+            fingerprint(),
+        );
+        op.authorization = AuthorizationState::Executing;
+        op
+    };
+    let executing_id = s.put_operation(&executing_op, jid).await.unwrap();
+
+    let succeeded_op = {
+        let mut op = PrivilegedOperation::proposed(
+            PrivilegedOperationKind::RemoteBuildSubmission,
+            fingerprint(),
+        );
+        op.authorization = AuthorizationState::Succeeded;
+        op
+    };
+    let succeeded_id = s.put_operation(&succeeded_op, jid).await.unwrap();
+
+    let executing_list = s.list_executing_operations().await.unwrap();
+    assert_eq!(
+        executing_list,
+        vec![executing_id],
+        "filter must include only Executing; got {executing_list:?} \
+         (proposed={proposed_id}, authorized={authorized_id}, succeeded={succeeded_id})"
+    );
+    assert!(!executing_list.contains(&proposed_id));
+    assert!(!executing_list.contains(&authorized_id));
+    assert!(!executing_list.contains(&succeeded_id));
+}
+
 #[tokio::test]
 async fn workspace_metadata_round_trip() {
     let s = SqliteStore::open_in_memory().await.unwrap();
