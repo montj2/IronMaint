@@ -27,12 +27,14 @@ use crate::workspace::{WorkspaceHandle, WorkspaceMetadataStore, WorkspaceState};
 /// In-memory store, suitable for tests and for the runtime's
 /// "no persistence" mode (which is not a 0B feature but the trait
 /// shape supports it).
-#[derive(Debug, Default)]
+use std::sync::Arc;
+
+#[derive(Debug, Default, Clone)]
 pub struct MockStore {
-    inner: RwLock<MockInner>,
+    inner: Arc<RwLock<MockInner>>,
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct MockInner {
     events: BTreeMap<(JobId, u64), EventEnvelope>,
     /// Track max sequence per job for [`EventStore::next_sequence`].

@@ -255,6 +255,10 @@ async fn workspace_metadata_round_trip() {
         handle: handle.clone(),
         job_id: jid,
         revision: 0,
+        base_candidate: None,
+        dirty: false,
+        created_at: time::OffsetDateTime::now_utc(),
+        updated_at: time::OffsetDateTime::now_utc(),
     };
     s.put_workspace_state(&st, 0).await.unwrap();
     let got = s.get_workspace_state(&handle).await.unwrap();
