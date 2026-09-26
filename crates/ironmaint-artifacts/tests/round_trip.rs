@@ -80,7 +80,7 @@ async fn abort_leaves_no_half_file() {
     abort.abort();
     let cursor = std::io::Cursor::new(vec![0u8; 1024 * 1024]);
     let reader = BufReader::new(cursor);
-    let res = ironmaint_artifacts::writer::write_from(store.root(), reader, &abort).await;
+    let res = ironmaint_artifacts::writer::write_from(store.root(), reader, &abort, None).await;
     assert!(res.is_err(), "aborted write should fail");
     // Walk the staging dir — there should be a leftover partial
     // and no fully-named artifact under the sharded tree.
