@@ -63,3 +63,41 @@ async fn fixture_unknown_key_exits_2() {
     let out = run_with_arg("definitely.not.a.known.tool").await;
     assert_eq!(out.status.code(), Some(2));
 }
+
+#[tokio::test]
+async fn fixture_interrupt_exits_130() {
+    // §92 INTERRUPT — the fixture exits with 130 (128 + SIGINT)
+    // without actually receiving a signal. The executor maps
+    // exit_code 130 to `Outcome::Interrupted`.
+    let out = run_with_arg("synthetic.build.interrupt").await;
+    assert_eq!(out.status.code(), Some(130));
+}
+
+#[tokio::test]
+async fn fixture_timeout_key_is_alive_when_polled() {
+    // §92 TIMEOUT — the fixture sleeps 120s; the executor's
+    // `tokio::time::timeout` is expected to kill it. We don't
+    // wait 120s in the round-trip suite; instead, spawn the
+    // process, sleep 250ms, confirm it is still running, and
+    // kill it. The kill exit_code is OS-dependent so we don't
+    // assert on it.
+    use std::process::Stdio;
+    use std::time::Duration;
+
+    let mut child = tokio::process::Command::new(fixture())
+        .arg("synthetic.build.timeout")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/var/empty")
+        .env("LC_ALL", "C.UTF-8")
+        .spawn()
+        .expect("spawn timeout fixture");
+    tokio::time::sleep(Duration::from_millis(250)).await;
+    assert!(
+        child.try_wait().expect("try_wait").is_none(),
+        "fixture_timeout must still be sleeping after 250ms (executes thread::sleep)"
+    );
+    let _ = child.kill().await;
+}
