@@ -1,15 +1,15 @@
-//! Retry class taxonomy (PHASE-0B.md §27).
+//! Retry class taxonomy (PHASE-0B.md §28).
 //!
 //! Three classes are fixed by the spec; nothing else is allowed.
 //!
-//! - `Idempotent`: running the tool again produces the same
+//! - `Safe`: running the tool again produces the same
 //!   observable effect. May retry indefinitely on infrastructure
 //!   failure; bounded by an operator-supplied budget.
-//! - `SideEffecting`: running the tool again may produce a *new*
+//! - `Conditional`: running the tool again may produce a *new*
 //!   observable side effect. May retry at most once, and only on
 //!   clearly transient infrastructure errors (worker timeout,
 //!   network blip). Otherwise the call is treated as `Failed`.
-//! - `Destructive`: the tool may have produced an irreversible
+//! - `Never`: the tool may have produced an irreversible
 //!   side effect on the world (BTS submit, upload, signing). Zero
 //!   retries. The agent must explicitly re-issue.
 
@@ -21,9 +21,9 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum RetryClass {
-    Idempotent,
-    SideEffecting,
-    Destructive,
+    Safe,
+    Conditional,
+    Never,
 }
 
 impl RetryClass {
@@ -33,25 +33,25 @@ impl RetryClass {
     #[must_use]
     pub const fn max_retries(self) -> Option<u32> {
         match self {
-            Self::Idempotent => None,
-            Self::SideEffecting => Some(1),
-            Self::Destructive => Some(0),
+            Self::Safe => None,
+            Self::Conditional => Some(1),
+            Self::Never => Some(0),
         }
     }
 
     /// Classify a tool capability key by namespace. Tools in the
-    /// `synthetic.*` namespace are always `Idempotent` (the fixture
+    /// `synthetic.*` namespace are always `Safe` (the fixture
     /// is a controlled in-process subprocess). Distribution tools
-    /// are `SideEffecting` by default. Signing/upload are
-    /// `Destructive`. This is a default; tools can override.
+    /// are `Conditional` by default. Signing/upload are
+    /// `Never`. This is a default; tools can override.
     #[must_use]
     pub fn default_for(key: &str) -> Self {
         let namespace = key.split('.').next().unwrap_or("");
         let last = key.rsplit('.').next().unwrap_or("");
         match (namespace, last) {
-            ("synthetic", _) => Self::Idempotent,
-            (_, "upload" | "sign" | "publish" | "submit") => Self::Destructive,
-            _ => Self::SideEffecting,
+            ("synthetic", _) => Self::Safe,
+            (_, "upload" | "sign" | "publish" | "submit") => Self::Never,
+            _ => Self::Conditional,
         }
     }
 }
@@ -59,9 +59,9 @@ impl RetryClass {
 impl fmt::Display for RetryClass {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
-            Self::Idempotent => "idempotent",
-            Self::SideEffecting => "side_effecting",
-            Self::Destructive => "destructive",
+            Self::Safe => "safe",
+            Self::Conditional => "conditional",
+            Self::Never => "never",
         };
         f.write_str(s)
     }
@@ -73,24 +73,31 @@ mod tests {
 
     #[test]
     fn max_retries_matches_spec() {
-        assert_eq!(RetryClass::Idempotent.max_retries(), None);
-        assert_eq!(RetryClass::SideEffecting.max_retries(), Some(1));
-        assert_eq!(RetryClass::Destructive.max_retries(), Some(0));
+        assert_eq!(RetryClass::Safe.max_retries(), None);
+        assert_eq!(RetryClass::Conditional.max_retries(), Some(1));
+        assert_eq!(RetryClass::Never.max_retries(), Some(0));
     }
 
     #[test]
     fn default_for_namespace() {
         assert_eq!(
             RetryClass::default_for("synthetic.build.validate"),
-            RetryClass::Idempotent
+            RetryClass::Safe
         );
         assert_eq!(
             RetryClass::default_for("debian.build.sbuild"),
-            RetryClass::SideEffecting
+            RetryClass::Conditional
         );
         assert_eq!(
             RetryClass::default_for("fedora.publish.upload"),
-            RetryClass::Destructive
+            RetryClass::Never
         );
+    }
+
+    #[test]
+    fn display_uses_spec_wire_strings() {
+        assert_eq!(RetryClass::Safe.to_string(), "safe");
+        assert_eq!(RetryClass::Conditional.to_string(), "conditional");
+        assert_eq!(RetryClass::Never.to_string(), "never");
     }
 }

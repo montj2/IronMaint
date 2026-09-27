@@ -21,7 +21,7 @@ use ironmaint_core::{
 };
 use ironmaint_evidence::{Evidence, EvidenceProducer, EvidenceScope};
 use ironmaint_executor::{ExecutionRequest, Executor, ToolRegistry};
-use ironmaint_state::JobEvent;
+use ironmaint_state::{JobEvent, ToolOutcome, ToolRunFinished};
 use ironmaint_store::IronMaintStore;
 use ironmaint_store::envelope::EventEnvelope;
 
@@ -547,16 +547,28 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             .await
             .map_err(|e| RuntimeError::new(RuntimeErrorKind::Executor, e.to_string()))?;
 
-        // Default exit-code-based classifier: 0 → Pass, anything else → Fail.
-        let outcome_status = if record.succeeded() {
-            ironmaint_evidence::EvidenceStatus::Pass
-        } else {
-            ironmaint_evidence::EvidenceStatus::Fail
+        // Translate executor-owned `Outcome` (PHASE-0B.md §32) into
+        // the canonical evidence-status vocabulary. The mapping
+        // collapses Timeout / Interrupted to Fail (they are tool-side
+        // outcomes, not infrastructure problems) and lifts
+        // InfrastructureFailed into the dedicated evidence status so
+        // gate evaluation can react accordingly.
+        let outcome = ironmaint_executor::outcome_from_record(&record);
+        let outcome_status = match outcome {
+            ironmaint_executor::Outcome::Pass => ironmaint_evidence::EvidenceStatus::Pass,
+            ironmaint_executor::Outcome::Fail => ironmaint_evidence::EvidenceStatus::Fail,
+            ironmaint_executor::Outcome::Timeout => ironmaint_evidence::EvidenceStatus::Fail,
+            ironmaint_executor::Outcome::Interrupted => ironmaint_evidence::EvidenceStatus::Fail,
+            ironmaint_executor::Outcome::InfrastructureFailed => {
+                ironmaint_evidence::EvidenceStatus::InfrastructureError
+            }
         };
 
         let now = self.clock.now_utc();
         let scope = EvidenceScope::Candidate(fingerprint.clone());
         let producer = EvidenceProducer::new(tool_key.clone());
+        // PHASE-0B.md §15: evidence rows must explicitly record
+        // `truncated = true` when the executor bounded stdout/stderr.
         let evidence = Evidence::new(
             fingerprint,
             ironmaint_evidence::EvidenceKind::Other("tool_output".to_string()),
@@ -564,7 +576,8 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             producer,
             scope,
             now,
-        );
+        )
+        .with_truncated(record.truncated);
 
         self.store
             .put_evidence(&evidence, job_id)
@@ -577,13 +590,14 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             .await
             .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
 
-        let domain_event_id = DomainEventId::new();
+        let outcome_state = outcome_to_state(outcome);
+        let tool_finished = ToolRunFinished::new(evidence.id, record.truncated, outcome_state, now);
         let envelope = EventEnvelope::new(
-            MaintenanceEventId::from_uuid(domain_event_id.as_uuid()),
+            MaintenanceEventId::new(),
             job_id,
             sequence,
             now,
-            JobEvent::Domain(domain_event_id),
+            JobEvent::ToolRunFinished(tool_finished),
         );
         self.store
             .append_event(&envelope)
@@ -595,6 +609,20 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             new_sequence: sequence,
             side_effects: vec![format!("ran tool {tool_key} on job:{job_id}")],
         })
+    }
+}
+
+/// Translate the executor-owned `Outcome` enum (PHASE-0B.md §32) to
+/// the canonical `ironmaint_state::ToolOutcome` variant used on the
+/// event wire (§15, §92). State owns the wire vocabulary; the
+/// executor's enum is internal and mirrors it 1:1.
+fn outcome_to_state(outcome: ironmaint_executor::Outcome) -> ToolOutcome {
+    match outcome {
+        ironmaint_executor::Outcome::Pass => ToolOutcome::Pass,
+        ironmaint_executor::Outcome::Fail => ToolOutcome::Fail,
+        ironmaint_executor::Outcome::Timeout => ToolOutcome::Timeout,
+        ironmaint_executor::Outcome::Interrupted => ToolOutcome::Interrupted,
+        ironmaint_executor::Outcome::InfrastructureFailed => ToolOutcome::InfrastructureFailed,
     }
 }
 

@@ -20,7 +20,7 @@ use ironmaint_policy::{
     Applicability, AuthorizationState, Obligation, ObligationStrength, PrivilegedOperation,
     PrivilegedOperationKind,
 };
-use ironmaint_state::{JobEvent, StateTransitioned, Transition};
+use ironmaint_state::{JobEvent, StateTransitioned, ToolOutcome, ToolRunFinished, Transition};
 use ironmaint_store::mock::MockStore;
 use ironmaint_store::workspace::WorkspaceState;
 use ironmaint_store::{
@@ -143,6 +143,53 @@ async fn event_store_round_trip() {
     let got = s.get_event(jid, 1).await.unwrap();
     assert_eq!(got, env);
     assert_eq!(s.next_sequence(jid).await.unwrap(), 2);
+}
+
+#[tokio::test]
+async fn tool_run_finished_event_persists_and_rebuilds() {
+    // PHASE-0B.md §15 last bullet, §65 partial: a `ToolRunFinished`
+    // event must survive append + get round-trip with the
+    // truncated / outcome fields intact, and rebuild_projection
+    // must skip it (no FSM advance).
+    let s = SqliteStore::open_in_memory().await.unwrap();
+    let jid = job_id();
+    create_projection(&s, jid).await;
+
+    let transitioned = transitioned_event_for(jid);
+    let transition_env = ironmaint_store::EventEnvelope::new(
+        MaintenanceEventId::new(),
+        jid,
+        1,
+        datetime!(2026-01-02 00:00:00 UTC),
+        JobEvent::Transitioned(transitioned.clone()),
+    );
+    s.append_event(&transition_env).await.unwrap();
+
+    let tool = ToolRunFinished::new(
+        ironmaint_core::EvidenceId::new(),
+        true,
+        ToolOutcome::Pass,
+        datetime!(2026-01-02 00:00:01 UTC),
+    );
+    let tool_env = ironmaint_store::EventEnvelope::new(
+        MaintenanceEventId::new(),
+        jid,
+        2,
+        datetime!(2026-01-02 00:00:01 UTC),
+        JobEvent::ToolRunFinished(tool.clone()),
+    );
+    s.append_event(&tool_env).await.unwrap();
+
+    // Round-trip via get_event.
+    let got = s.get_event(jid, 2).await.unwrap();
+    assert_eq!(got.event, JobEvent::ToolRunFinished(tool.clone()));
+    assert!(got.event == JobEvent::ToolRunFinished(tool.clone()));
+
+    // rebuild_projection must equal the seed transition's
+    // projection_after (tool run did not advance the FSM).
+    let rebuilt = s.rebuild_projection(jid).await.unwrap();
+    assert_eq!(rebuilt.state, transitioned.projection_after.state);
+    assert_eq!(rebuilt.version, transitioned.projection_after.version);
 }
 
 #[tokio::test]

@@ -44,7 +44,7 @@ pub mod transition;
 
 pub use apply::ProjectionApply;
 pub use engine::{SYNTHETIC_RULE_INDEX, TRANSITION_RULES, TransitionEngine};
-pub use event::{JobEvent, StateTransitioned};
+pub use event::{JobEvent, StateTransitioned, ToolOutcome, ToolRunFinished};
 pub use transition::{
     AdapterRequirement, ResumeRecord, Transition, TransitionApplyError, TransitionBlocker,
     TransitionContext, TransitionDecision, TransitionRequest, TransitionRequirements,
