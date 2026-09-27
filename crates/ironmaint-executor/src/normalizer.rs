@@ -23,6 +23,12 @@ pub struct Observation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NormalizedResult {
     pub evidence_status: EvidenceStatus,
+    /// True if the underlying `ExecutionRecord.truncated` was set;
+    /// propagated so downstream evidence consumers can detect
+    /// bounded captures without re-reading the raw record
+    /// (PHASE-0B.md §15).
+    #[serde(default)]
+    pub output_truncated: bool,
     #[serde(default)]
     pub observations: Vec<Observation>,
     #[serde(default)]

@@ -4,9 +4,9 @@
     "definitions": {
       "RetryClass": {
         "enum": [
-          "idempotent",
-          "side_effecting",
-          "destructive"
+          "safe",
+          "conditional",
+          "never"
         ],
         "type": "string"
       }

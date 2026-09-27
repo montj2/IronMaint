@@ -137,6 +137,11 @@ pub(crate) async fn rebuild(pool: &SqlitePool, job_id: JobId) -> Result<JobProje
                 "first event is a Domain reference; no projection to seed rebuild",
             ));
         }
+        ironmaint_state::JobEvent::ToolRunFinished(_) => {
+            return Err(StoreError::corrupt(
+                "first event is a ToolRunFinished; no projection to seed rebuild",
+            ));
+        }
     };
     let mut proj = initial;
     for env in events.iter().skip(1) {

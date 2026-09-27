@@ -4,6 +4,8 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
+use std::ffi::OsString;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use ironmaint_adapter_api::ToolCapabilityKey;
@@ -14,8 +16,8 @@ use ironmaint_core::{
 };
 use ironmaint_evidence::{EvidenceKind, EvidenceProducer, EvidenceStatus};
 use ironmaint_executor::{
-    ExecutionRecord, ExecutionRequest, Executor, ExecutorError, NullExecutor, RetryClass,
-    ToolDefinition, ToolRegistry,
+    ExecutionClass, ExecutionLimits, ExecutionRecord, ExecutionRequest, Executor, ExecutorError,
+    NullExecutor, RetryClass, ToolDefinitionRecord, ToolRegistry,
 };
 use ironmaint_policy::{Obligation, ObligationStatus, PolicyReference};
 use ironmaint_runtime::{
@@ -55,17 +57,14 @@ impl Executor for StaticExecutor {
 
 /// Tool registration that succeeds (exit_code 0) for "synthetic.test.pass"
 /// and fails (exit_code 1) for "synthetic.test.fail".
-struct StaticTool {
-    key: ToolCapabilityKey,
-}
-
-impl ToolDefinition for StaticTool {
-    fn key(&self) -> &ToolCapabilityKey {
-        &self.key
-    }
-    fn normalizer(&self) -> Option<Box<dyn ironmaint_executor::ResultNormalizer>> {
-        None
-    }
+fn static_tool(key_str: &str) -> ToolDefinitionRecord {
+    ToolDefinitionRecord::new(
+        ToolCapabilityKey::new(key_str).unwrap(),
+        PathBuf::from("/usr/bin/ironmaint-fixture"),
+        vec![OsString::from("--validate")],
+        ExecutionClass::Check,
+        ExecutionLimits::default(),
+    )
 }
 
 /// Build a service backed by `NullExecutor` + an empty registry.
@@ -85,9 +84,8 @@ fn static_service(
     record: ExecutionRecord,
 ) -> (RuntimeService<MockStore, StaticExecutor>, Arc<ToolRegistry>) {
     let mut registry = ToolRegistry::new();
-    let key = ToolCapabilityKey::new("synthetic.test.pass").unwrap();
     registry
-        .register(Box::new(StaticTool { key }))
+        .register(Box::new(static_tool("synthetic.test.pass")))
         .expect("register");
     let executor = StaticExecutor { record };
     let registry_arc = Arc::new(registry);
@@ -284,13 +282,14 @@ async fn run_check_invokes_executor_and_records_evidence() {
     let now = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
     let record = ExecutionRecord {
         tool_key: ToolCapabilityKey::new("synthetic.test.pass").unwrap(),
-        retry_class: RetryClass::Idempotent,
+        retry_class: RetryClass::Safe,
         started_at: now,
         finished_at: now + time::Duration::milliseconds(10),
         exit_code: 0,
         stdout: "OK".to_string(),
         stderr: String::new(),
         retries_exhausted: false,
+        truncated: false,
     };
     let (svc, _registry) = static_service(store.clone(), record);
 
@@ -307,7 +306,7 @@ async fn run_check_invokes_executor_and_records_evidence() {
         .handle_command(RuntimeCommand::RunCheck {
             job_id,
             tool_key: "synthetic.test.pass".to_string(),
-            retry_class: RetryClass::Idempotent,
+            retry_class: RetryClass::Safe,
         })
         .await
         .expect("run check");
@@ -338,7 +337,7 @@ async fn run_check_rejects_unknown_tool() {
         .handle_command(RuntimeCommand::RunCheck {
             job_id,
             tool_key: "unregistered.tool".to_string(),
-            retry_class: RetryClass::Idempotent,
+            retry_class: RetryClass::Safe,
         })
         .await
         .expect_err("must reject");

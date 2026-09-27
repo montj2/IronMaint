@@ -200,6 +200,12 @@ pub struct Evidence {
     /// Free-form human notes. Capped at 4 KiB; not interpreted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes: Option<String>,
+    /// `true` iff the producer captured bounded output (PHASE-0B.md
+    /// §15: "evidence must explicitly record `truncated = true`").
+    /// Default `false` so wire-format payloads from before 0B.4 parse
+    /// unchanged.
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 impl Evidence {
@@ -227,6 +233,7 @@ impl Evidence {
             scope,
             observed_at,
             notes: None,
+            truncated: false,
         }
     }
 
@@ -248,6 +255,13 @@ impl Evidence {
         }
         self.notes = Some(s);
         Ok(self)
+    }
+
+    /// Builder-style setter for [`Self::truncated`].
+    #[must_use]
+    pub fn with_truncated(mut self, truncated: bool) -> Self {
+        self.truncated = truncated;
+        self
     }
 }
 
@@ -322,6 +336,72 @@ mod tests {
         );
         assert!(e.artifacts.is_empty());
         assert!(e.notes.is_none());
+        assert!(!e.truncated);
+    }
+
+    #[test]
+    fn evidence_default_truncated_is_false() {
+        let e = Evidence::new(
+            fp(),
+            EvidenceKind::Build,
+            EvidenceStatus::Pass,
+            EvidenceProducer::new("sbuild"),
+            EvidenceScope::Job(JobId::new()),
+            datetime!(2026-01-01 00:00:00 UTC),
+        );
+        assert!(!e.truncated);
+    }
+
+    #[test]
+    fn evidence_with_truncated_sets_flag() {
+        let e = Evidence::new(
+            fp(),
+            EvidenceKind::Build,
+            EvidenceStatus::Pass,
+            EvidenceProducer::new("sbuild"),
+            EvidenceScope::Job(JobId::new()),
+            datetime!(2026-01-01 00:00:00 UTC),
+        )
+        .with_truncated(true);
+        assert!(e.truncated);
+    }
+
+    #[test]
+    fn evidence_truncated_round_trips_via_json() {
+        let e = Evidence::new(
+            fp(),
+            EvidenceKind::Build,
+            EvidenceStatus::Pass,
+            EvidenceProducer::new("sbuild"),
+            EvidenceScope::Job(JobId::new()),
+            datetime!(2026-01-01 00:00:00 UTC),
+        )
+        .with_truncated(true);
+        let json = serde_json::to_string(&e).unwrap();
+        let back: Evidence = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, e);
+        assert!(back.truncated);
+    }
+
+    #[test]
+    fn evidence_truncated_defaults_to_false_on_missing_field() {
+        // Older wire payloads omit `truncated`; serde(default) must
+        // restore it to `false`. Round-trip via a constructed
+        // Evidence, then drop the field and re-parse.
+        let original = Evidence::new(
+            fp(),
+            EvidenceKind::Build,
+            EvidenceStatus::Pass,
+            EvidenceProducer::new("sbuild"),
+            EvidenceScope::Job(JobId::new()),
+            datetime!(2026-01-01 00:00:00 UTC),
+        );
+        let mut value = serde_json::to_value(&original).unwrap();
+        // Simulate a pre-0B.4 wire payload: drop `truncated`.
+        let obj = value.as_object_mut().unwrap();
+        obj.remove("truncated");
+        let e: Evidence = serde_json::from_value(value).unwrap();
+        assert!(!e.truncated);
     }
 
     #[test]

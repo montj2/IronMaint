@@ -54,6 +54,11 @@
     },
     "status": {
       "$ref": "#/definitions/EvidenceStatus"
+    },
+    "truncated": {
+      "description": "`true` iff the producer captured bounded output (PHASE-0B.md §15: \"evidence must explicitly record `truncated = true`\"). Default `false` so wire-format payloads from before 0B.4 parse unchanged.",
+      "default": false,
+      "type": "boolean"
     }
   },
   "definitions": {
