@@ -17,7 +17,7 @@ use std::sync::Arc;
 use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_core::{
     CandidateFingerprint, DomainEventId, JobId, JobProjection, JobState, MaintenanceEventId,
-    MaintenanceJob,
+    MaintenanceJob, SourceCandidate,
 };
 use ironmaint_evidence::{Evidence, EvidenceProducer, EvidenceScope};
 use ironmaint_executor::{ExecutionRequest, Executor, ToolRegistry};
@@ -84,6 +84,9 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 orchestrator,
                 package,
             } => self.handle_create_job(orchestrator, package).await,
+            RuntimeCommand::CaptureCandidate { job_id, candidate } => {
+                self.handle_capture_candidate(job_id, candidate).await
+            }
             RuntimeCommand::SetActiveCandidate {
                 job_id,
                 fingerprint,
@@ -214,6 +217,84 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             "job:{job_id} created by orchestrator={:?}",
             orchestrator.kind
         );
+
+        Ok(CommandResult {
+            new_version: 0,
+            new_sequence: sequence,
+            side_effects: vec![side_effect],
+        })
+    }
+
+    /// `CaptureCandidate`: persist a freshly minted `SourceCandidate`
+    /// for a job. Idempotent on `(job_id, fingerprint)` — a second
+    /// call with the same fingerprint returns the existing
+    /// `CandidateId` without re-inserting. The candidate is **not**
+    /// activated here; that is `SetActiveCandidate`'s job.
+    ///
+    /// Implements PHASE-0B.md §6 (candidate persistence) + §45
+    /// (capture boundary). Emits a `JobEvent::Domain` audit event
+    /// describing the capture. Captures are valid in any state —
+    /// the orchestrator decides when to capture, and the projection
+    /// state advances through the state machine.
+    async fn handle_capture_candidate(
+        &self,
+        job_id: JobId,
+        candidate: SourceCandidate,
+    ) -> Result<CommandResult, RuntimeError> {
+        // Reject candidates whose job_id does not match the
+        // command's target — keeps the (job_id, fingerprint)
+        // index invariant honest.
+        if candidate.job_id() != job_id {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidInput,
+                format!(
+                    "candidate.job_id ({:?}) does not match command job_id ({:?})",
+                    candidate.job_id(),
+                    job_id
+                ),
+            ));
+        }
+
+        // Idempotent insert: if a candidate with this fingerprint
+        // already exists, reuse its id rather than mint a new row.
+        let candidate_id = if let Some(existing) = self
+            .store
+            .find_source_by_fingerprint(candidate.fingerprint())
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?
+        {
+            existing
+        } else {
+            self.store
+                .put_source_candidate(&candidate)
+                .await
+                .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?
+        };
+
+        // Audit event: surface the capture into the per-job event
+        // log so §72 (persistence recovery) and §73 (projection
+        // reconstruction) can reconstruct what was captured and
+        // when.
+        let sequence = self
+            .store
+            .next_sequence(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        let domain_event_id = DomainEventId::new();
+        let now = self.clock.now_utc();
+        let envelope = EventEnvelope::new(
+            MaintenanceEventId::from_uuid(domain_event_id.as_uuid()),
+            job_id,
+            sequence,
+            now,
+            JobEvent::Domain(domain_event_id),
+        );
+        self.store
+            .append_event(&envelope)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+
+        let side_effect = format!("source_candidate:{candidate_id} captured for job {job_id}");
 
         Ok(CommandResult {
             new_version: 0,

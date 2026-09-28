@@ -4,7 +4,7 @@
 //! The service is responsible for going through the state
 //! machine; commands never write to the store directly.
 
-use ironmaint_core::{CandidateFingerprint, JobId, PackageIdentity};
+use ironmaint_core::{CandidateFingerprint, JobId, PackageIdentity, SourceCandidate};
 use ironmaint_evidence::{EvidenceKind, EvidenceStatus};
 use ironmaint_executor::RetryClass;
 use schemars::JsonSchema;
@@ -12,10 +12,29 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
+// `SourceCandidate` is the largest variant by a wide margin, but it
+// is the canonical command payload from PHASE-0B.md §22 / §45.
+// Boxing it would change the wire shape (a `Box<SourceCandidate>`
+// serialises identically, but the in-memory size trade-off is not
+// worth the indirection given how rarely these commands cross the
+// dispatch boundary). Allow the lint explicitly.
+#[allow(clippy::large_enum_variant)]
 pub enum RuntimeCommand {
     CreateJob {
         orchestrator: crate::orchestrator::OrchestratorRef,
         package: PackageIdentity,
+    },
+    /// Persist a freshly minted `SourceCandidate` for a job.
+    ///
+    /// Idempotent on `(job_id, fingerprint)`: a second call with
+    /// the same fingerprint returns the original `CandidateId`
+    /// without re-inserting. The candidate is **not** activated
+    /// here — that is `SetActiveCandidate`'s job. This split
+    /// matches PHASE-0B.md §6 (capture boundary) vs §45 (check
+    /// planning boundary).
+    CaptureCandidate {
+        job_id: JobId,
+        candidate: SourceCandidate,
     },
     SetActiveCandidate {
         job_id: JobId,
