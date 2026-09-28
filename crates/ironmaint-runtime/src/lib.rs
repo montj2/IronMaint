@@ -37,6 +37,7 @@ pub mod error;
 pub mod next_actions;
 pub mod orchestrator;
 pub mod query;
+pub mod reconcile;
 pub mod service;
 
 pub use check::{
@@ -49,4 +50,5 @@ pub use error::{RuntimeError, RuntimeErrorKind};
 pub use next_actions::{ActionBlocker, AllowedAction, JobNextActions};
 pub use orchestrator::{OrchestratorKind, OrchestratorRef};
 pub use query::RuntimeQuery;
+pub use reconcile::ReconcileOutcome;
 pub use service::{CommandResult, QueryResult, RuntimeService};

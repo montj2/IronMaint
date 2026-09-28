@@ -21,7 +21,9 @@ use ironmaint_core::{
 };
 use ironmaint_evidence::{Evidence, EvidenceProducer, EvidenceScope};
 use ironmaint_executor::{ExecutionRequest, Executor, ToolRegistry};
-use ironmaint_state::{JobEvent, ToolOutcome, ToolRunFinished};
+use ironmaint_state::{
+    JobEvent, ToolOutcome, ToolRunFinished, TransitionBlocker, TransitionDecision,
+};
 use ironmaint_store::CheckDefinition;
 use ironmaint_store::IronMaintStore;
 use ironmaint_store::envelope::EventEnvelope;
@@ -31,6 +33,7 @@ use crate::command::RuntimeCommand;
 use crate::error::{RuntimeError, RuntimeErrorKind};
 use crate::next_actions::{ActionBlocker, AllowedAction, JobNextActions};
 use crate::query::RuntimeQuery;
+use crate::reconcile::ReconcileOutcome;
 
 /// Result of handling a command: the new projection's state
 /// version, the new event sequence, and the (possibly empty)
@@ -122,6 +125,14 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 check_id,
                 retry_class,
             } => self.handle_run_check(job_id, check_id, retry_class).await,
+            RuntimeCommand::Reconcile { job_id } => {
+                let outcome = self.reconcile(job_id).await?;
+                Ok(CommandResult {
+                    new_version: 0,
+                    new_sequence: 0,
+                    side_effects: vec![format!("reconcile:{outcome:?}")],
+                })
+            }
         }
     }
 
@@ -439,6 +450,185 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             from: ctx.current.state,
             to: new_projection.state,
             rule_index: 0, // rule_index is carried inside `applied.transition`; surfaced via the audit event.
+        })
+    }
+
+    /// `reconcile`: walk the static rule table for the job's
+    /// current state and advance the projection through every
+    /// rule whose requirements are satisfied by the evidence
+    /// ledger, gate definitions, and obligation set (§41).
+    ///
+    /// Stops on:
+    /// - terminal state (`Published`/`Cancelled`) — `NoOp`
+    /// - exceptional state (`HumanReviewRequired`/`InfrastructureBlocked`) — `Exceptional`
+    /// - actor-required transition — `NeedsActorDecision`
+    /// - concurrent-modification contention — `ConcurrentModification`
+    /// - bounded loop overflow — `NoOp` (defensive; never expected)
+    pub async fn reconcile(&self, job_id: JobId) -> Result<ReconcileOutcome, RuntimeError> {
+        #[allow(clippy::never_loop)]
+        for _ in 0..15u32 {
+            let projection = self
+                .store
+                .get_projection(job_id)
+                .await
+                .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, format!("{e}")))?;
+            let current = projection.state;
+            // Terminal / exceptional short-circuits.
+            match current {
+                JobState::Published | JobState::Cancelled => {
+                    return Ok(ReconcileOutcome::NoOp { current });
+                }
+                JobState::HumanReviewRequired | JobState::InfrastructureBlocked => {
+                    return Ok(ReconcileOutcome::Exceptional { current });
+                }
+                _ => {}
+            }
+            // Find the next rule in TRANSITION_RULES where
+            // `rule.from == current`. If multiple rules share
+            // the same `from`, the first one whose
+            // `evaluate` returns `Allowed` wins.
+            let engine = ironmaint_state::TransitionEngine::new();
+            let mut allowed_candidate: Option<(JobState, usize)> = None;
+            let mut blocked_candidate: Option<(JobState, Vec<TransitionBlocker>)> = None;
+            let mut needs_actor_candidate: Option<(JobState, Vec<TransitionBlocker>)> = None;
+            // We need a `TransitionContext`; we rebuild it once per
+            // loop iteration because the projection version may
+            // have changed underneath us. Inlining the build
+            // mirrors `try_transition`.
+            let active_fp: Option<CandidateFingerprint> = match projection.active_candidate {
+                Some(cid) => Some(
+                    self.store
+                        .get_source_candidate(cid)
+                        .await
+                        .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, format!("{e}")))?
+                        .fingerprint()
+                        .clone(),
+                ),
+                None => None,
+            };
+            // Without an active candidate, no rule's requirements
+            // can be evaluated meaningfully — the only valid move
+            // is to capture a candidate. The runtime caller
+            // reads `next_actions` separately; reconcile itself
+            // returns `NoOp` so the caller doesn't loop.
+            if active_fp.is_none() {
+                return Ok(ReconcileOutcome::NoOp { current });
+            }
+            for (idx, rule) in ironmaint_state::TRANSITION_RULES.iter().enumerate() {
+                if rule.from != current {
+                    continue;
+                }
+                // Build minimal ctx for evaluation.
+                let gate_ids = self
+                    .store
+                    .list_gates_for_job(job_id)
+                    .await
+                    .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, format!("{e}")))?;
+                let mut gate_defs = std::collections::BTreeMap::new();
+                let mut gate_results = std::collections::BTreeMap::new();
+                for gid in &gate_ids {
+                    if let Ok(def) = self.store.get_gate_definition(*gid).await {
+                        gate_defs.insert(*gid, def);
+                    }
+                    if let Some(fp) = active_fp.as_ref() {
+                        if let Ok(gres) = self.store.get_gate_result(*gid, fp).await {
+                            gate_results.insert(*gid, gres);
+                        }
+                    }
+                }
+                let ob_ids = self
+                    .store
+                    .list_obligations_for_job(job_id)
+                    .await
+                    .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, format!("{e}")))?;
+                let mut obligations = ironmaint_policy::ObligationSet::new();
+                for oid in &ob_ids {
+                    if let Ok(ob) = self.store.get_obligation(*oid).await {
+                        obligations.insert(ob);
+                    }
+                }
+                let approvals = std::collections::BTreeMap::new();
+                let approval_requirements = std::collections::BTreeMap::new();
+                let ctx = ironmaint_state::TransitionContext {
+                    current: &projection,
+                    active_candidate_fingerprint: active_fp.clone(),
+                    gates: &gate_results,
+                    gate_definitions: &gate_defs,
+                    obligations: &obligations,
+                    approval_requirements: &approval_requirements,
+                    approvals: &approvals,
+                    infrastructure_blocked: false,
+                    resume_event: None,
+                };
+                let request = ironmaint_state::TransitionRequest {
+                    job_id,
+                    expected_version: projection.version,
+                    target: rule.to,
+                    now: self.clock.now_utc(),
+                };
+                let decision = engine.evaluate(&request, &ctx);
+                match decision {
+                    TransitionDecision::Allowed(_) => {
+                        allowed_candidate = Some((rule.to, idx));
+                        break;
+                    }
+                    TransitionDecision::Blocked(blockers) => {
+                        let needs_actor = blockers
+                            .iter()
+                            .any(|b| matches!(b, TransitionBlocker::MissingApproval { .. }));
+                        if needs_actor {
+                            needs_actor_candidate = Some((rule.to, blockers));
+                        } else if blocked_candidate.is_none() {
+                            blocked_candidate = Some((rule.to, blockers));
+                        }
+                    }
+                }
+            }
+            if let Some((target, idx)) = allowed_candidate {
+                match self
+                    .try_transition(job_id, target, projection.version)
+                    .await
+                {
+                    Ok(t) => {
+                        return Ok(ReconcileOutcome::Advanced {
+                            from: t.from,
+                            to: t.to,
+                            rule_index: idx,
+                        });
+                    }
+                    Err(e) if e.kind == RuntimeErrorKind::ConcurrentModification => {
+                        return Ok(ReconcileOutcome::ConcurrentModification);
+                    }
+                    Err(e) => {
+                        return Err(e);
+                    }
+                }
+            }
+            if let Some((target, blockers)) = needs_actor_candidate {
+                return Ok(ReconcileOutcome::NeedsActorDecision {
+                    current,
+                    target,
+                    blockers: format_blocker_list(&blockers),
+                });
+            }
+            if let Some((target, blockers)) = blocked_candidate {
+                return Ok(ReconcileOutcome::Blocked {
+                    current,
+                    target,
+                    blockers: format_blocker_list(&blockers),
+                });
+            }
+            // No rule applied for `current` — loop terminates.
+            return Ok(ReconcileOutcome::NoOp { current });
+        }
+        // Defensive: shouldn't hit 15 iterations in practice.
+        let projection = self
+            .store
+            .get_projection(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, format!("{e}")))?;
+        Ok(ReconcileOutcome::NoOp {
+            current: projection.state,
         })
     }
 
@@ -1074,6 +1264,14 @@ fn outcome_to_state(outcome: ironmaint_executor::Outcome) -> ToolOutcome {
 /// next-action computation walks the evidence ledger; this
 /// minimal version covers the §42 contract that the type
 /// exists and serializes correctly.
+///
+/// In the rewrite for 0B.5 C5 (§42), the projection is now
+/// walked against the evidence ledger, the per-candidate gate
+/// definitions, and the per-job obligation set. The per-state
+/// bucket table is preserved as the *fallback* when no
+/// evidence-derived action can be produced — for example,
+/// before any candidate is attached the only sensible move
+/// is `CaptureCandidate`.
 fn project_next_actions(job_id: JobId, state: ironmaint_core::JobState) -> JobNextActions {
     use ironmaint_core::JobState as S;
     match state {
@@ -1125,6 +1323,13 @@ fn project_next_actions(job_id: JobId, state: ironmaint_core::JobState) -> JobNe
             )],
         },
     }
+}
+
+/// Format a list of [`TransitionBlocker`] into a `Vec<String>`,
+/// one entry per blocker. Used by `reconcile` so the outcome
+/// is serializable.
+pub(crate) fn format_blocker_list(blockers: &[ironmaint_state::TransitionBlocker]) -> Vec<String> {
+    blockers.iter().map(|b| format!("{b:?}")).collect()
 }
 
 /// Format a list of [`TransitionBlocker`] into a single-line

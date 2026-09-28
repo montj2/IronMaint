@@ -78,4 +78,10 @@ pub enum RuntimeCommand {
         // across commands.
         job_id: JobId,
     },
+    /// Walk the static rule table and advance state until a
+    /// blocker, an exceptional state, an actor-required
+    /// transition, or a concurrent-modification error is hit
+    /// (§41). Returns a [`ReconcileOutcome`] describing where
+    /// the walk stopped.
+    Reconcile { job_id: JobId },
 }

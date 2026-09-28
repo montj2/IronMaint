@@ -18,6 +18,7 @@ ironmaint-evidence = { path = "../crates/ironmaint-evidence" }
 ironmaint-policy = { path = "../crates/ironmaint-policy" }
 ironmaint-state = { path = "../crates/ironmaint-state" }
 ironmaint-adapter-api = { path = "../crates/ironmaint-adapter-api" }
+ironmaint-runtime = { path = "../crates/ironmaint-runtime" }
 ironmaint-store-sqlite = { path = "../crates/ironmaint-store-sqlite" }
 ironmaint-mcp = { path = "../crates/ironmaint-mcp" }
 schemars = { workspace = true }

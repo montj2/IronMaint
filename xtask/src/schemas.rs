@@ -130,6 +130,10 @@ fn generate_all() -> Result<BTreeMap<String, String>, Box<dyn Error>> {
         "StateTransitioned.json".into(),
         serde_json::to_string_pretty(&schemars::schema_for!(ironmaint_state::StateTransitioned))?,
     );
+    out.insert(
+        "ReconcileOutcome.json".into(),
+        serde_json::to_string_pretty(&schemars::schema_for!(ironmaint_runtime::ReconcileOutcome))?,
+    );
     Ok(out)
 }
 
