@@ -10,9 +10,16 @@ server expects. This document walks through that wiring end-to-end.
 
 ## 1. Run the IronMaint server
 
-The server speaks Streamable HTTP on `127.0.0.1` and authenticates every
-request with a bearer token from a config file. Start it from the workspace
-root after a successful `cargo build --release`:
+> **⚠ Status: the `serve` binary does not exist yet.** The sections below
+> describe the *intended* operator workflow, written so the design is
+> reviewable. Nothing in this document is runnable today — see
+> `doc/PHASE-0B-COMPLETION.md` §16.2. Until the binary lands, the MCP
+> dispatcher is exercised in-process by `ironmaint-mcp/tests/dispatcher.rs`.
+> Treat steps 2–5 as a specification for the work, not as instructions.
+
+The server is intended to speak Streamable HTTP on `127.0.0.1` and to
+authenticate every request with a bearer token from a config file. The
+intended invocation is:
 
 ```sh
 cargo run -p ironmaint-mcp --release -- serve \
@@ -20,17 +27,17 @@ cargo run -p ironmaint-mcp --release -- serve \
   --token-file ~/.config/ironmaint/token
 ```
 
-The `--token-file` flag writes a freshly-minted bearer token to the file
-and prints it to stderr. The server keeps no copy of the token — losing the
-file means re-running with `--rotate-token`.
+The `--token-file` flag is intended to write a freshly-minted bearer token
+to the file and print it to stderr. The server keeps no copy of the token —
+losing the file means re-running with `--rotate-token`.
 
-You should see a log line similar to:
+On a successful start you should see a log line similar to:
 
 ```text
 ironmaint-mcp listening on http://127.0.0.1:7341/mcp
 ```
 
-Confirm the server is alive with the standard MCP `initialize` handshake:
+The intended liveness probe is the standard MCP `initialize` handshake:
 
 ```sh
 curl -sS -X POST http://127.0.0.1:7341/mcp \

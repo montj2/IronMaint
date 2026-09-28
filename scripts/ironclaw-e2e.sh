@@ -8,7 +8,12 @@
 # drive a no-op job.create round-trip through it. Exits 0 on
 # success and non-zero on any failure.
 #
-# Prereqs:
+# STATUS: this script is currently unrunnable — `ironmaint-mcp` has no
+# `serve` binary yet (see doc/PHASE-0B-COMPLETION.md §16.2). It is
+# checked in so the intended operator smoke test is reviewable alongside
+# the manifest and setup doc. It will work once the binary lands.
+#
+# Prereqs (once the binary exists):
 #   - IronMaint MCP server running on $IRONMAINT_URL (default
 #     http://127.0.0.1:7341/mcp) with a bearer token in
 #     $IRONMAINT_TOKEN_FILE (default ~/.config/ironmaint/token).
