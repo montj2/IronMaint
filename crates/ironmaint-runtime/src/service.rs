@@ -129,6 +129,9 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 check_id,
                 retry_class,
             } => self.handle_run_check(job_id, check_id, retry_class).await,
+            RuntimeCommand::RequestApproval { job_id, category } => {
+                Err(refuse_approval(job_id, &category))
+            }
             RuntimeCommand::Reconcile { job_id } => {
                 let outcome = self.reconcile(job_id).await?;
                 Ok(CommandResult {
@@ -1582,6 +1585,28 @@ fn format_blockers(blockers: &[ironmaint_state::TransitionBlocker]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Build the refusal for [`RuntimeCommand::RequestApproval`].
+///
+/// A free function rather than a method on purpose: the handler
+/// has no `self`, so "this touches nothing" is a property the type
+/// system can see instead of a claim in a comment. Nothing is read
+/// and nothing is written — no projection bump, no event, no
+/// approval record — so a refused request leaves the job exactly
+/// as it found it and retrying is free.
+fn refuse_approval(job_id: JobId, category: &ironmaint_policy::ApprovalCategory) -> RuntimeError {
+    RuntimeError::new(
+        RuntimeErrorKind::Unsupported,
+        format!(
+            "RequestApproval is refused for job {job_id} (category `{category}`): an \
+             approval is a human principal's decision and the orchestrator that calls \
+             this command must not be able to grant it. No approval store or out-of-band \
+             delivery channel exists in 0B, so the request is not recorded. Leave the job \
+             at ReadyForApproval; `job.reconcile` reports NeedsActorDecision until a human \
+             acts outside this process."
+        ),
+    )
 }
 
 fn _assert_send_sync<T: Send + Sync>() {}
