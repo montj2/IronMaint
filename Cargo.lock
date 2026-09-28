@@ -818,11 +818,17 @@ dependencies = [
  "ironmaint-executor",
  "ironmaint-policy",
  "ironmaint-runtime",
+ "ironmaint-store",
+ "ironmaint-testkit",
  "ironmaint-workspace",
  "schemars",
  "serde",
  "serde_json",
  "thiserror",
+ "time",
+ "tokio",
+ "url",
+ "uuid",
 ]
 
 [[package]]

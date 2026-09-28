@@ -8,6 +8,12 @@ pub enum McpError {
     Auth(String),
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+    #[error("invalid input: {0}")]
+    InvalidInput(String),
+    #[error("runtime error: {0}")]
+    Runtime(String),
     #[error("internal: {0}")]
     Internal(String),
+    #[error("{0}")]
+    Other(String),
 }

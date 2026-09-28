@@ -32,9 +32,7 @@ use ironmaint_runtime::{
     AllowedAction, ReconcileOutcome, RuntimeCommand, RuntimeQuery, RuntimeService, SystemClock,
 };
 use ironmaint_state::JobEvent as StateJobEvent;
-use ironmaint_store::{
-    EventStore, GateStore, ObligationStore, ProjectionStore, mock::MockStore,
-};
+use ironmaint_store::{EventStore, GateStore, ObligationStore, ProjectionStore, mock::MockStore};
 use std::ffi::OsString;
 use std::path::PathBuf;
 use time::OffsetDateTime;
