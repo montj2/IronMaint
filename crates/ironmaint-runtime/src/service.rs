@@ -496,14 +496,19 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             // have changed underneath us. Inlining the build
             // mirrors `try_transition`.
             let active_fp: Option<CandidateFingerprint> = match projection.active_candidate {
-                Some(cid) => Some(
-                    self.store
-                        .get_source_candidate(cid)
-                        .await
-                        .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, format!("{e}")))?
-                        .fingerprint()
-                        .clone(),
-                ),
+                Some(cid) => match self.store.get_source_candidate(cid).await {
+                    Ok(c) => Some(c.fingerprint().clone()),
+                    // Active candidate id is set but the
+                    // underlying row is missing — this happens
+                    // when concurrent writers have left the
+                    // projection in an inconsistent state. The
+                    // safe behaviour is to skip the rule walk
+                    // and report `NoOp`; the caller can reload
+                    // and reattempt.
+                    Err(_) => {
+                        return Ok(ReconcileOutcome::NoOp { current });
+                    }
+                },
                 None => None,
             };
             // Without an active candidate, no rule's requirements
