@@ -1,13 +1,13 @@
 //! Persistence contracts for IronMaint.
 //!
 //! This crate defines the trait surface (`IronMaintStore` facade plus
-//! nine sub-traits) that backends (in-memory mocks, SQLite, etc.)
+//! the sub-traits) that backends (in-memory mocks, SQLite, etc.)
 //! implement. All traits use native `async fn` in traits (stable on
 //! MSRV 1.85; PHASE-0A.md §84) — no `async-trait` dependency.
 //!
 //! ## Sub-trait surface
 //!
-//! The nine sub-traits partition the durable state by domain area:
+//! The sub-traits partition the durable state by domain area:
 //!
 //! | Sub-trait | Owns |
 //! |---|---|
@@ -20,6 +20,7 @@
 //! | [`operation::OperationStore`] | [`OperationRecord`] / lifecycle |
 //! | [`artifact::ArtifactMetadataStore`] | [`ArtifactId`] metadata |
 //! | [`workspace::WorkspaceMetadataStore`] | [`WorkspaceRevision`] / paths |
+//! | [`check::CheckStore`] | [`CheckDefinition`] durable check contracts |
 //!
 //! The split mirrors the 0A domain modules: each sub-trait
 //! corresponds to a bounded context's primary aggregate, kept small
@@ -56,6 +57,7 @@
 
 pub mod artifact;
 pub mod candidate;
+pub mod check;
 pub mod envelope;
 pub mod error;
 pub mod event;
@@ -73,6 +75,7 @@ pub use error::{StoreError, StoreErrorKind};
 
 pub use crate::artifact::ArtifactMetadataStore;
 pub use crate::candidate::CandidateStore;
+pub use crate::check::{CheckDefinition, CheckStore};
 pub use crate::event::EventStore;
 pub use crate::evidence::EvidenceStore;
 pub use crate::gate::GateStore;
@@ -81,7 +84,7 @@ pub use crate::operation::OperationStore;
 pub use crate::projection::ProjectionStore;
 pub use crate::workspace::WorkspaceMetadataStore;
 
-/// Aggregate facade over the nine sub-traits.
+/// Aggregate facade over the sub-traits.
 ///
 /// Backends (mock or SQLite) implement each sub-trait individually
 /// and then expose `IronMaintStore` as a convenience trait that
@@ -97,6 +100,7 @@ pub trait IronMaintStore:
     + OperationStore
     + ArtifactMetadataStore
     + WorkspaceMetadataStore
+    + CheckStore
 {
 }
 
@@ -110,5 +114,6 @@ impl<T> IronMaintStore for T where
         + OperationStore
         + ArtifactMetadataStore
         + WorkspaceMetadataStore
+        + CheckStore
 {
 }

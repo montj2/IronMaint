@@ -13,7 +13,7 @@ async fn null_executor_rejects() {
     let ex = NullExecutor;
     let req = ExecutionRequest::new(
         ToolCapabilityKey::new("synthetic.build.validate").unwrap(),
-        RetryClass::Idempotent,
+        RetryClass::Safe,
         json!({}),
     );
     let err = ex.execute(req).await.expect_err("must reject");
@@ -33,6 +33,6 @@ async fn process_environment_baseline() {
 }
 
 #[test]
-fn destructive_has_zero_retries() {
-    assert_eq!(RetryClass::Destructive.max_retries(), Some(0));
+fn never_has_zero_retries() {
+    assert_eq!(RetryClass::Never.max_retries(), Some(0));
 }

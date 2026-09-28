@@ -46,6 +46,13 @@ pub enum RuntimeErrorKind {
     /// Invalid command input.
     #[error("invalid input")]
     InvalidInput,
+    /// Optimistic-concurrency contention: another writer
+    /// advanced the projection between read and write.
+    /// Distinct from `Store` because callers (notably MCP
+    /// and IronClaw) treat `ConcurrentModification` as a
+    /// retryable surface, not an internal failure.
+    #[error("concurrent modification")]
+    ConcurrentModification,
     /// Other / unspecified.
     #[error("other: {0}")]
     Other(String),

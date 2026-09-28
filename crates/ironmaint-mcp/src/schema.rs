@@ -72,6 +72,15 @@ pub fn generate_all_schemas() -> BTreeMap<McpToolName, (Value, Value)> {
         ),
     );
     out.insert(
+        McpToolName("job.reconcile".to_string()),
+        (
+            serde_json::to_value(schema_for!(tools::actions::ReconcileInput))
+                .unwrap_or(Value::Null),
+            serde_json::to_value(schema_for!(tools::actions::ReconcileOutput))
+                .unwrap_or(Value::Null),
+        ),
+    );
+    out.insert(
         McpToolName("operation.get".to_string()),
         (
             serde_json::to_value(schema_for!(tools::operation::GetInput)).unwrap_or(Value::Null),

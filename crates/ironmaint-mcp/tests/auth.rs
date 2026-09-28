@@ -23,10 +23,11 @@ fn token_validator_rejects_wrong_bytes() {
 }
 
 #[test]
-fn schema_tool_names_eight() {
+fn schema_tool_names_nine() {
     use ironmaint_mcp::schema::tool_names;
     let names = tool_names();
-    assert_eq!(names.len(), 8);
+    assert_eq!(names.len(), 9);
     assert!(names.iter().any(|n| n.0 == "job.create"));
+    assert!(names.iter().any(|n| n.0 == "job.reconcile"));
     assert!(names.iter().any(|n| n.0 == "job.next_actions"));
 }

@@ -782,8 +782,10 @@ name = "ironmaint-executor"
 version = "0.1.0"
 dependencies = [
  "ironmaint-adapter-api",
+ "ironmaint-artifacts",
  "ironmaint-core",
  "ironmaint-evidence",
+ "ironmaint-fixture",
  "ironmaint-policy",
  "ironmaint-store",
  "schemars",
@@ -793,6 +795,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "uuid",
 ]
 
 [[package]]
@@ -815,11 +818,17 @@ dependencies = [
  "ironmaint-executor",
  "ironmaint-policy",
  "ironmaint-runtime",
+ "ironmaint-store",
+ "ironmaint-testkit",
  "ironmaint-workspace",
  "schemars",
  "serde",
  "serde_json",
  "thiserror",
+ "time",
+ "tokio",
+ "url",
+ "uuid",
 ]
 
 [[package]]
@@ -880,6 +889,7 @@ dependencies = [
 name = "ironmaint-store"
 version = "0.1.0"
 dependencies = [
+ "ironmaint-adapter-api",
  "ironmaint-core",
  "ironmaint-evidence",
  "ironmaint-policy",
@@ -919,6 +929,7 @@ version = "0.1.0"
 dependencies = [
  "insta",
  "ironmaint-adapter-api",
+ "ironmaint-artifacts",
  "ironmaint-core",
  "ironmaint-evidence",
  "ironmaint-executor",
@@ -929,9 +940,11 @@ dependencies = [
  "pretty_assertions",
  "serde",
  "serde_json",
+ "tempfile",
  "time",
  "tokio",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -2175,6 +2188,7 @@ dependencies = [
  "ironmaint-evidence",
  "ironmaint-mcp",
  "ironmaint-policy",
+ "ironmaint-runtime",
  "ironmaint-state",
  "ironmaint-store-sqlite",
  "schemars",

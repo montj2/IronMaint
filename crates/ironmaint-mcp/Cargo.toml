@@ -18,8 +18,17 @@ ironmaint-evidence = { path = "../ironmaint-evidence" }
 ironmaint-executor = { path = "../ironmaint-executor" }
 ironmaint-policy = { path = "../ironmaint-policy" }
 ironmaint-runtime = { path = "../ironmaint-runtime" }
+ironmaint-store = { path = "../ironmaint-store" }
 ironmaint-workspace = { path = "../ironmaint-workspace" }
+time = { workspace = true }
+url = { workspace = true }
+uuid = { workspace = true }
 schemars = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+
+[dev-dependencies]
+ironmaint-testkit = { path = "../ironmaint-testkit" }
+ironmaint-store = { path = "../ironmaint-store" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

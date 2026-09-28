@@ -22,7 +22,9 @@ use ironmaint_policy::{
     ObligationStatus, ObligationStrength, PolicyBaseline, PolicyReference, PrivilegedOperation,
     PrivilegedOperationKind,
 };
-use ironmaint_state::{JobEvent, ProjectionApply, StateTransitioned, Transition};
+use ironmaint_state::{
+    JobEvent, ProjectionApply, StateTransitioned, ToolOutcome, ToolRunFinished, Transition,
+};
 use time::macros::datetime;
 use url::Url;
 
@@ -225,6 +227,79 @@ async fn projection_store_round_trip_with_cas() {
     stale.version = 3;
     let err = s.put_projection(&stale, 1).await.unwrap_err();
     assert_eq!(*err.kind(), StoreErrorKind::Conflict);
+}
+
+#[tokio::test]
+async fn rebuild_projection_skips_tool_run_finished_events() {
+    // Two `Transitioned` events bracketing three `ToolRunFinished`
+    // events. The intermediate observability signals must NOT
+    // advance the projection; the final state equals the
+    // second-transition state (PHASE-0B.md §15 last bullet,
+    // §65 partial).
+    let s: MockStore = store();
+    let jid = job_id();
+
+    let first = transitioned_event();
+    let first_env = ironmaint_store::EventEnvelope::new(
+        MaintenanceEventId::new(),
+        jid,
+        s.next_sequence(jid).await.unwrap(),
+        datetime!(2026-01-02 00:00:00 UTC),
+        JobEvent::Transitioned(first.clone()),
+    );
+    s.append_event(&first_env).await.unwrap();
+
+    // Three tool runs interleaved.
+    let tool_stamps = [
+        datetime!(2026-01-02 00:00:01 UTC),
+        datetime!(2026-01-02 00:00:02 UTC),
+        datetime!(2026-01-02 00:00:03 UTC),
+    ];
+    for (i, stamp) in tool_stamps.iter().enumerate() {
+        let ev = JobEvent::ToolRunFinished(ToolRunFinished::new(
+            ironmaint_core::EvidenceId::new(),
+            i == 1, // middle one is truncated
+            ToolOutcome::Pass,
+            *stamp,
+        ));
+        let env = ironmaint_store::EventEnvelope::new(
+            MaintenanceEventId::new(),
+            jid,
+            s.next_sequence(jid).await.unwrap(),
+            *stamp,
+            ev,
+        );
+        s.append_event(&env).await.unwrap();
+    }
+
+    // Second transition: version bumps from 1 to 2.
+    let second = StateTransitioned::new(
+        Transition {
+            from: first.transition.to,
+            to: JobState::SourceReview,
+            rule_index: 1,
+        },
+        JobProjection {
+            job: first.projection_after.job.clone(),
+            state: JobState::SourceReview,
+            active_candidate: first.projection_after.active_candidate,
+            version: 2,
+            updated_at: datetime!(2026-01-03 00:00:00 UTC),
+        },
+        datetime!(2026-01-03 00:00:00 UTC),
+    );
+    let second_env = ironmaint_store::EventEnvelope::new(
+        MaintenanceEventId::new(),
+        jid,
+        s.next_sequence(jid).await.unwrap(),
+        datetime!(2026-01-03 00:00:00 UTC),
+        JobEvent::Transitioned(second.clone()),
+    );
+    s.append_event(&second_env).await.unwrap();
+
+    let rebuilt = s.rebuild_projection(jid).await.unwrap();
+    assert_eq!(rebuilt.state, JobState::SourceReview);
+    assert_eq!(rebuilt.version, 2);
 }
 
 // -----------------------------------------------------------------------------

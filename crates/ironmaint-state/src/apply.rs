@@ -40,6 +40,10 @@ impl ProjectionApply for JobProjection {
                 updated_at: occurred_at,
             },
             JobEvent::Domain(_) => self.clone(),
+            // Tool runs are observability signals; they do not
+            // advance the FSM (PHASE-0B.md §15 last bullet,
+            // §65 partial).
+            JobEvent::ToolRunFinished(_) => self.clone(),
         }
     }
 }
@@ -135,5 +139,25 @@ mod tests {
         );
         let next = proj.apply(&JobEvent::Transitioned(transitioned), occurred);
         assert_eq!(next.active_candidate, Some(cand));
+    }
+
+    #[test]
+    fn tool_run_finished_does_not_advance_projection() {
+        // Tool runs are observability signals only; they
+        // must not change state, version, or active_candidate
+        // (PHASE-0B.md §15 last bullet, §65 partial).
+        let proj = fixture_projection();
+        let before = proj.clone();
+        let tool_event = crate::ToolRunFinished::new(
+            ironmaint_core::EvidenceId::new(),
+            true,
+            crate::ToolOutcome::Pass,
+            datetime!(2026-03-03 03:03:03 UTC),
+        );
+        let next = proj.apply(
+            &JobEvent::ToolRunFinished(tool_event),
+            datetime!(2026-03-03 03:03:03 UTC),
+        );
+        assert_eq!(next, before);
     }
 }

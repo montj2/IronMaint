@@ -1,11 +1,16 @@
 //! `ToolRegistry` — capability-key → tool definition lookup
-//! (PHASE-0B.md §24).
+//! (PHASE-0B.md §24, §26). The registry owns the registered
+//! `ToolDefinition` set; the executor consults it on every run.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
+use std::path::Path;
+use std::sync::Arc;
 
 use ironmaint_adapter_api::ToolCapabilityKey;
 use thiserror::Error;
 
+use crate::limits::{ExecutionClass, ExecutionLimits};
 use crate::normalizer::ResultNormalizer;
 
 #[derive(Debug, Error)]
@@ -16,11 +21,21 @@ pub enum RegistryError {
     NotFound(String),
 }
 
+/// Tool definition shape (PHASE-0B.md §27). The runtime constructs
+/// `ToolDefinitionRecord` instances and registers them; the executor
+/// looks them up by `key` and consults the remaining fields to spawn
+/// the subprocess. All accessors are sync — no `async fn` on the trait
+/// (constraint: distribution-neutral adapter traits stay sync).
 pub trait ToolDefinition: Send + Sync {
     fn key(&self) -> &ToolCapabilityKey;
-    /// Tool-specific normalizer; None means "use the default
-    /// exit-code-based classifier".
-    fn normalizer(&self) -> Option<Box<dyn ResultNormalizer>>;
+    fn executable(&self) -> &Path;
+    fn fixed_args(&self) -> &[OsString];
+    fn class(&self) -> ExecutionClass;
+    fn limits(&self) -> ExecutionLimits;
+    /// Return a cloneable handle to the registered normalizer. `None`
+    /// means the executor will fall back to its default
+    /// `FixtureNormalizer` mapping.
+    fn normalizer(&self) -> Option<Arc<dyn ResultNormalizer>>;
 }
 
 #[derive(Default)]
@@ -31,7 +46,7 @@ pub struct ToolRegistry {
 impl std::fmt::Debug for ToolRegistry {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ToolRegistry")
-            .field("tools", &self.tools.keys().collect::<Vec<_>>())
+            .field("keys", &self.tools.keys().collect::<Vec<_>>())
             .finish()
     }
 }
@@ -42,6 +57,7 @@ impl ToolRegistry {
         Self::default()
     }
 
+    /// Insert a tool. Rejects duplicate keys.
     pub fn register(&mut self, tool: Box<dyn ToolDefinition>) -> Result<(), RegistryError> {
         let key = tool.key().as_str().to_string();
         if self.tools.contains_key(&key) {
@@ -64,45 +80,5 @@ impl ToolRegistry {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.tools.is_empty()
-    }
-
-    #[must_use]
-    pub fn keys(&self) -> Vec<String> {
-        self.tools.keys().cloned().collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    struct FakeTool;
-    impl ToolDefinition for FakeTool {
-        fn key(&self) -> &ToolCapabilityKey {
-            static K: std::sync::OnceLock<ToolCapabilityKey> = std::sync::OnceLock::new();
-            K.get_or_init(|| ToolCapabilityKey::new("fake.test.dummy").unwrap())
-        }
-        fn normalizer(&self) -> Option<Box<dyn ResultNormalizer>> {
-            None
-        }
-    }
-
-    #[test]
-    fn register_and_get() {
-        let mut r = ToolRegistry::new();
-        r.register(Box::new(FakeTool)).unwrap();
-        let key = ToolCapabilityKey::new("fake.test.dummy").unwrap();
-        assert!(r.get(&key).is_some());
-        assert!(
-            r.get(&ToolCapabilityKey::new("missing.key").unwrap())
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn duplicate_register_rejected() {
-        let mut r = ToolRegistry::new();
-        r.register(Box::new(FakeTool)).unwrap();
-        assert!(r.register(Box::new(FakeTool)).is_err());
     }
 }

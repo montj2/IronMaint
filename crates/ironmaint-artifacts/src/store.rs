@@ -18,6 +18,25 @@ pub struct Record {
     pub stored_at: OffsetDateTime,
 }
 
+/// Information about a truncating write (PHASE-0B.md §15).
+///
+/// Returned by [`ArtifactStore::put_bytes_truncating`] alongside the
+/// [`Record`] so callers can detect bounded captures without
+/// re-reading the on-disk file. The digest on `Record` is over the
+/// *truncated* prefix only.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TruncationInfo {
+    /// The configured cap that triggered truncation.
+    pub limit_bytes: u64,
+    /// Size of the input as observed before truncation.
+    pub observed_before_truncate: u64,
+    /// Bytes actually written — equal to `limit_bytes` when truncated,
+    /// equal to `observed_before_truncate` when passthrough.
+    pub stored_bytes: u64,
+    /// `true` iff the input was truncated.
+    pub truncated: bool,
+}
+
 /// Configurable knobs for [`ArtifactStore`].
 ///
 /// Today only the per-write byte cap (PHASE-0B.md §15) is exposed.
@@ -95,6 +114,57 @@ impl ArtifactStore {
             size: bytes.len() as u64,
             stored_at: OffsetDateTime::now_utc(),
         })
+    }
+
+    /// Write `bytes` to the store, truncating at `limit` if the input
+    /// is larger (PHASE-0B.md §15).
+    ///
+    /// Distinct from [`Self::put_bytes`]: that method returns
+    /// `WriteError::TooLarge` when the configured per-write cap is
+    /// exceeded; this method instead keeps the first `limit` bytes
+    /// and surfaces the truncation via [`TruncationInfo`]. The two
+    /// APIs are deliberately separate so callers don't have to
+    /// distinguish "bounded capture" from "store quota exhausted."
+    ///
+    /// SHA-256 is computed over the *truncated* prefix only; the
+    /// returned `Record.size` reflects what was actually written.
+    pub async fn put_bytes_truncating(
+        &self,
+        bytes: &[u8],
+        limit: u64,
+    ) -> Result<(Record, TruncationInfo), StoreError> {
+        let observed = bytes.len() as u64;
+        let truncated = observed > limit;
+        let kept_len = if truncated {
+            limit as usize
+        } else {
+            observed as usize
+        };
+        let kept = &bytes[..kept_len];
+
+        let digest = sha256_of_bytes(kept);
+        let path = self.root.final_path_for(digest.as_str());
+        // Inner write is bounded by the per-write cap (which is
+        // separately configured); `kept` is already <= limit, so we
+        // explicitly pass `None` to disable that check here —
+        // truncation is the caller's chosen policy.
+        write_atomic(&self.root, &path, kept, None).await?;
+
+        let info = TruncationInfo {
+            limit_bytes: limit,
+            observed_before_truncate: observed,
+            stored_bytes: kept_len as u64,
+            truncated,
+        };
+        Ok((
+            Record {
+                digest,
+                path,
+                size: kept_len as u64,
+                stored_at: OffsetDateTime::now_utc(),
+            },
+            info,
+        ))
     }
 
     /// Stream from `reader` into the store and return the record.
