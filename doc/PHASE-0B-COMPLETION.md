@@ -14,9 +14,12 @@ checkable against the repository.
 
 ## 1. Workspace changes
 
-Thirteen crates under `crates/`, one `xtask` crate, and three support
-directories. 0B.5–0B.8 added one crate (`ironmaint-mcp` already existed from
-0B.4-era work) and grew the runtime substantially.
+The workspace has three trees, not one: `crates/` (13 libraries),
+`adapters/` (2 adapter conformance stubs), `bins/` (3 binaries), plus
+`xtask`. 0B.5–0B.8 grew `ironmaint-runtime` and `ironmaint-mcp` substantially
+and touched `ironmaint-state`, `ironmaint-store`, and `ironmaint-store-sqlite`.
+
+**`crates/`**
 
 | Crate | Role | Touched in 0B.5–0B.8 |
 |---|---|---|
@@ -31,33 +34,52 @@ directories. 0B.5–0B.8 added one crate (`ironmaint-mcp` already existed from
 | `ironmaint-adapter-api` | Adapter contract, `BuildPlan`/`QaPlan` | read-only |
 | `ironmaint-artifacts` | Content-addressed blob store | read-only |
 | `ironmaint-runtime` | Application service, reconcile, transitions | **heavily extended** |
-| `ironmaint-mcp` | MCP tool surface, auth, schemas | **new `dispatch.rs`; `error.rs`, `schema.rs`, `tools/actions.rs` extended** |
+| `ironmaint-mcp` | MCP tool surface, auth, schemas, dispatcher | **new `dispatch.rs`; `error.rs`, `schema.rs`, `tools/actions.rs` extended** |
 | `ironmaint-testkit` | Fixtures, conformance suites | **new `synthetic_e2e.rs` driver** |
-| `xtask` | Architecture + schema + migration verifiers | **new `mcp_schemas.rs`; `schemas.rs` extended** |
+
+**`adapters/`** — `debian-stub`, `fedora-stub`. Both pass the same generic
+conformance suite from 0A.4. Neither was touched on this branch.
+
+**`bins/`**
+
+| Binary | Role | Status |
+|---|---|---|
+| `ironmaintd` | Daemon: opens SQLite (acquiring the single-daemon lock), builds `RuntimeService`, drains on SIGTERM (§66–§68) | **exists, bootstrap only** — no MCP server, no reconcile loop |
+| `ironmaintctl` | Operator CLI; single subcommand `rebuild-projections` (§36) | exists, no other subcommands |
+| `ironmaint-fixture` | Synthetic tool binary for the test suite | exists, working |
+
+**`xtask/`** — architecture + schema + migration + MCP-schema verifiers.
+**new `mcp_schemas.rs`**; `schemas.rs` extended.
 
 No existing 0A type was modified. See §4.
 
 ## 2. New crates / binaries
 
-**No new crate.** `ironmaint-mcp` existed before this branch (added during the
-earlier 0B work merged in PR #10/#23); 0B.6 completed its dispatcher.
+**No new crate and no new binary on this branch.** All 13 crates, both
+adapters, and all 3 binaries pre-date it; 0B.5–0B.8 completed the runtime,
+the MCP dispatcher, and the test suites.
 
-**No new binary.** `ironmaint-fixture` (the synthetic tool binary) is
-pre-existing from 0B.4. There is still **no `ironmaint-mcp serve` binary** —
-see Known limitations.
+One clarification for the reviewer: `ironmaintd` **does exist** and boots the
+runtime (§2, `bins/`), but it does not serve MCP and does not run a reconcile
+loop. See §16.6.
 
 New source files introduced by this branch:
 
 ```text
 crates/ironmaint-runtime/src/candidate.rs        (C1) CaptureCandidate handler
 crates/ironmaint-runtime/src/check.rs            (C2) plan→CheckDefinition materialiser, gate evaluation
-crates/ironmaint-runtime/src/check_store.rs      (C2, folded into ironmaint-store)
 crates/ironmaint-runtime/src/transition_context.rs (C4) TransitionContext builder
 crates/ironmaint-runtime/src/reconcile.rs        (C5) ReconcileOutcome + format_blocker
 crates/ironmaint-store/src/check.rs              (C2) CheckDefinition + CheckStore trait
 crates/ironmaint-store-sqlite/src/ops/checks.rs  (C2) SQLite CheckStore
 crates/ironmaint-mcp/src/dispatch.rs             (C7) tool dispatcher
+crates/ironmaint-mcp/tests/dispatcher.rs         (C7) §94 exit checkpoint
+crates/ironmaint-runtime/tests/hardening.rs      (C9) 0B.8 hardening suite
 migrations/0002_check_definitions.sql            (C2) CheckDefinition persistence
+doc/operator/{ironclaw-setup,mcp-registration,tool-permissions}  (C8)
+doc/PHASE-0B-COMPLETION.md                       (C10) this report
+skills/ironmaint-maintainer/SKILL.md             (C8)
+scripts/ironclaw-e2e.sh                          (C8)
 ```
 
 ## 3. Database schema and migrations
@@ -238,10 +260,17 @@ Plus, in existing suites: `apply_patch_rejects_stale_revision` (workspace
 conflicts), `resolve_strict_no_follow` (path traversal), `validator_*` (MCP
 auth), artifact size-limit tests (corruption).
 
-Key properties: `Reconcile` is idempotent and bounded (max 15 iterations);
-`CaptureCandidate` dedupes on fingerprint; a blocked or invalid transition
-never bumps the projection version; every accepted transition appends a
-`JobEvent::Transitioned` envelope before the call returns (§4.7).
+Key properties: `Reconcile` is idempotent and bounded; `CaptureCandidate`
+dedupes on fingerprint; a blocked or invalid transition never bumps the
+projection version; every accepted transition appends a `JobEvent::Transitioned`
+envelope before the call returns (§4.7).
+
+**Projection rebuild** (§36, §102 item 3) is a shipped operator tool, not a
+test-only path: `ironmaintctl rebuild-projections [job_id]` walks the SQLite
+event log, replays each event through `ProjectionStore::rebuild_projection`,
+and writes the result back with the existing version as the CAS token. It
+currently requires an explicit `job_id` — a `list_jobs` facade does not exist
+yet, so "rebuild everything" is a shell loop over known ids.
 
 ## 11. Test inventory
 
@@ -347,17 +376,26 @@ working tool surface.
 (`handle_run_check`, `WorkspaceManager::apply_patch`, `current_revision`,
 `OperationStore::get`) all exist and are tested elsewhere.
 
-### 16.2 No `ironmaint-mcp serve` binary (HIGH)
+### 16.2 No MCP transport / `serve` entry point (HIGH)
 
-The setup doc tells operators to run
-`cargo run -p ironmaint-mcp -- serve --bind ... --token-file ...`. **That
-binary does not exist.** There is no `main.rs`, no `[[bin]]` target, and no
-rmcp/Streamable-HTTP transport wiring in `ironmaint-mcp`. The documented
-operator workflow cannot be followed as written.
+`ironmaint-mcp` has **no `main.rs` and no `[[bin]]` target** — the crate is a
+library. There is no rmcp/Streamable-HTTP wiring, so nothing serves the nine
+tools over the network. The dispatcher is reachable in-process only, from
+`ironmaint-mcp/tests/dispatcher.rs`.
 
-*Fix location:* new `crates/ironmaint-mcp/src/main.rs` + `[[bin]]`, wiring
-the dispatcher behind rmcp's Streamable HTTP transport on 127.0.0.1 with
-bearer-token middleware (`TokenValidator` already exists and is tested).
+Related: `bins/ironmaintd` boots the runtime but its own header says "The
+MCP server wiring (commit 15) hooks into this `main` between steps 3 and 4" —
+that hookup has not happened. So **neither** a standalone `ironmaint-mcp
+serve` **nor** an MCP listener inside `ironmaintd` exists. An IronClaw agent
+has no way to reach IronMaint over a socket today.
+
+The operator setup doc has been annotated to say so rather than imply
+otherwise.
+
+*Fix location:* either a new `crates/ironmaint-mcp/src/main.rs` + `[[bin]]`,
+or the documented hookup inside `bins/ironmaintd/src/main.rs`. Both need
+rmcp + a tokio HTTP server in the workspace — a dependency decision that
+belongs to the architect.
 
 ### 16.3 Approval commands not implemented (MEDIUM)
 
@@ -394,12 +432,15 @@ in-memory. No `sbuild`, `mock`, `Lintian`, `piuparts`, `autopkgtest`,
 This is the intended §106 handoff, but it means the 0B.5–0B.8 work has never
 exercised a real subprocess with a real tool's argv shape.
 
-### 16.6 No daemon / reconcile loop (MEDIUM)
+### 16.6 Daemon runs no reconcile loop (MEDIUM)
 
-There is no `ironmaintd` binary. `reconcile` is called by the MCP dispatcher
-on demand, not by a background loop. A job only advances when an agent asks.
-The `infrastructure_blocked` signal (16.4) is one of the daemon's
-responsibilities.
+`bins/ironmaintd` exists and boots correctly — it opens the SQLite store
+(which acquires the single-daemon lock), constructs a `RuntimeService`, and
+drains on SIGTERM. But it does **not** serve MCP (16.2) and does **not** run
+a reconcile loop: `reconcile` is only ever called by the in-process
+dispatcher, so a job advances only when an agent explicitly asks. The
+`infrastructure_blocked` signal (16.4) is one of the daemon's
+responsibilities and has no producer.
 
 ### 16.7 The 0B.8 hardening suite is not exhaustive (LOW)
 
