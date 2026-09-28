@@ -234,6 +234,214 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         })
     }
 
+    /// Evaluate and apply a state transition through
+    /// `TransitionEngine` (§18). The runtime is the only caller
+    /// of `engine.evaluate`; agents and adapters cannot mutate
+    /// `JobState`.
+    ///
+    /// Steps:
+    ///  1. Load the projection. If the projection's `version`
+    ///     doesn't match `expected_version`, return
+    ///     `RuntimeErrorKind::ConcurrentModification` (the engine
+    ///     will return the same decision; we surface it as a
+    ///     well-typed runtime error instead of a generic blocker).
+    ///  2. Build the [`TransitionContext`] from the loaded state
+    ///     (gates, obligations, candidate fingerprint, etc.).
+    ///  3. Call `engine.apply` to produce the
+    ///     `StateTransitioned` event. On `StaleProjection`,
+    ///     surface `ConcurrentModification`; on `Blocked`
+    ///     return the blocker chain as the error message.
+    ///  4. Persist the new projection at
+    ///     `expected_version + 1` and append the audit event.
+    ///
+    /// # Errors
+    ///
+    /// - `RuntimeErrorKind::ConcurrentModification` on stale
+    ///   version.
+    /// - `RuntimeErrorKind::Store` on persistence failure.
+    /// - `RuntimeErrorKind::InvalidInput` for any other blocker
+    ///   (the engine returns `Blocked(Vec<TransitionBlocker>)`
+    ///   with the precise reasons).
+    pub async fn try_transition(
+        &self,
+        job_id: JobId,
+        target: ironmaint_core::JobState,
+        expected_version: u64,
+    ) -> Result<ironmaint_state::Transition, RuntimeError> {
+        use ironmaint_core::GateId;
+        use ironmaint_state::{TransitionContext, TransitionEngine, TransitionRequest};
+        use std::collections::BTreeMap;
+
+        let projection = self
+            .store
+            .get_projection(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+
+        if projection.version != expected_version {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::ConcurrentModification,
+                format!(
+                    "expected version {expected_version}, found {}",
+                    projection.version
+                ),
+            ));
+        }
+
+        // Resolve the active candidate fingerprint (None in
+        // pre-capture states).
+        let active_candidate_fingerprint: Option<ironmaint_core::CandidateFingerprint> =
+            match projection.active_candidate {
+                Some(cid) => {
+                    let source =
+                        self.store.get_source_candidate(cid).await.map_err(|e| {
+                            RuntimeError::new(RuntimeErrorKind::Store, e.to_string())
+                        })?;
+                    Some(source.fingerprint().clone())
+                }
+                None => None,
+            };
+
+        // Gate definitions + per-candidate GateResults.
+        let gate_ids = self
+            .store
+            .list_gates_for_job(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        let mut gates: BTreeMap<GateId, ironmaint_evidence::GateResult> = BTreeMap::new();
+        let mut gate_definitions: BTreeMap<GateId, ironmaint_evidence::GateDefinition> =
+            BTreeMap::new();
+        for gid in &gate_ids {
+            let def = self
+                .store
+                .get_gate_definition(*gid)
+                .await
+                .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+            gate_definitions.insert(*gid, def);
+            if let Some(fp) = active_candidate_fingerprint.as_ref() {
+                if let Ok(r) = self.store.get_gate_result(*gid, fp).await {
+                    gates.insert(*gid, r);
+                }
+            }
+        }
+
+        // Obligations for the active candidate.
+        let obligations = {
+            let mut set = ironmaint_policy::ObligationSet::new();
+            let all = self
+                .store
+                .list_obligations_for_job(job_id)
+                .await
+                .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+            for id in all {
+                let ob = self
+                    .store
+                    .get_obligation(id)
+                    .await
+                    .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+                if let Some(fp) = active_candidate_fingerprint.as_ref() {
+                    if ob.candidate != *fp {
+                        continue;
+                    }
+                } else {
+                    continue;
+                }
+                set.insert(ob);
+            }
+            set
+        };
+
+        let approvals: BTreeMap<ironmaint_core::ApprovalId, ironmaint_policy::ApprovalDecision> =
+            BTreeMap::new();
+        let approval_requirements: BTreeMap<
+            ironmaint_core::ApprovalId,
+            ironmaint_policy::ApprovalRequirement,
+        > = BTreeMap::new();
+
+        let now = self.clock.now_utc();
+        let request = TransitionRequest {
+            job_id,
+            expected_version,
+            target,
+            now,
+        };
+        let ctx = TransitionContext {
+            current: &projection,
+            active_candidate_fingerprint: active_candidate_fingerprint.clone(),
+            gates: &gates,
+            gate_definitions: &gate_definitions,
+            approval_requirements: &approval_requirements,
+            obligations: &obligations,
+            approvals: &approvals,
+            infrastructure_blocked: false,
+            resume_event: None,
+        };
+
+        let engine = TransitionEngine::new();
+        let applied = match engine.apply(request, &ctx) {
+            Ok(s) => s,
+            Err(ironmaint_state::TransitionApplyError::StaleProjection { expected, found }) => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::ConcurrentModification,
+                    format!("expected {expected}, found {found}"),
+                ));
+            }
+            Err(ironmaint_state::TransitionApplyError::Blocked(blockers)) => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::InvalidInput,
+                    format_blockers(&blockers),
+                ));
+            }
+        };
+
+        // The applied transition produced a new projection. Persist
+        // it at the expected+1 version slot, mapping
+        // StaleProjection to ConcurrentModification.
+        let new_projection = ironmaint_core::JobProjection {
+            job: projection.job.clone(),
+            state: applied.transition.to,
+            active_candidate: projection.active_candidate,
+            version: expected_version + 1,
+            updated_at: applied.occurred_at,
+        };
+        self.store
+            .put_projection(&new_projection, expected_version)
+            .await
+            .map_err(|e| {
+                if *e.kind() == ironmaint_store::StoreErrorKind::Conflict
+                    || *e.kind() == ironmaint_store::StoreErrorKind::SequenceOutOfRange
+                {
+                    RuntimeError::new(RuntimeErrorKind::ConcurrentModification, e.to_string())
+                } else {
+                    RuntimeError::new(RuntimeErrorKind::Store, e.to_string())
+                }
+            })?;
+
+        // Append the audit event.
+        let sequence = self
+            .store
+            .next_sequence(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        let envelope = ironmaint_store::envelope::EventEnvelope::new(
+            ironmaint_core::MaintenanceEventId::new(),
+            job_id,
+            sequence,
+            now,
+            ironmaint_state::JobEvent::Transitioned(applied),
+        );
+        self.store
+            .append_event(&envelope)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+
+        Ok(ironmaint_state::Transition {
+            from: ctx.current.state,
+            to: new_projection.state,
+            rule_index: 0, // rule_index is carried inside `applied.transition`; surfaced via the audit event.
+        })
+    }
+
     /// `CaptureCandidate`: persist a freshly minted `SourceCandidate`
     /// for a job. Idempotent on `(job_id, fingerprint)` — a second
     /// call with the same fingerprint returns the existing
@@ -917,6 +1125,56 @@ fn project_next_actions(job_id: JobId, state: ironmaint_core::JobState) -> JobNe
             )],
         },
     }
+}
+
+/// Format a list of [`TransitionBlocker`] into a single-line
+/// error message suitable for a runtime error display.
+fn format_blockers(blockers: &[ironmaint_state::TransitionBlocker]) -> String {
+    blockers
+        .iter()
+        .map(|b| match b {
+            ironmaint_state::TransitionBlocker::InvalidStatePath => {
+                "invalid state path".to_string()
+            }
+            ironmaint_state::TransitionBlocker::StaleProjection { expected, found } => {
+                format!("stale projection (expected {expected}, found {found})")
+            }
+            ironmaint_state::TransitionBlocker::MissingGate(id) => {
+                format!("missing gate {id}")
+            }
+            ironmaint_state::TransitionBlocker::FailedGate(id) => {
+                format!("failed gate {id}")
+            }
+            ironmaint_state::TransitionBlocker::IncompleteGate(id) => {
+                format!("incomplete gate {id}")
+            }
+            ironmaint_state::TransitionBlocker::MissingObligation(id) => {
+                format!("missing obligation {id}")
+            }
+            ironmaint_state::TransitionBlocker::FailedObligation(id) => {
+                format!("failed obligation {id}")
+            }
+            ironmaint_state::TransitionBlocker::ReviewRequired(id) => {
+                format!("review-required obligation {id}")
+            }
+            ironmaint_state::TransitionBlocker::UnbackedException(id) => {
+                format!("unbacked exception {id}")
+            }
+            ironmaint_state::TransitionBlocker::MissingApproval(id) => {
+                format!("missing approval {id}")
+            }
+            ironmaint_state::TransitionBlocker::StaleEvidence(id) => {
+                format!("stale evidence on approval {id}")
+            }
+            ironmaint_state::TransitionBlocker::CandidateMismatch { expected, found } => {
+                format!("candidate mismatch (expected {expected}, found {found})")
+            }
+            ironmaint_state::TransitionBlocker::InfrastructureBlocked => {
+                "infrastructure blocked".to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn _assert_send_sync<T: Send + Sync>() {}
