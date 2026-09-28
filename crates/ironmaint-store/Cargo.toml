@@ -2,7 +2,7 @@
 name = "ironmaint-store"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 license = "MIT"
 authors = ["James Montgomery <james@ironmaint.dev>"]
 description = "Persistence contracts (async traits) for IronMaint's event-sourced store."

@@ -26,7 +26,8 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# Floor is set by rmcp 3.x (see rust-toolchain.toml), not by edition 2024.
+rust-version = "1.88"
 license = "MIT"
 authors = ["James Montgomery <montj2@github.com>"]
 repository = "https://github.com/montj2/IronMaint"
@@ -73,7 +74,7 @@ north_star = "Adding support for a new distribution requires implementing that d
 # artifacts, workspace, runtime, mcp, daemon) — never by the domain crates
 # (core, evidence, policy, state, adapter-api). PHASE-0B.md §98 enforces this
 # via `cargo xtask verify-architecture`. Native `async fn` in traits is
-# stable on MSRV 1.85, so no `async-trait` dep is needed.
+# stable on MSRV 1.88, so no `async-trait` dep is needed.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = { version = "0.8", features = ["uuid1", "url"] }
@@ -92,6 +93,13 @@ pretty_assertions = "1"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "sync", "time", "io-util", "net"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "sqlite", "macros", "json", "time"] }
 rmcp = { version = "3", features = ["server", "transport-streamable-http-server", "macros"] }
+# The Streamable-HTTP transport is a tower Service, not an axum Router: the
+# daemon must supply the HTTP server itself. These are the versions rmcp's
+# own transport tests are written against, so `nest_service` compatibility is
+# proven upstream rather than assumed here. tokio-util is not re-exported by
+# rmcp, so the graceful-shutdown CancellationToken is a direct dependency.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 fs2 = "0.4"

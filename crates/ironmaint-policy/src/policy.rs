@@ -88,15 +88,15 @@ impl PolicyReference {
     /// Returns `Err(&'static str)` if `section` or `title` exceeds
     /// their maxima.
     pub fn validate(&self) -> Result<(), &'static str> {
-        if let Some(s) = &self.section {
-            if s.len() > SECTION_MAX {
-                return Err("policy section exceeds 256 bytes");
-            }
+        if let Some(s) = &self.section
+            && s.len() > SECTION_MAX
+        {
+            return Err("policy section exceeds 256 bytes");
         }
-        if let Some(t) = &self.title {
-            if t.len() > TITLE_MAX {
-                return Err("policy title exceeds 512 bytes");
-            }
+        if let Some(t) = &self.title
+            && t.len() > TITLE_MAX
+        {
+            return Err("policy title exceeds 512 bytes");
         }
         Ok(())
     }

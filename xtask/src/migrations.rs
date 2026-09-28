@@ -105,10 +105,10 @@ async fn run_async(write: bool) -> Result<MigrationReport, Box<dyn Error>> {
     let committed_migrations = scan_committed(&migrations_dir)?;
 
     // 1. Filename pattern check.
-    if let Some(first) = committed_migrations.first() {
-        if first != "0001_initial.sql" {
-            eprintln!("verify-migrations: first migration must be 0001_initial.sql, got {first}");
-        }
+    if let Some(first) = committed_migrations.first()
+        && first != "0001_initial.sql"
+    {
+        eprintln!("verify-migrations: first migration must be 0001_initial.sql, got {first}");
     }
     for (idx, name) in committed_migrations.iter().enumerate() {
         let expected_id = idx + 1;

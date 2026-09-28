@@ -329,10 +329,10 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 .await
                 .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
             gate_definitions.insert(*gid, def);
-            if let Some(fp) = active_candidate_fingerprint.as_ref() {
-                if let Ok(r) = self.store.get_gate_result(*gid, fp).await {
-                    gates.insert(*gid, r);
-                }
+            if let Some(fp) = active_candidate_fingerprint.as_ref()
+                && let Ok(r) = self.store.get_gate_result(*gid, fp).await
+            {
+                gates.insert(*gid, r);
             }
         }
 
@@ -535,10 +535,10 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                     if let Ok(def) = self.store.get_gate_definition(*gid).await {
                         gate_defs.insert(*gid, def);
                     }
-                    if let Some(fp) = active_fp.as_ref() {
-                        if let Ok(gres) = self.store.get_gate_result(*gid, fp).await {
-                            gate_results.insert(*gid, gres);
-                        }
+                    if let Some(fp) = active_fp.as_ref()
+                        && let Ok(gres) = self.store.get_gate_result(*gid, fp).await
+                    {
+                        gate_results.insert(*gid, gres);
                     }
                 }
                 let ob_ids = self
