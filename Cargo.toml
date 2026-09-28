@@ -14,6 +14,7 @@ members = [
     "crates/ironmaint-executor",
     "crates/ironmaint-runtime",
     "crates/ironmaint-mcp",
+    "crates/ironmaint-synthetic-tools",
     "crates/ironmaint-testkit",
     "adapters/debian-stub",
     "adapters/fedora-stub",

@@ -924,6 +924,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironmaint-synthetic-tools"
+version = "0.1.0"
+dependencies = [
+ "ironmaint-adapter-api",
+ "ironmaint-executor",
+ "thiserror",
+]
+
+[[package]]
 name = "ironmaint-testkit"
 version = "0.1.0"
 dependencies = [
@@ -937,6 +946,7 @@ dependencies = [
  "ironmaint-runtime",
  "ironmaint-state",
  "ironmaint-store",
+ "ironmaint-synthetic-tools",
  "pretty_assertions",
  "serde",
  "serde_json",
