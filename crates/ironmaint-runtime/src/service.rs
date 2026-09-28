@@ -22,6 +22,7 @@ use ironmaint_core::{
 use ironmaint_evidence::{Evidence, EvidenceProducer, EvidenceScope};
 use ironmaint_executor::{ExecutionRequest, Executor, ToolRegistry};
 use ironmaint_state::{JobEvent, ToolOutcome, ToolRunFinished};
+use ironmaint_store::CheckDefinition;
 use ironmaint_store::IronMaintStore;
 use ironmaint_store::envelope::EventEnvelope;
 
@@ -118,9 +119,9 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             }
             RuntimeCommand::RunCheck {
                 job_id,
-                tool_key,
+                check_id,
                 retry_class,
-            } => self.handle_run_check(job_id, tool_key, retry_class).await,
+            } => self.handle_run_check(job_id, check_id, retry_class).await,
         }
     }
 
@@ -622,14 +623,21 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         })
     }
 
-    /// `RunCheck`: look up a registered tool, invoke it via the
-    /// executor, normalise the result, and persist the resulting
-    /// evidence. The tool must be registered in the runtime's
-    /// `ToolRegistry`; the executor must be configured to run it.
+    /// Plan-aware `RunCheck { check_id }` (§15, §41, §44).
+    ///
+    /// Looks up the `CheckDefinition` by id, validates the
+    /// candidate-attachment invariant (§30), looks up the tool
+    /// registry entry, executes the tool, persists the evidence,
+    /// and evaluates the corresponding gate (§29).
+    ///
+    /// Unknown `check_id`, candidate mismatch, and pre-capture
+    /// states all reject with `RuntimeErrorKind::InvalidInput`.
+    /// After execution the handler persists a `GateResult` for
+    /// the check's gate.
     async fn handle_run_check(
         &self,
         job_id: JobId,
-        tool_key: String,
+        check_id: ironmaint_core::CheckId,
         retry_class: ironmaint_executor::RetryClass,
     ) -> Result<CommandResult, RuntimeError> {
         let current = self
@@ -651,21 +659,59 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
         let fingerprint = source.fingerprint().clone();
 
-        let cap_key = ToolCapabilityKey::new(tool_key.clone()).map_err(|e| {
-            RuntimeError::new(
+        // §30 evidence freshness: reject if the check is bound to
+        // a candidate that is no longer active. This is the path
+        // that triggers re-materialisation after a candidate
+        // switch.
+        let check = match self.store.get_check(check_id).await {
+            Ok(c) => c,
+            Err(e) if *e.kind() == ironmaint_store::StoreErrorKind::NotFound => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::InvalidInput,
+                    format!("unknown check {check_id}"),
+                ));
+            }
+            Err(e) => {
+                return Err(RuntimeError::new(RuntimeErrorKind::Store, e.to_string()));
+            }
+        };
+        if check.job_id != job_id {
+            return Err(RuntimeError::new(
                 RuntimeErrorKind::InvalidInput,
-                format!("invalid tool_key {tool_key:?}: {e}"),
-            )
-        })?;
+                format!("check {check_id} does not belong to job {job_id}"),
+            ));
+        }
+        if check.candidate != fingerprint {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidInput,
+                format!(
+                    "check {check_id} candidate {} != active fingerprint {}",
+                    check.candidate, fingerprint
+                ),
+            ));
+        }
+        if !post_capture_state(current.state) {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidInput,
+                format!(
+                    "job {job_id} in state {:?} cannot run checks; need post-capture state",
+                    current.state
+                ),
+            ));
+        }
 
+        let cap_key = check.capability.clone();
         let _tool = self.registry.get(&cap_key).ok_or_else(|| {
             RuntimeError::new(
                 RuntimeErrorKind::InvalidInput,
-                format!("no tool registered for capability {tool_key}"),
+                format!(
+                    "no tool registered for capability {key}",
+                    key = cap_key.as_str()
+                ),
             )
         })?;
 
-        let request = ExecutionRequest::new(cap_key, retry_class, serde_json::Value::Null);
+        let request = ExecutionRequest::new(cap_key.clone(), retry_class, serde_json::Value::Null);
 
         let record = self
             .executor
@@ -692,12 +738,12 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
 
         let now = self.clock.now_utc();
         let scope = EvidenceScope::Candidate(fingerprint.clone());
-        let producer = EvidenceProducer::new(tool_key.clone());
+        let producer = EvidenceProducer::new(cap_key.as_str().to_string());
         // PHASE-0B.md §15: evidence rows must explicitly record
         // `truncated = true` when the executor bounded stdout/stderr.
         let evidence = Evidence::new(
-            fingerprint,
-            ironmaint_evidence::EvidenceKind::Other("tool_output".to_string()),
+            fingerprint.clone(),
+            check.evidence_kind.clone(),
             outcome_status,
             producer,
             scope,
@@ -707,6 +753,40 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
 
         self.store
             .put_evidence(&evidence, job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+
+        // §29 gate evaluation: walk all checks attached to the
+        // gate this `check` belongs to, aggregate, persist
+        // GateResult.
+        let all_checks = self
+            .store
+            .list_checks_for_job(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        let mut gate_checks: Vec<CheckDefinition> = Vec::with_capacity(all_checks.len());
+        for cid in all_checks {
+            let c = self
+                .store
+                .get_check(cid)
+                .await
+                .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+            if c.gate_id == check.gate_id {
+                gate_checks.push(c);
+            }
+        }
+        let gate_id = check.gate_id;
+        let result = crate::check::evaluate_gate(
+            &*self.store,
+            gate_id,
+            fingerprint.clone(),
+            &gate_checks,
+            now,
+        )
+        .await
+        .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        self.store
+            .put_gate_result(gate_id, &fingerprint, &result)
             .await
             .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
 
@@ -733,9 +813,38 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         Ok(CommandResult {
             new_version: current.version,
             new_sequence: sequence,
-            side_effects: vec![format!("ran tool {tool_key} on job:{job_id}")],
+            side_effects: vec![
+                format!(
+                    "ran tool {cap} on job:{job}",
+                    cap = cap_key.as_str(),
+                    job = job_id
+                ),
+                format!("gate {gate_id} -> {status}", status = result.status),
+            ],
         })
     }
+}
+
+/// True if the job state can record evidence from a runtime
+/// check. Pre-capture states (EventDetected..CandidateAssembly)
+/// have no active candidate fingerprint and cannot materialise
+/// checks; the handler rejects them.
+fn post_capture_state(state: ironmaint_core::JobState) -> bool {
+    use ironmaint_core::JobState as S;
+    matches!(
+        state,
+        S::SourceRevision
+            | S::SourceIntegrity
+            | S::BuildValidation
+            | S::PackageQaValidation
+            | S::FunctionalValidation
+            | S::UpgradeValidation
+            | S::ReleaseReview
+            | S::FinalValidation
+            | S::ReadyForApproval
+            | S::Approved
+            | S::PublicationPending
+    )
 }
 
 /// Translate the executor-owned `Outcome` enum (PHASE-0B.md §32) to

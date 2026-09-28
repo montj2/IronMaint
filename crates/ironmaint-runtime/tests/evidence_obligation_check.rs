@@ -9,9 +9,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use ironmaint_adapter_api::ToolCapabilityKey;
+use ironmaint_core::CheckId;
 use ironmaint_core::{
     CandidateFingerprint, DistributionFamily, DistributionRef, DistributionRelease,
-    GitHashAlgorithm, GitObjectId, JobId, PackageIdentity, PackageName, PackageRevision,
+    GitHashAlgorithm, GitObjectId, JobId, JobState, PackageIdentity, PackageName, PackageRevision,
     PackageVersion, RepositoryRef, SourceCandidate, VcsKind,
 };
 use ironmaint_evidence::{EvidenceKind, EvidenceProducer, EvidenceStatus};
@@ -24,7 +25,9 @@ use ironmaint_runtime::{
     Clock, FixedClock, OrchestratorRef, RuntimeCommand, RuntimeErrorKind, RuntimeService,
 };
 use ironmaint_store::mock::MockStore;
-use ironmaint_store::{CandidateStore, EvidenceStore, ObligationStore};
+use ironmaint_store::{
+    CandidateStore, CheckStore, EvidenceStore, ObligationStore, ProjectionStore,
+};
 use time::OffsetDateTime;
 use url::Url;
 
@@ -146,6 +149,35 @@ async fn seed_candidate(
         .put_source_candidate(&candidate)
         .await
         .expect("put_source_candidate");
+    (id, fingerprint)
+}
+
+/// Seed the candidate and advance the projection to a
+/// post-capture state (`SourceRevision`) so `RunCheck`'s
+/// pre-condition lets the call through. Used by tests that
+/// drive `RunCheck { check_id }` directly without the engine
+/// wired in.
+///
+/// `SetActiveCandidate` enforces its own pre-condition (must
+/// be in `EventDetected`..`CandidateAssembly`), so the
+/// state-bump to `SourceRevision` happens *after* the active
+/// candidate is attached.
+async fn seed_candidate_post_capture(
+    store: &MockStore,
+    job_id: JobId,
+) -> (ironmaint_core::CandidateId, CandidateFingerprint) {
+    let (id, fingerprint) = seed_candidate(store, job_id).await;
+    store
+        .set_active_source_candidate(job_id, id)
+        .await
+        .expect("set active");
+    let mut projection = store.get_projection(job_id).await.expect("projection");
+    projection.active_candidate = Some(id);
+    projection.state = JobState::SourceRevision;
+    store
+        .put_projection(&projection, projection.version)
+        .await
+        .expect("seed post-capture");
     (id, fingerprint)
 }
 
@@ -294,24 +326,31 @@ async fn run_check_invokes_executor_and_records_evidence() {
     let (svc, _registry) = static_service(store.clone(), record);
 
     let job_id = make_job(&store, &svc).await;
-    let (_cid, fingerprint) = seed_candidate(&store, job_id).await;
-    svc.handle_command(RuntimeCommand::SetActiveCandidate {
+    let (_cid, fingerprint) = seed_candidate_post_capture(&store, job_id).await;
+
+    // Materialize a check for the synthetic tool so RunCheck has
+    // a valid contract to resolve.
+    let key = ToolCapabilityKey::new("synthetic.test.pass").unwrap();
+    svc.handle_command(RuntimeCommand::MaterializeChecks {
         job_id,
-        fingerprint,
+        candidate: fingerprint,
+        planned: vec![(key, EvidenceKind::Build, true)],
     })
     .await
-    .expect("set active");
+    .expect("materialize");
+    let ids = store.list_checks_for_job(job_id).await.expect("list");
+    let check_id = ids[0];
 
     let result = svc
         .handle_command(RuntimeCommand::RunCheck {
             job_id,
-            tool_key: "synthetic.test.pass".to_string(),
+            check_id,
             retry_class: RetryClass::Safe,
         })
         .await
         .expect("run check");
 
-    assert_eq!(result.new_sequence, 3);
+    assert_eq!(result.new_sequence, 2);
     assert!(!result.side_effects.is_empty());
 
     // Evidence was recorded.
@@ -325,18 +364,15 @@ async fn run_check_rejects_unknown_tool() {
     let svc = null_service(store.clone());
 
     let job_id = make_job(&store, &svc).await;
-    let (_cid, fingerprint) = seed_candidate(&store, job_id).await;
-    svc.handle_command(RuntimeCommand::SetActiveCandidate {
-        job_id,
-        fingerprint,
-    })
-    .await
-    .expect("set active");
+    let (_cid, _fingerprint) = seed_candidate_post_capture(&store, job_id).await;
 
+    // No MaterializeChecks call: any freshly-minted CheckId is
+    // unknown to the store, so RunCheck must reject with
+    // InvalidInput.
     let err = svc
         .handle_command(RuntimeCommand::RunCheck {
             job_id,
-            tool_key: "unregistered.tool".to_string(),
+            check_id: CheckId::new(),
             retry_class: RetryClass::Safe,
         })
         .await

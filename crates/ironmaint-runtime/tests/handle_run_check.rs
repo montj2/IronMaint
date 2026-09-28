@@ -21,11 +21,11 @@ use std::sync::{Arc, Mutex};
 
 use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_core::{
-    CandidateFingerprint, DistributionFamily, DistributionRef, DistributionRelease,
+    CandidateFingerprint, CheckId, DistributionFamily, DistributionRef, DistributionRelease,
     GitHashAlgorithm, GitObjectId, JobId, JobState, MaintenanceEventId, PackageIdentity,
     PackageName, PackageRevision, PackageVersion, RepositoryRef, SourceCandidate, VcsKind,
 };
-use ironmaint_evidence::{Evidence, EvidenceStatus};
+use ironmaint_evidence::{Evidence, EvidenceKind, EvidenceStatus};
 use ironmaint_executor::{
     ExecutionClass, ExecutionLimits, ExecutionRequest, Executor, ExecutorError, ExecutorErrorKind,
     RetryClass, ToolDefinitionRecord, ToolRegistry,
@@ -35,7 +35,7 @@ use ironmaint_runtime::{
 };
 use ironmaint_state::{JobEvent, ToolOutcome};
 use ironmaint_store::mock::MockStore;
-use ironmaint_store::{CandidateStore, EventStore, EvidenceStore, ProjectionStore};
+use ironmaint_store::{CandidateStore, CheckStore, EventStore, EvidenceStore, ProjectionStore};
 use time::OffsetDateTime;
 use url::Url;
 
@@ -167,7 +167,48 @@ async fn seed_job_with_candidate(
     .await
     .expect("set active");
 
+    // §30 evidence freshness: `RunCheck { check_id }` requires
+    // a post-capture state. Advance the projection's state
+    // pointer to `SourceRevision` so the test body can call
+    // `RunCheck` directly. The engine wiring added in C4 will
+    // make this transition a real outcome of the state machine
+    // rather than a test-only projection edit.
+    let mut projection = store.get_projection(job_id).await.expect("projection");
+    projection.state = JobState::SourceRevision;
+    store
+        .put_projection(&projection, projection.version)
+        .await
+        .expect("seed post-capture state");
+
     (job_id, fingerprint)
+}
+
+/// Materialise a single `CheckDefinition` for the given tool key
+/// against the active candidate fingerprint. Returns the
+/// `CheckId` (run via the runtime so per-job index + gate
+/// definition are persisted atomically).
+async fn materialize_check_for_tool(
+    svc: &RuntimeService<MockStore, ScriptedExecutor>,
+    store: &Arc<MockStore>,
+    job_id: JobId,
+    fingerprint: CandidateFingerprint,
+    tool_str: &str,
+) -> CheckId {
+    let key = ToolCapabilityKey::new(tool_str).expect("valid capability");
+    svc.handle_command(RuntimeCommand::MaterializeChecks {
+        job_id,
+        candidate: fingerprint,
+        planned: vec![(key, EvidenceKind::Build, true)],
+    })
+    .await
+    .expect("materialize");
+    let ids = store
+        .list_checks_for_job(job_id)
+        .await
+        .expect("list checks");
+    ids.into_iter()
+        .next()
+        .expect("at least one check from MaterializeChecks")
 }
 
 fn parse_job_id(side_effect: &str) -> JobId {
@@ -205,18 +246,28 @@ async fn pass_path_emits_tool_run_finished_with_pass_outcome() {
     let executor = ScriptedExecutor::new(ScriptedResponse::Record(record));
     let svc = build_service(store.clone(), executor, registry_arc);
 
-    let (job_id, _fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let (job_id, fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let check_id = materialize_check_for_tool(
+        &svc,
+        &store,
+        job_id,
+        fingerprint.clone(),
+        "synthetic.test.pass",
+    )
+    .await;
 
     let result = svc
         .handle_command(RuntimeCommand::RunCheck {
             job_id,
-            tool_key: "synthetic.test.pass".to_string(),
+            check_id,
             retry_class: RetryClass::Safe,
         })
         .await
         .expect("run check");
 
     // Sequence 1: projection seed; 2: SetActiveCandidate; 3: ToolRunFinished.
+    // (MaterializeChecks writes via put_check/put_gate_definition and does
+    // not bump the event ledger.)
     assert_eq!(result.new_sequence, 3);
 
     let evidences = store.list_evidence_for_job(job_id).await.expect("list");
@@ -252,11 +303,19 @@ async fn fail_path_emits_tool_run_finished_with_fail_outcome() {
     let executor = ScriptedExecutor::new(ScriptedResponse::Record(record));
     let svc = build_service(store.clone(), executor, registry_arc);
 
-    let (job_id, _fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let (job_id, fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let check_id = materialize_check_for_tool(
+        &svc,
+        &store,
+        job_id,
+        fingerprint.clone(),
+        "synthetic.test.fail",
+    )
+    .await;
 
     svc.handle_command(RuntimeCommand::RunCheck {
         job_id,
-        tool_key: "synthetic.test.fail".to_string(),
+        check_id,
         retry_class: RetryClass::Safe,
     })
     .await
@@ -296,11 +355,19 @@ async fn truncated_path_records_truncated_on_evidence_and_event() {
     let executor = ScriptedExecutor::new(ScriptedResponse::Record(record));
     let svc = build_service(store.clone(), executor, registry_arc);
 
-    let (job_id, _fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let (job_id, fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let check_id = materialize_check_for_tool(
+        &svc,
+        &store,
+        job_id,
+        fingerprint.clone(),
+        "synthetic.test.truncate",
+    )
+    .await;
 
     svc.handle_command(RuntimeCommand::RunCheck {
         job_id,
-        tool_key: "synthetic.test.truncate".to_string(),
+        check_id,
         retry_class: RetryClass::Safe,
     })
     .await
@@ -344,12 +411,20 @@ async fn infrastructure_failure_is_propagated_as_runtime_error() {
     ));
     let svc = build_service(store.clone(), executor, registry_arc);
 
-    let (job_id, _fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let (job_id, fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let check_id = materialize_check_for_tool(
+        &svc,
+        &store,
+        job_id,
+        fingerprint.clone(),
+        "synthetic.test.infra_fail",
+    )
+    .await;
 
     let err = svc
         .handle_command(RuntimeCommand::RunCheck {
             job_id,
-            tool_key: "synthetic.test.infra_fail".to_string(),
+            check_id,
             retry_class: RetryClass::Safe,
         })
         .await
@@ -379,7 +454,15 @@ async fn tool_run_finished_does_not_advance_projection() {
     let executor = ScriptedExecutor::new(ScriptedResponse::Record(record));
     let svc = build_service(store.clone(), executor, registry_arc);
 
-    let (job_id, _fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let (job_id, fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let check_id = materialize_check_for_tool(
+        &svc,
+        &store,
+        job_id,
+        fingerprint.clone(),
+        "synthetic.test.observe",
+    )
+    .await;
 
     let before = store
         .get_projection(job_id)
@@ -388,7 +471,7 @@ async fn tool_run_finished_does_not_advance_projection() {
         .version;
     svc.handle_command(RuntimeCommand::RunCheck {
         job_id,
-        tool_key: "synthetic.test.observe".to_string(),
+        check_id,
         retry_class: RetryClass::Safe,
     })
     .await
@@ -428,12 +511,20 @@ async fn timeout_outcome_propagates_to_tool_run_finished() {
     }));
     let svc = build_service(store.clone(), executor, registry_arc);
 
-    let (job_id, _fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let (job_id, fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let check_id = materialize_check_for_tool(
+        &svc,
+        &store,
+        job_id,
+        fingerprint.clone(),
+        "synthetic.test.timeout",
+    )
+    .await;
 
     let err = svc
         .handle_command(RuntimeCommand::RunCheck {
             job_id,
-            tool_key: "synthetic.test.timeout".to_string(),
+            check_id,
             retry_class: RetryClass::Safe,
         })
         .await
@@ -460,12 +551,20 @@ async fn bad_path_tool_at_registry_is_a_complete_error_path() {
     ));
     let svc = build_service(store.clone(), executor, registry_arc);
 
-    let (job_id, _fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let (job_id, fingerprint) = seed_job_with_candidate(&store, &svc).await;
+    let check_id = materialize_check_for_tool(
+        &svc,
+        &store,
+        job_id,
+        fingerprint.clone(),
+        "synthetic.test.bad_path",
+    )
+    .await;
 
     let err = svc
         .handle_command(RuntimeCommand::RunCheck {
             job_id,
-            tool_key: "synthetic.test.bad_path".to_string(),
+            check_id,
             retry_class: RetryClass::Safe,
         })
         .await

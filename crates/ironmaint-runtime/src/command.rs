@@ -5,7 +5,7 @@
 //! machine; commands never write to the store directly.
 
 use ironmaint_adapter_api::ToolCapabilityKey;
-use ironmaint_core::{CandidateFingerprint, JobId, PackageIdentity, SourceCandidate};
+use ironmaint_core::{CandidateFingerprint, CheckId, JobId, PackageIdentity, SourceCandidate};
 use ironmaint_evidence::{EvidenceKind, EvidenceStatus};
 use ironmaint_executor::RetryClass;
 use schemars::JsonSchema;
@@ -67,8 +67,15 @@ pub enum RuntimeCommand {
         obligation_ref: String,
     },
     RunCheck {
-        job_id: JobId,
-        tool_key: String,
+        /// Resolved check to execute. The runtime looks up the
+        /// [`CheckDefinition`](ironmaint_store::CheckDefinition)
+        /// by id, executes the bound tool via the executor, and
+        /// records the resulting evidence against the gate.
+        check_id: CheckId,
         retry_class: RetryClass,
+        // The job_id is implied by `check_id.job_id`; the
+        // explicit `job_id` keeps the dispatch shape uniform
+        // across commands.
+        job_id: JobId,
     },
 }

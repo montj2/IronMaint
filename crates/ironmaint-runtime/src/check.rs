@@ -17,9 +17,10 @@
 use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_core::{CandidateFingerprint, GateId, JobId};
 use ironmaint_evidence::{
-    EvidenceKind, GateDefinition, GateRequirement, GateStage, RequiredEvidenceStatus,
+    EvidenceKind, EvidenceStatus, GateDefinition, GateRequirement, GateResult, GateStage,
+    GateStatus, RequiredEvidenceStatus,
 };
-use ironmaint_store::{CheckDefinition, CheckStore, GateStore, StoreError};
+use ironmaint_store::{CheckDefinition, CheckStore, EvidenceStore, GateStore, StoreError};
 
 /// Map a `PlannedCheck`'s `evidence_kind` to the gate stage it
 /// contributes to.
@@ -131,4 +132,143 @@ where
         out.push(check);
     }
     Ok(out)
+}
+
+/// For each `CheckDefinition` attached to a given gate (gate_id
+/// matching), find the latest `Evidence` whose `evidence_kind`
+/// matches the check's, scope is `Candidate(candidate)`, and
+/// return its id. Returns `None` for any check with no matching
+/// evidence.
+async fn latest_evidence_for_check<S>(
+    store: &S,
+    candidate: &CandidateFingerprint,
+    check: &CheckDefinition,
+) -> Result<Option<ironmaint_core::EvidenceId>, StoreError>
+where
+    S: EvidenceStore + ?Sized,
+{
+    let all = store.list_evidence_for_candidate(candidate).await?;
+    let mut latest: Option<(time::OffsetDateTime, ironmaint_core::EvidenceId)> = None;
+    for ev in all {
+        if ev.kind != check.evidence_kind {
+            continue;
+        }
+        let better = match latest {
+            None => true,
+            Some((prior, _)) => ev.observed_at > prior,
+        };
+        if better {
+            latest = Some((ev.observed_at, ev.id));
+        }
+    }
+    Ok(latest.map(|(_, id)| id))
+}
+
+/// Aggregate the latest evidence for every check attached to a
+/// gate into a single `GateResult`. Pure aggregation — does not
+/// persist.
+///
+/// Aggregation rules (PHASE-0B.md §29):
+///   - All non-empty sets of latest evidence reach `Pass` only
+///     when every check shows `Pass`.
+///   - Any check showing `Fail` blocks the gate with `Fail`.
+///   - Any check showing `InfrastructureError` blocks with
+///     `Blocked` (the gate cannot be answered by evidence).
+///   - Any check showing `Inconclusive` blocks with
+///     `ReviewRequired`.
+///   - If a check has no evidence yet, the gate is `NotEvaluated`.
+///   - `NotApplicable` checks contribute nothing (the gate
+///     ignores them).
+///
+/// `now` is the evaluation time stamped on the result.
+pub async fn evaluate_gate<S>(
+    store: &S,
+    gate_id: GateId,
+    candidate: CandidateFingerprint,
+    checks: &[CheckDefinition],
+    now: time::OffsetDateTime,
+) -> Result<GateResult, StoreError>
+where
+    S: EvidenceStore + ?Sized,
+{
+    // Empty: nothing to evaluate.
+    if checks.is_empty() {
+        return Ok(GateResult {
+            gate_id,
+            candidate,
+            status: GateStatus::NotEvaluated,
+            evidence: Vec::new(),
+            evaluated_at: now,
+        });
+    }
+
+    let mut evidence_ids: Vec<ironmaint_core::EvidenceId> = Vec::new();
+    let mut aggregate: GateStatus = GateStatus::NotEvaluated;
+
+    for check in checks {
+        if check.gate_id != gate_id {
+            continue;
+        }
+        let Some(evidence_id) = latest_evidence_for_check(store, &candidate, check).await? else {
+            // No evidence yet — gate stays NotEvaluated.
+            aggregate = combine_status(aggregate, GateStatus::NotEvaluated);
+            continue;
+        };
+        let ev = store.get_evidence(evidence_id).await?;
+        let mapped = evidence_to_gate_status(ev.status);
+        evidence_ids.push(evidence_id);
+        aggregate = combine_status(aggregate, mapped);
+    }
+
+    Ok(GateResult {
+        gate_id,
+        candidate,
+        status: aggregate,
+        evidence: evidence_ids,
+        evaluated_at: now,
+    })
+}
+
+/// Combine two gate-status values from checks into the worst
+/// one seen so far. `NotEvaluated` is the absence of evidence;
+/// it is *not* a downgrade signal — it simply leaves the
+/// aggregate unchanged when paired with a real status.
+fn combine_status(a: GateStatus, b: GateStatus) -> GateStatus {
+    let rank = |s: GateStatus| -> u8 {
+        match s {
+            GateStatus::Fail => 5,
+            GateStatus::Blocked => 4,
+            GateStatus::ReviewRequired => 3,
+            GateStatus::NotApplicable => 1,
+            GateStatus::Pass => 2,
+            // `NotEvaluated` carries no signal: rank 0 so it
+            // never wins a comparison against a real status.
+            GateStatus::NotEvaluated => 0,
+        }
+    };
+    let ra = rank(a);
+    let rb = rank(b);
+    if ra == 0 && rb == 0 {
+        // Both inert: gate still not evaluated.
+        GateStatus::NotEvaluated
+    } else if ra == 0 {
+        b
+    } else if rb == 0 {
+        a
+    } else if rb > ra {
+        b
+    } else {
+        a
+    }
+}
+
+/// Map an evidence-status to the gate-status it implies.
+fn evidence_to_gate_status(status: EvidenceStatus) -> GateStatus {
+    match status {
+        EvidenceStatus::Pass => GateStatus::Pass,
+        EvidenceStatus::Fail => GateStatus::Fail,
+        EvidenceStatus::NotApplicable => GateStatus::NotApplicable,
+        EvidenceStatus::Inconclusive => GateStatus::ReviewRequired,
+        EvidenceStatus::InfrastructureError => GateStatus::Blocked,
+    }
 }
