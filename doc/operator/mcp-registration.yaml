@@ -27,9 +27,14 @@ extensions:
     transport: streamable_http
 
     auth:
-      # The bearer token is read fresh on every call by IronClaw's
-      # egress layer; rotating the token file is enough to invalidate
-      # every active session.
+      # The token file is read by *the client* on each outbound call,
+      # so editing it takes effect for new calls the next time
+      # IronClaw dispatches. Note what it does NOT do: the server
+      # reads the expected token once at startup, so rotating the
+      # file does not revoke anything until ironmaintd is
+      # restarted. To revoke a token, restart the daemon with a new
+      # file. (The 0B.6 comment here claimed file rotation alone was
+      # sufficient to invalidate every session; it is not.)
       kind: bearer
       bearer_token_file: ~/.config/ironmaint/token
 
@@ -65,7 +70,11 @@ extensions:
 
     # Health probe: the server is healthy if `initialize` returns 200
     # within 1 s. IronClaw uses this to decide when the extension is
-    # ready to receive tool calls after activation.
+    # ready to receive tool calls after activation. The probe must
+    # send `accept: application/json, text/event-stream`; a request
+    # offering only one of the two is answered 406 before it is ever
+    # dispatched, and an unauthenticated probe is 401 (see
+    # doc/operator/ironclaw-setup.md §1).
     healthcheck:
       method: initialize
       timeout_ms: 1000
