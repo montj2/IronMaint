@@ -50,25 +50,25 @@ pub struct WorkspaceState {
 /// Durable storage for workspace metadata.
 pub trait WorkspaceMetadataStore: Send + Sync {
     /// Read the current state for a workspace.
-    async fn get_workspace_state(
+    fn get_workspace_state(
         &self,
         handle: &WorkspaceHandle,
-    ) -> Result<WorkspaceState, StoreError>;
+    ) -> impl std::future::Future<Output = Result<WorkspaceState, StoreError>> + Send;
 
     /// Persist a new state for a workspace, taking the previous
     /// revision as `expected_revision` for CAS. Returns
     /// [`crate::error::StoreErrorKind::Conflict`] on mismatch.
-    async fn put_workspace_state(
+    fn put_workspace_state(
         &self,
         state: &WorkspaceState,
         expected_revision: u64,
-    ) -> Result<(), StoreError>;
+    ) -> impl std::future::Future<Output = Result<(), StoreError>> + Send;
 
     /// List workspaces attached to a job.
-    async fn list_workspaces_for_job(
+    fn list_workspaces_for_job(
         &self,
         job_id: JobId,
-    ) -> Result<Vec<WorkspaceHandle>, StoreError>;
+    ) -> impl std::future::Future<Output = Result<Vec<WorkspaceHandle>, StoreError>> + Send;
 }
 
 /// Forwarding impl so a shared, reference-counted store can be

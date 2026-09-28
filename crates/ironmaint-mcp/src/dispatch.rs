@@ -30,10 +30,23 @@ use crate::schema::McpToolName;
 /// would make `McpRuntime::new` unusable for them. The three that
 /// do need a tree report a typed error when it is absent rather
 /// than silently degrading to a stub.
-#[derive(Clone)]
 pub struct McpRuntime<S: IronMaintStore + ?Sized, E: Executor + ?Sized> {
     service: Arc<RuntimeService<S, E>>,
     workspace: Option<Arc<WorkspaceManager<Arc<S>>>>,
+}
+
+/// Hand-written rather than `#[derive(Clone)]`: every field is an
+/// `Arc`, so cloning is unconditional, but the derive would add
+/// `S: Clone, E: Clone` bounds the fields do not need — and the
+/// transport needs to clone this per request, with a store type
+/// that is not `Clone`.
+impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> Clone for McpRuntime<S, E> {
+    fn clone(&self) -> Self {
+        Self {
+            service: Arc::clone(&self.service),
+            workspace: self.workspace.clone(),
+        }
+    }
 }
 
 impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> McpRuntime<S, E> {

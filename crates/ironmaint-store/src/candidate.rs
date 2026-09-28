@@ -17,53 +17,56 @@ use crate::error::StoreError;
 pub trait CandidateStore: Send + Sync {
     /// Persist a new `SourceCandidate`. The store indexes it by
     /// `candidate.id` and by `(job_id, fingerprint)` for lookup.
-    async fn put_source_candidate(
+    fn put_source_candidate(
         &self,
         candidate: &SourceCandidate,
-    ) -> Result<CandidateId, StoreError>;
+    ) -> impl std::future::Future<Output = Result<CandidateId, StoreError>> + Send;
 
     /// Look up a `SourceCandidate` by id.
-    async fn get_source_candidate(&self, id: CandidateId) -> Result<SourceCandidate, StoreError>;
+    fn get_source_candidate(
+        &self,
+        id: CandidateId,
+    ) -> impl std::future::Future<Output = Result<SourceCandidate, StoreError>> + Send;
 
     /// Persist a new `ReleaseCandidate`.
-    async fn put_release_candidate(
+    fn put_release_candidate(
         &self,
         candidate: &ReleaseCandidate,
-    ) -> Result<ReleaseCandidateId, StoreError>;
+    ) -> impl std::future::Future<Output = Result<ReleaseCandidateId, StoreError>> + Send;
 
     /// Look up a `ReleaseCandidate` by id.
-    async fn get_release_candidate(
+    fn get_release_candidate(
         &self,
         id: ReleaseCandidateId,
-    ) -> Result<ReleaseCandidate, StoreError>;
+    ) -> impl std::future::Future<Output = Result<ReleaseCandidate, StoreError>> + Send;
 
     /// List `SourceCandidate` ids for a job, in capture order.
-    async fn list_source_candidates_for_job(
+    fn list_source_candidates_for_job(
         &self,
         job_id: JobId,
-    ) -> Result<Vec<CandidateId>, StoreError>;
+    ) -> impl std::future::Future<Output = Result<Vec<CandidateId>, StoreError>> + Send;
 
     /// The active `SourceCandidate` for a job (the one driving the
     /// current workflow), if any.
-    async fn active_source_candidate(
+    fn active_source_candidate(
         &self,
         job_id: JobId,
-    ) -> Result<Option<CandidateId>, StoreError>;
+    ) -> impl std::future::Future<Output = Result<Option<CandidateId>, StoreError>> + Send;
 
     /// Set the active `SourceCandidate` for a job. No-op if already
     /// set to the same id.
-    async fn set_active_source_candidate(
+    fn set_active_source_candidate(
         &self,
         job_id: JobId,
         id: CandidateId,
-    ) -> Result<(), StoreError>;
+    ) -> impl std::future::Future<Output = Result<(), StoreError>> + Send;
 
     /// Look up a `SourceCandidate` by its immutable fingerprint.
     /// Used to deduplicate captures that resolve to the same bytes.
-    async fn find_source_by_fingerprint(
+    fn find_source_by_fingerprint(
         &self,
         fingerprint: &CandidateFingerprint,
-    ) -> Result<Option<CandidateId>, StoreError>;
+    ) -> impl std::future::Future<Output = Result<Option<CandidateId>, StoreError>> + Send;
 }
 
 /// Forwarding impl so a shared, reference-counted store can be

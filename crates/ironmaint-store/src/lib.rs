@@ -90,6 +90,31 @@ pub use crate::workspace::WorkspaceMetadataStore;
 /// and then expose `IronMaintStore` as a convenience trait that
 /// bundles them. Callers that need only one sub-trait should depend
 /// on it directly to keep their dependency surface minimal.
+///
+/// # Why every sub-trait method returns `impl Future + Send`
+///
+/// Each sub-trait method is declared as
+/// `fn … -> impl Future<Output = …> + Send` rather than
+/// `async fn`. A bare `async fn` in a trait promises nothing about
+/// whether its future may cross a thread boundary, so a caller
+/// holding one cannot move it to another task even when the
+/// concrete backend would happily allow it — and cannot *prove* it
+/// is fine, which is the part that matters.
+///
+/// `Executor::execute` already worked this way; these traits
+/// lagged it. The daemon is what closed the gap: `rmcp`'s
+/// `ServerHandler` futures are `Send`-bounded, and the MCP
+/// dispatcher reaches storage through these traits, so a
+/// non-`Send` store future makes the whole transport
+/// uncompilable. Rather than work around that with a
+/// `Box<dyn Future + Send>` that would have to *assert* the very
+/// bound it cannot check, the store contract now states the bound
+/// it wants. Every backend in the workspace satisfies it.
+///
+/// Implementations may still write `async fn`; the compiler checks
+/// the generated future against the declaration, so a backend that
+/// holds a non-`Send` guard across an `await` fails to compile
+/// rather than misbehaving under load.
 pub trait IronMaintStore:
     EventStore
     + ProjectionStore

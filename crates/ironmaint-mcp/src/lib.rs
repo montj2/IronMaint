@@ -25,9 +25,11 @@ pub mod auth;
 pub mod dispatch;
 pub mod error;
 pub mod schema;
+pub mod server;
 pub mod tools;
 
 pub use auth::{AuthError, AuthToken, TokenValidator};
 pub use dispatch::{McpRuntime, dispatch};
 pub use error::McpError;
 pub use schema::{McpToolName, generate_all_schemas};
+pub use server::{IronMaintMcpServer, default_config, router, service};

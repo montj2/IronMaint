@@ -99,6 +99,10 @@ rmcp = { version = "3", features = ["server", "transport-streamable-http-server"
 # proven upstream rather than assumed here. tokio-util is not re-exported by
 # rmcp, so the graceful-shutdown CancellationToken is a direct dependency.
 axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+# HTTP client for the transport tests: they must exercise the
+# server over a real socket, since "the MCP server has no
+# transport" is precisely the claim under test.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }

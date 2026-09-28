@@ -20,7 +20,10 @@ ironmaint-policy = { path = "../ironmaint-policy" }
 ironmaint-runtime = { path = "../ironmaint-runtime" }
 ironmaint-store = { path = "../ironmaint-store" }
 ironmaint-workspace = { path = "../ironmaint-workspace" }
+axum = { workspace = true }
+rmcp = { workspace = true }
 time = { workspace = true }
+tokio-util = { workspace = true }
 url = { workspace = true }
 uuid = { workspace = true }
 schemars = { workspace = true }
@@ -36,5 +39,7 @@ thiserror = { workspace = true }
 ironmaint-adapter-api = { path = "../ironmaint-adapter-api" }
 ironmaint-testkit = { path = "../ironmaint-testkit" }
 ironmaint-store = { path = "../ironmaint-store" }
-tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+reqwest = { workspace = true, features = ["json"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "net"] }
+tokio-util = { workspace = true }
 tempfile = { workspace = true }
