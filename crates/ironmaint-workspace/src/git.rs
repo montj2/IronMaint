@@ -1,8 +1,9 @@
 //! Minimal `git` invocation primitive.
 //!
-//! Wraps `tokio::process::Command` for the four subcommands the
-//! workspace manager needs (PHASE-0B.md §39): `apply`, `status`,
-//! `diff`, and `log -n N`. No rebasing, no fetch, no push.
+//! Wraps `tokio::process::Command` for the subcommands the
+//! workspace manager needs (PHASE-0B.md §39): `init`, `apply`,
+//! `status`, `diff`, and `log -n N`. No rebasing, no fetch, no
+//! push.
 //!
 //! The environment is a *sanitised* map: callers construct an
 //! explicit `BTreeMap` of env vars. There is no path where the
@@ -101,6 +102,37 @@ impl GitInvocation {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
         c
+    }
+
+    /// `git init` in the workspace directory, plus a deterministic
+    /// initial branch name.
+    ///
+    /// Every other subcommand in this module assumes a repository
+    /// exists — `apply` and `status` both fail with a git usage
+    /// error otherwise. Historically each test had to build its own
+    /// repo by hand; a daemon has no such caller, so provisioning
+    /// the tree is part of materialising a workspace.
+    ///
+    /// Idempotent: re-running it on an initialised tree is a no-op,
+    /// which is what lets `materialise_tree` be called on every
+    /// tool invocation without tracking whether it already ran.
+    pub async fn init(&self) -> Result<(), WorkspaceError> {
+        let out = self
+            .cmd()
+            .arg("init")
+            .arg("--initial-branch=main")
+            .arg("--quiet")
+            .stdin(Stdio::null())
+            .output()
+            .await
+            .map_err(|e| WorkspaceError::new(WorkspaceErrorKind::Command(format!("spawn: {e}"))))?;
+        if !out.status.success() {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git init failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ))));
+        }
+        Ok(())
     }
 
     pub async fn apply(&self, patch: &str) -> Result<(), WorkspaceError> {

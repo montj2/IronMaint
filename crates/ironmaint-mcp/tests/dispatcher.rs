@@ -38,6 +38,7 @@ use ironmaint_mcp::schema::McpToolName;
 use ironmaint_mcp::{McpRuntime, dispatch};
 use ironmaint_runtime::{RuntimeService, SystemClock};
 use ironmaint_store::mock::MockStore;
+use ironmaint_workspace::WorkspaceManager;
 use time::OffsetDateTime;
 
 /// Always-passes scripted executor — used so any
@@ -70,6 +71,27 @@ fn build_runtime() -> RuntimeService<MockStore, PassExecutor> {
     let executor = Arc::new(PassExecutor);
     let registry = Arc::new(ToolRegistry::new());
     RuntimeService::new(store, clock, executor, registry)
+}
+
+/// Build a dispatcher whose workspace tools are live, over a real
+/// git-backed working tree rooted in a throwaway directory.
+///
+/// The store handle is shared: the runtime owns `Arc<MockStore>`
+/// and the `WorkspaceManager` borrows the same `Arc`, which is how
+/// a daemon is wired (§98.6 — no second connection).
+fn build_runtime_with_workspace(root: &std::path::Path) -> McpRuntime<MockStore, PassExecutor> {
+    let store = Arc::new(MockStore::new());
+    let clock: Arc<dyn ironmaint_runtime::Clock> = Arc::new(SystemClock);
+    let executor = Arc::new(PassExecutor);
+    let registry = Arc::new(ToolRegistry::new());
+    let service = Arc::new(RuntimeService::new(
+        Arc::clone(&store),
+        clock,
+        executor,
+        registry,
+    ));
+    let workspace = Arc::new(WorkspaceManager::new(root.to_path_buf(), store));
+    McpRuntime::new(service).with_workspace(workspace)
 }
 
 fn debian_foo() -> PackageIdentity {
@@ -183,7 +205,8 @@ async fn dispatcher_rejects_unknown_tool() {
 
 #[tokio::test]
 async fn dispatcher_round_trips_capture_through_runtime() {
-    let mcp = McpRuntime::new(Arc::new(build_runtime()));
+    let tmp = tempfile::tempdir().expect("temp workspace root");
+    let mcp = build_runtime_with_workspace(tmp.path());
 
     let create_out = dispatch(
         mcp.clone(),
@@ -217,7 +240,8 @@ async fn dispatcher_round_trips_capture_through_runtime() {
 
 #[tokio::test]
 async fn dispatcher_round_trips_workspace_stat() {
-    let mcp = McpRuntime::new(Arc::new(build_runtime()));
+    let tmp = tempfile::tempdir().expect("temp workspace root");
+    let mcp = build_runtime_with_workspace(tmp.path());
     // workspace.stat needs a job_id (the workspace is
     // attached to a job); we just create one and pass it.
     let create_out = dispatch(
@@ -236,10 +260,43 @@ async fn dispatcher_round_trips_workspace_stat() {
     )
     .await
     .expect("workspace.stat must succeed");
-    // `WorkspaceRevision::ZERO` is `0`, so the dispatcher must
-    // return revision=0 for a fresh workspace.
+    // A genuinely-provisioned empty workspace has never been
+    // mutated, so its stored revision really is 0. Before 0B.9
+    // this assertion passed for the wrong reason: the dispatcher
+    // fabricated a `WorkspaceRevision::new()` without reading any
+    // state. It is now backed by the store.
     let rev = out.get("revision").and_then(|v| v.as_u64());
     assert_eq!(rev, Some(0));
+}
+
+#[tokio::test]
+async fn workspace_tools_report_a_typed_error_when_no_manager_is_configured() {
+    // A deployment that forgets `with_workspace` must get an
+    // actionable error, not a fabricated success.
+    let mcp = McpRuntime::new(Arc::new(build_runtime()));
+    let create_out = dispatch(
+        mcp.clone(),
+        &McpToolName("job.create".to_string()),
+        create_input(),
+    )
+    .await
+    .expect("create must succeed");
+    let job_id: JobId = serde_json::from_value(create_out.get("job_id").cloned().unwrap()).unwrap();
+
+    let err = dispatch(
+        mcp,
+        &McpToolName("workspace.stat".to_string()),
+        serde_json::json!({ "job_id": job_id }),
+    )
+    .await
+    .expect_err("stat without a workspace manager must error");
+    let ironmaint_mcp::McpError::Internal(message) = err else {
+        panic!("expected McpError::Internal, got {err:?}");
+    };
+    assert!(
+        message.contains("with_workspace"),
+        "the error must name the missing builder call: {message}"
+    );
 }
 
 // Suppress unused-import warnings when the dispatcher test

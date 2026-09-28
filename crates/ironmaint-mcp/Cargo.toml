@@ -32,3 +32,4 @@ thiserror = { workspace = true }
 ironmaint-testkit = { path = "../ironmaint-testkit" }
 ironmaint-store = { path = "../ironmaint-store" }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = { workspace = true }

@@ -4,6 +4,8 @@
 //! (Phase 0A) are immutable records. The store holds the latest
 //! per-job active candidate and the historical record by id.
 
+use std::sync::Arc;
+
 use ironmaint_core::{
     CandidateFingerprint, CandidateId, JobId, ReleaseCandidateId, SourceCandidate,
 };
@@ -62,4 +64,65 @@ pub trait CandidateStore: Send + Sync {
         &self,
         fingerprint: &CandidateFingerprint,
     ) -> Result<Option<CandidateId>, StoreError>;
+}
+
+/// Forwarding impl so a shared, reference-counted store can be
+/// handed to a second consumer. See the rationale on
+/// `WorkspaceMetadataStore for Arc<T>` in `workspace.rs` — the
+/// workspace manager needs the runtime's `Arc<S>`, not a second
+/// connection to a database that holds an exclusive lock.
+impl<T: CandidateStore + ?Sized> CandidateStore for Arc<T> {
+    async fn put_source_candidate(
+        &self,
+        candidate: &SourceCandidate,
+    ) -> Result<CandidateId, StoreError> {
+        (**self).put_source_candidate(candidate).await
+    }
+
+    async fn get_source_candidate(&self, id: CandidateId) -> Result<SourceCandidate, StoreError> {
+        (**self).get_source_candidate(id).await
+    }
+
+    async fn put_release_candidate(
+        &self,
+        candidate: &ReleaseCandidate,
+    ) -> Result<ReleaseCandidateId, StoreError> {
+        (**self).put_release_candidate(candidate).await
+    }
+
+    async fn get_release_candidate(
+        &self,
+        id: ReleaseCandidateId,
+    ) -> Result<ReleaseCandidate, StoreError> {
+        (**self).get_release_candidate(id).await
+    }
+
+    async fn list_source_candidates_for_job(
+        &self,
+        job_id: JobId,
+    ) -> Result<Vec<CandidateId>, StoreError> {
+        (**self).list_source_candidates_for_job(job_id).await
+    }
+
+    async fn find_source_by_fingerprint(
+        &self,
+        fingerprint: &CandidateFingerprint,
+    ) -> Result<Option<CandidateId>, StoreError> {
+        (**self).find_source_by_fingerprint(fingerprint).await
+    }
+
+    async fn active_source_candidate(
+        &self,
+        job_id: JobId,
+    ) -> Result<Option<CandidateId>, StoreError> {
+        (**self).active_source_candidate(job_id).await
+    }
+
+    async fn set_active_source_candidate(
+        &self,
+        job_id: JobId,
+        id: CandidateId,
+    ) -> Result<(), StoreError> {
+        (**self).set_active_source_candidate(job_id, id).await
+    }
 }
