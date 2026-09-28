@@ -87,6 +87,14 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             RuntimeCommand::CaptureCandidate { job_id, candidate } => {
                 self.handle_capture_candidate(job_id, candidate).await
             }
+            RuntimeCommand::MaterializeChecks {
+                job_id,
+                candidate,
+                planned,
+            } => {
+                self.handle_materialize_checks(job_id, candidate, planned)
+                    .await
+            }
             RuntimeCommand::SetActiveCandidate {
                 job_id,
                 fingerprint,
@@ -299,6 +307,43 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         Ok(CommandResult {
             new_version: 0,
             new_sequence: sequence,
+            side_effects: vec![side_effect],
+        })
+    }
+
+    /// `MaterializeChecks`: convert adapter `PlannedCheck`s into
+    /// durable `GateDefinition` + `CheckDefinition` rows tied to
+    /// the active candidate. Pure projection materialisation —
+    /// does not transition state, only writes the durable
+    /// contracts `RunCheck { check_id }` and `next_actions` will
+    /// reference.
+    ///
+    /// Implements PHASE-0B.md §44 (Check Model) + §45 (Check
+    /// Planning). Maps each `evidence_kind` to its
+    /// `GateStage` via `gate_stage_for`; kinds that don't map
+    /// to a known gate stage are silently filtered (e.g.,
+    /// `EvidenceKind::Other(_)` is reserved for tool outputs
+    /// that don't tie into a specific gate).
+    async fn handle_materialize_checks(
+        &self,
+        job_id: JobId,
+        candidate: CandidateFingerprint,
+        planned: Vec<(ToolCapabilityKey, ironmaint_evidence::EvidenceKind, bool)>,
+    ) -> Result<CommandResult, RuntimeError> {
+        let materialised = crate::check::plan_to_materialised(candidate.clone(), &planned);
+        let checks = crate::check::persist_materialised(
+            self.store.as_ref(),
+            job_id,
+            candidate,
+            &materialised,
+        )
+        .await
+        .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+
+        let side_effect = format!("materialized {} check(s) for job {}", checks.len(), job_id);
+        Ok(CommandResult {
+            new_version: 0,
+            new_sequence: 0,
             side_effects: vec![side_effect],
         })
     }

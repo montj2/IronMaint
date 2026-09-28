@@ -29,6 +29,7 @@
     )
 )]
 
+pub mod check;
 pub mod clock;
 pub mod command;
 pub mod config;
@@ -38,6 +39,7 @@ pub mod orchestrator;
 pub mod query;
 pub mod service;
 
+pub use check::{MaterialisedCheck, gate_stage_for, persist_materialised, plan_to_materialised};
 pub use clock::{Clock, FixedClock, SystemClock};
 pub use command::RuntimeCommand;
 pub use config::RuntimeConfig;

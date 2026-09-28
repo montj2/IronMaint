@@ -6,14 +6,15 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use ironmaint_core::{
-    ArtifactId, CandidateFingerprint, CandidateId, EvidenceId, GateId, JobId, JobProjection,
-    ObligationId, OperationId, ReleaseCandidateId, SourceCandidate,
+    ArtifactId, CandidateFingerprint, CandidateId, CheckId, EvidenceId, GateId, JobId,
+    JobProjection, ObligationId, OperationId, ReleaseCandidateId, SourceCandidate,
 };
 use ironmaint_evidence::{Evidence, GateDefinition, GateResult};
 use ironmaint_policy::{AuthorizationState, Obligation, PrivilegedOperation, ReleaseCandidate};
 
 use crate::artifact::{ArtifactMetadataStore, ArtifactRecord};
 use crate::candidate::CandidateStore;
+use crate::check::{CheckDefinition, CheckStore};
 use crate::envelope::EventEnvelope;
 use crate::error::StoreError;
 use crate::event::EventStore;
@@ -66,6 +67,8 @@ struct MockInner {
     artifacts_by_job: HashMap<JobId, Vec<ArtifactId>>,
     workspaces: HashMap<WorkspaceHandle, WorkspaceState>,
     workspaces_by_job: HashMap<JobId, Vec<WorkspaceHandle>>,
+    checks: HashMap<CheckId, CheckDefinition>,
+    checks_by_job: HashMap<JobId, Vec<CheckId>>,
 }
 
 impl MockStore {
@@ -598,6 +601,36 @@ impl WorkspaceMetadataStore for MockStore {
             .get(&job_id)
             .cloned()
             .unwrap_or_default())
+    }
+}
+
+impl CheckStore for MockStore {
+    async fn put_check(&self, check: &CheckDefinition) -> Result<(), StoreError> {
+        let mut w = self.write();
+        let id = check.id;
+        let already = w.checks.contains_key(&id);
+        w.checks.insert(id, check.clone());
+        if !already {
+            w.checks_by_job.entry(check.job_id).or_default().push(id);
+            // Keep the per-job list in id-sorted (UUIDv7) order.
+            if let Some(list) = w.checks_by_job.get_mut(&check.job_id) {
+                list.sort_unstable_by_key(|c| *c.as_uuid().as_bytes());
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_check(&self, id: CheckId) -> Result<CheckDefinition, StoreError> {
+        let r = self.read();
+        r.checks
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| StoreError::not_found(format!("check {id}")))
+    }
+
+    async fn list_checks_for_job(&self, job_id: JobId) -> Result<Vec<CheckId>, StoreError> {
+        let r = self.read();
+        Ok(r.checks_by_job.get(&job_id).cloned().unwrap_or_default())
     }
 }
 

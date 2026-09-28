@@ -4,6 +4,7 @@
 //! The service is responsible for going through the state
 //! machine; commands never write to the store directly.
 
+use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_core::{CandidateFingerprint, JobId, PackageIdentity, SourceCandidate};
 use ironmaint_evidence::{EvidenceKind, EvidenceStatus};
 use ironmaint_executor::RetryClass;
@@ -35,6 +36,20 @@ pub enum RuntimeCommand {
     CaptureCandidate {
         job_id: JobId,
         candidate: SourceCandidate,
+    },
+    /// Materialise an adapter's `BuildPlan` + `QaPlan` into durable
+    /// `CheckDefinition`s tied to the active candidate.
+    ///
+    /// Each `(tool_key, evidence_kind, mandatory)` triple becomes a
+    /// `CheckDefinition` row plus a corresponding `GateDefinition`.
+    /// The handler is pure projection materialisation — it does
+    /// not transition state, only writes durable check contracts
+    /// that `RunCheck { check_id }` and `next_actions` will
+    /// reference.
+    MaterializeChecks {
+        job_id: JobId,
+        candidate: CandidateFingerprint,
+        planned: Vec<(ToolCapabilityKey, EvidenceKind, bool)>,
     },
     SetActiveCandidate {
         job_id: JobId,

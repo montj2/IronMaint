@@ -454,6 +454,26 @@ impl WorkspaceMetadataStore for SqliteStore {
     }
 }
 
+impl ironmaint_store::CheckStore for SqliteStore {
+    async fn put_check(&self, check: &ironmaint_store::CheckDefinition) -> Result<(), StoreError> {
+        ops::checks::put_check(&self.pool, check).await
+    }
+
+    async fn get_check(
+        &self,
+        id: ironmaint_core::CheckId,
+    ) -> Result<ironmaint_store::CheckDefinition, StoreError> {
+        ops::checks::get_check(&self.pool, id).await
+    }
+
+    async fn list_checks_for_job(
+        &self,
+        job_id: ironmaint_core::JobId,
+    ) -> Result<Vec<ironmaint_core::CheckId>, StoreError> {
+        ops::checks::list_checks_for_job(&self.pool, job_id).await
+    }
+}
+
 /// Apply any committed migrations that have not been applied yet.
 ///
 /// PHASE-0B.md §30 requires the daemon to refuse to run against
