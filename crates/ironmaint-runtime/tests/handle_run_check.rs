@@ -25,17 +25,17 @@ use ironmaint_core::{
     GitHashAlgorithm, GitObjectId, JobId, JobState, MaintenanceEventId, PackageIdentity,
     PackageName, PackageRevision, PackageVersion, RepositoryRef, SourceCandidate, VcsKind,
 };
-use ironmaint_evidence::{Evidence, EvidenceKind, EvidenceStatus};
+use ironmaint_evidence::{Evidence, EvidenceKind, EvidenceStatus, GateStatus};
 use ironmaint_executor::{
     ExecutionClass, ExecutionLimits, ExecutionRequest, Executor, ExecutorError, ExecutorErrorKind,
     RetryClass, ToolDefinitionRecord, ToolRegistry,
 };
-use ironmaint_runtime::{
-    Clock, FixedClock, RuntimeCommand, RuntimeErrorKind, RuntimeQuery, RuntimeService,
-};
+use ironmaint_runtime::{Clock, FixedClock, RuntimeCommand, RuntimeQuery, RuntimeService};
 use ironmaint_state::{JobEvent, ToolOutcome};
 use ironmaint_store::mock::MockStore;
-use ironmaint_store::{CandidateStore, CheckStore, EventStore, EvidenceStore, ProjectionStore};
+use ironmaint_store::{
+    CandidateStore, CheckStore, EventStore, EvidenceStore, GateStore, ProjectionStore,
+};
 use time::OffsetDateTime;
 use url::Url;
 
@@ -396,10 +396,21 @@ async fn truncated_path_records_truncated_on_evidence_and_event() {
 }
 
 #[tokio::test]
-async fn infrastructure_failure_is_propagated_as_runtime_error() {
-    // §92: when the executor itself fails (spawn error, etc.),
-    // no Evidence row is written and no ToolRunFinished event is
-    // appended — the runtime surfaces the error.
+async fn infrastructure_failure_records_infrastructure_error_evidence() {
+    // An executor-level infrastructure failure (spawn error, worker
+    // gone) is still a *check operation*, and §97 checkpoint 16
+    // requires check operations to be persisted. §15 keeps it
+    // distinct from a tool failure: the evidence carries
+    // `InfrastructureError`, so gate aggregation blocks the gate
+    // (§29) rather than failing it — an infrastructure problem is
+    // not evidence that the package is broken.
+    //
+    // Until 0B.9 this propagated as a `RuntimeError` and wrote
+    // nothing, which left the gate `NotEvaluated` forever and made
+    // §15's "so gate evaluation can react accordingly" unreachable:
+    // `ProcessExecutor` reports a spawn failure as an *error*, never
+    // as a record with exit code 127, so the mapping arm below was
+    // dead code in production.
     let store: Arc<MockStore> = Arc::new(MockStore::new());
     let mut registry = ToolRegistry::new();
     registry
@@ -421,21 +432,47 @@ async fn infrastructure_failure_is_propagated_as_runtime_error() {
     )
     .await;
 
-    let err = svc
-        .handle_command(RuntimeCommand::RunCheck {
-            job_id,
-            check_id,
-            retry_class: RetryClass::Safe,
-        })
-        .await
-        .expect_err("must propagate infrastructure failure");
-
-    assert_eq!(err.kind, RuntimeErrorKind::Executor);
+    svc.handle_command(RuntimeCommand::RunCheck {
+        job_id,
+        check_id,
+        retry_class: RetryClass::Safe,
+    })
+    .await
+    .expect("an infrastructure failure must still record a result");
 
     let evidences = store.list_evidence_for_job(job_id).await.expect("list");
+    assert_eq!(
+        evidences.len(),
+        1,
+        "the failed check operation must be persisted exactly once"
+    );
+    assert_eq!(
+        evidences[0].status,
+        EvidenceStatus::InfrastructureError,
+        "an infrastructure problem must not be recorded as a package failure"
+    );
+    // The producer is tagged so a synthesised record is
+    // distinguishable from a real process exit.
     assert!(
-        evidences.is_empty(),
-        "infrastructure failure must not produce an Evidence row"
+        evidences[0]
+            .producer
+            .name
+            .as_str()
+            .ends_with("#executor-error"),
+        "producer must be tagged as executor-derived, got {:?}",
+        evidences[0].producer.name.as_str()
+    );
+
+    // And the gate must be Blocked, not Fail.
+    let gate_id = store.get_check(check_id).await.expect("check").gate_id;
+    let gate = store
+        .get_gate_result(gate_id, &fingerprint)
+        .await
+        .expect("gate result");
+    assert_eq!(
+        gate.status,
+        GateStatus::Blocked,
+        "an InfrastructureError blocks the gate instead of failing it"
     );
 }
 
@@ -521,15 +558,32 @@ async fn timeout_outcome_propagates_to_tool_run_finished() {
     )
     .await;
 
-    let err = svc
-        .handle_command(RuntimeCommand::RunCheck {
-            job_id,
-            check_id,
-            retry_class: RetryClass::Safe,
-        })
+    svc.handle_command(RuntimeCommand::RunCheck {
+        job_id,
+        check_id,
+        retry_class: RetryClass::Safe,
+    })
+    .await
+    .expect("a wall-clock timeout must still record a result");
+
+    // §15: a timeout is a tool-side outcome, so it collapses to
+    // `Fail` for evidence — but the audit event keeps
+    // `ToolOutcome::Timeout`, which is asserted by
+    // `timeout_outcome_propagates_to_tool_run_finished` below.
+    let evidences = store.list_evidence_for_job(job_id).await.expect("list");
+    assert_eq!(evidences.len(), 1, "timeout must be persisted");
+    assert_eq!(
+        evidences[0].status,
+        EvidenceStatus::Fail,
+        "a wall-clock timeout collapses to Fail for evidence purposes"
+    );
+
+    let gate_id = store.get_check(check_id).await.expect("check").gate_id;
+    let gate = store
+        .get_gate_result(gate_id, &fingerprint)
         .await
-        .expect_err("timeout surfaces as executor error");
-    assert_eq!(err.kind, RuntimeErrorKind::Executor);
+        .expect("gate result");
+    assert_eq!(gate.status, GateStatus::Fail);
 }
 
 #[tokio::test]
@@ -561,15 +615,20 @@ async fn bad_path_tool_at_registry_is_a_complete_error_path() {
     )
     .await;
 
-    let err = svc
-        .handle_command(RuntimeCommand::RunCheck {
-            job_id,
-            check_id,
-            retry_class: RetryClass::Safe,
-        })
-        .await
-        .expect_err("bad-path tool must surface as infra failure");
-    assert_eq!(err.kind, RuntimeErrorKind::Executor);
+    // The point of this test is that a missing executable produces a
+    // clean, recorded infrastructure failure — no unwrap, no
+    // panic, and an audit trail the operator can read afterwards.
+    svc.handle_command(RuntimeCommand::RunCheck {
+        job_id,
+        check_id,
+        retry_class: RetryClass::Safe,
+    })
+    .await
+    .expect("a bad-path tool must surface as a recorded infra failure");
+
+    let evidences = store.list_evidence_for_job(job_id).await.expect("list");
+    assert_eq!(evidences.len(), 1, "bad-path run must be persisted");
+    assert_eq!(evidences[0].status, EvidenceStatus::InfrastructureError);
 }
 
 // `_query_projection` keeps `RuntimeQuery` imported for future

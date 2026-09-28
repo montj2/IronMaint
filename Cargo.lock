@@ -813,6 +813,7 @@ dependencies = [
 name = "ironmaint-mcp"
 version = "0.1.0"
 dependencies = [
+ "ironmaint-adapter-api",
  "ironmaint-core",
  "ironmaint-evidence",
  "ironmaint-executor",

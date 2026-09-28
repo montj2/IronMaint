@@ -104,10 +104,10 @@ pub async fn dispatch<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         "job.next_actions" => dispatch_next_actions(&runtime, input).await,
         "job.reconcile" => dispatch_reconcile(&runtime, input).await,
         "candidate.capture" => dispatch_capture(&runtime, input).await,
-        "check.run" => dispatch_check_run(input).await,
+        "check.run" => dispatch_check_run(&runtime, input).await,
         "workspace.apply_patch" => dispatch_apply_patch(&runtime, input).await,
         "workspace.stat" => dispatch_workspace_stat(&runtime, input).await,
-        "operation.get" => dispatch_operation_get(input).await,
+        "operation.get" => dispatch_operation_get(&runtime, input).await,
         unknown => Err(McpError::Other(format!("unknown tool: {unknown}"))),
     }
 }
@@ -248,21 +248,42 @@ async fn dispatch_capture<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 
-async fn dispatch_check_run(input: serde_json::Value) -> Result<serde_json::Value, McpError> {
-    let _input: crate::tools::check::RunCheckInput =
+async fn dispatch_check_run<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let input: crate::tools::check::RunCheckInput =
         serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
-    // The actual execution lives on the runtime as
-    // `RuntimeCommand::RunCheck { job_id, check_id }`. The MCP
-    // layer for 0B.6 only validates the input shape; the streamable
-    // HTTP transport wires the runtime call when it adopts this
-    // dispatch in the next commit. Returning the parsed input as
-    // JSON keeps the tool round-trip observable end-to-end.
-    let out = crate::tools::check::RunCheckOutput {
-        tool_key: String::new(),
-        exit_code: 0,
-        stdout: String::new(),
-        stderr: String::new(),
+    runtime
+        .service
+        .handle_command(RuntimeCommand::RunCheck {
+            check_id: input.check_id,
+            retry_class: input
+                .retry_class
+                .unwrap_or(ironmaint_executor::RetryClass::Safe),
+            job_id: input.job_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    // Read the outcome back through the runtime's own query path
+    // rather than parsing the command's stringly-typed
+    // `side_effects`. The command deliberately reports only what it
+    // changed; the durable verdict is a separate read, and reusing
+    // the query keeps `check.run` from growing a second, subtly
+    // different answer.
+    let query = runtime
+        .service
+        .handle_query(RuntimeQuery::GetCheckOutcome {
+            check_id: input.check_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    let ironmaint_runtime::QueryResult::CheckOutcome(outcome) = query else {
+        return Err(McpError::Other(
+            "GetCheckOutcome returned wrong variant".into(),
+        ));
     };
+    let out = crate::tools::check::RunCheckOutput::from(outcome);
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 
@@ -310,21 +331,29 @@ async fn dispatch_workspace_stat<S: IronMaintStore + ?Sized, E: Executor + ?Size
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 
-async fn dispatch_operation_get(input: serde_json::Value) -> Result<serde_json::Value, McpError> {
-    let _input: crate::tools::operation::GetInput =
+async fn dispatch_operation_get<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let input: crate::tools::operation::GetInput =
         serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
-    // The MCP layer does not mint PrivilegedOperation objects on its
-    // own; the runtime is the only owner of the authorization state
-    // machine. Returning a sentinel `proposed` record here keeps the
-    // tool schema round-trippable until 0B.6 wires the actual
-    // `OperationStore::get` lookup behind this entry point.
-    let op = ironmaint_policy::PrivilegedOperation::proposed(
-        ironmaint_policy::PrivilegedOperationKind::CanonicalRepositoryPush,
-        ironmaint_core::CandidateFingerprint::from_hex(
-            "0000000000000000000000000000000000000000000000000000000000000000",
-        )
-        .map_err(|e| McpError::Other(e.to_string()))?,
-    );
+    // Routed through the runtime, not a store handle the MCP layer
+    // holds (§98.6). The 0B.6 stub returned a sentinel `proposed`
+    // record for *any* id, so `operation.get` never failed and
+    // never reported a real operation — a caller could not tell a
+    // real `Authorized` push from the placeholder.
+    let query = runtime
+        .service
+        .handle_query(RuntimeQuery::GetOperation {
+            operation_id: input.operation_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    let ironmaint_runtime::QueryResult::Operation(op) = query else {
+        return Err(McpError::Other(
+            "GetOperation returned wrong variant".into(),
+        ));
+    };
     let out = crate::tools::operation::GetOutput { operation: op };
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }

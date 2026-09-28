@@ -36,6 +36,7 @@ pub mod config;
 pub mod error;
 pub mod next_actions;
 pub mod orchestrator;
+pub mod outcome;
 pub mod query;
 pub mod reconcile;
 pub mod service;
