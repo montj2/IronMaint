@@ -37,16 +37,14 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_core::CandidateFingerprint;
 use ironmaint_evidence::{Evidence, EvidenceKind, EvidenceProducer, EvidenceScope, EvidenceStatus};
 use ironmaint_executor::{
-    ExecutionClass, ExecutionLimits, ExecutionRequest, Executor, FixtureNormalizer, Outcome,
-    ResultNormalizer, RetryClass, ToolDefinitionRecord, ToolRegistry, outcome_from_record,
+    ExecutionRequest, Executor, FixtureNormalizer, Outcome, ResultNormalizer, RetryClass,
+    ToolRegistry, outcome_from_record,
 };
 use serde_json::json;
 use time::macros::datetime;
@@ -55,101 +53,29 @@ use time::macros::datetime;
 /// [`register_fixture_tools`]. Tests pass this to
 /// [`assert_executor_conformance`] so the suite exercises the
 /// same fixture binary the harness uses.
-#[derive(Debug, Clone)]
-pub struct FixtureKeys {
-    pub validate: ToolCapabilityKey,
-    pub fail: ToolCapabilityKey,
-    pub timeout: ToolCapabilityKey,
-    pub truncate: ToolCapabilityKey,
-    pub interrupt: ToolCapabilityKey,
-    pub infra_fail: ToolCapabilityKey,
-}
+///
+/// The definitions themselves live in `ironmaint-synthetic-tools`
+/// (Phase 0B.9) so the daemon can register the same set without
+/// taking a production dependency on this crate, which
+/// PHASE-0A.md §67 forbids.
+pub type FixtureKeys = ironmaint_synthetic_tools::SyntheticKeys;
 
 /// Register the six fixture tool keys against `registry`, pointing
-/// at `fixture_bin`. The fixture's argv interface takes the key as
-/// the first positional argument.
+/// at `fixture_bin`.
 ///
-/// Limits per key:
-/// - `validate`, `fail`, `interrupt`, `infra_fail` — defaults.
-/// - `timeout` — 500ms wall-clock cap (fixture sleeps 120s).
-/// - `truncate` — 4 KiB stdout cap (fixture emits 256 KiB).
+/// Thin delegate to
+/// [`ironmaint_synthetic_tools::register_synthetic_tools`] so the
+/// conformance runner and the daemon share one source of truth for
+/// the synthetic tool set.
+///
+/// # Panics
+/// Panics if a key fails `ToolCapabilityKey::new` or the registry
+/// rejects a record. The test harness owns its registry, so that is
+/// a harness bug rather than a runtime condition; production
+/// callers (the daemon) use the fallible form directly.
 pub fn register_fixture_tools(registry: &mut ToolRegistry, fixture_bin: &Path) -> FixtureKeys {
-    let default_limits = ExecutionLimits::default();
-    let timeout_limits = ExecutionLimits {
-        timeout: Duration::from_millis(500),
-        ..default_limits.clone()
-    };
-    let truncate_limits = ExecutionLimits {
-        timeout: Duration::from_secs(5),
-        stdout_max_bytes: 4 * 1024,
-        stderr_max_bytes: 1024,
-    };
-
-    let validate = register_one(
-        registry,
-        "synthetic.build.validate",
-        default_limits.clone(),
-        fixture_bin,
-    );
-    let fail = register_one(
-        registry,
-        "synthetic.build.fail",
-        default_limits.clone(),
-        fixture_bin,
-    );
-    let timeout = register_one(
-        registry,
-        "synthetic.build.timeout",
-        timeout_limits,
-        fixture_bin,
-    );
-    let truncate = register_one(
-        registry,
-        "synthetic.build.truncate",
-        truncate_limits,
-        fixture_bin,
-    );
-    let interrupt = register_one(
-        registry,
-        "synthetic.build.interrupt",
-        default_limits.clone(),
-        fixture_bin,
-    );
-    let infra_fail = register_one(
-        registry,
-        "synthetic.build.infra_fail",
-        default_limits,
-        fixture_bin,
-    );
-
-    FixtureKeys {
-        validate,
-        fail,
-        timeout,
-        truncate,
-        interrupt,
-        infra_fail,
-    }
-}
-
-fn register_one(
-    registry: &mut ToolRegistry,
-    key: &str,
-    limits: ExecutionLimits,
-    fixture_bin: &Path,
-) -> ToolCapabilityKey {
-    let ck = ToolCapabilityKey::new(key).expect("valid fixture key");
-    let rec = ToolDefinitionRecord::new(
-        ck.clone(),
-        fixture_bin,
-        vec![OsString::from(key)],
-        ExecutionClass::Check,
-        limits,
-    );
-    registry
-        .register(Box::new(rec))
-        .expect("fixture tool registration");
-    ck
+    ironmaint_synthetic_tools::register_synthetic_tools(registry, fixture_bin)
+        .expect("synthetic tool registration")
 }
 
 /// Run the full §92 exit-checkpoint suite against `executor`.

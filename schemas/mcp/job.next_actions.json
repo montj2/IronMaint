@@ -27,17 +27,17 @@
           },
           {
             "additionalProperties": false,
-            "description": "A mandatory gate's evidence is still `NotEvaluated`.",
+            "description": "A mandatory gate's evidence is still `NotEvaluated`.\n\n`tool_key` is `None` when the job has no materialised check for the pending gate, so there is no tool to name. It used to be a hardcoded `\"synthetic.build.validate\"`, which put a fixture string into a domain projection: a real job with no adapter behind it was told to run a tool that does not exist. The honest answer when nothing is materialised is to say so, and the handler fills this in from the store when a check does exist.",
             "properties": {
               "gate_pending": {
                 "properties": {
                   "tool_key": {
-                    "type": "string"
+                    "type": [
+                      "string",
+                      "null"
+                    ]
                   }
                 },
-                "required": [
-                  "tool_key"
-                ],
                 "type": "object"
               }
             },
@@ -128,12 +128,13 @@
             "properties": {
               "run_check": {
                 "properties": {
-                  "tool_key": {
+                  "check_id": {
+                    "format": "uuid",
                     "type": "string"
                   }
                 },
                 "required": [
-                  "tool_key"
+                  "check_id"
                 ],
                 "type": "object"
               }

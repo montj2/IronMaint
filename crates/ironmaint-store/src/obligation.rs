@@ -16,26 +16,29 @@ pub trait ObligationStore: Send + Sync {
     /// `job_id` is supplied by the caller (see [`EvidenceStore`]).
     ///
     /// [`EvidenceStore`]: crate::evidence::EvidenceStore
-    async fn put_obligation(
+    fn put_obligation(
         &self,
         obligation: &Obligation,
         job_id: JobId,
-    ) -> Result<ObligationId, StoreError>;
+    ) -> impl std::future::Future<Output = Result<ObligationId, StoreError>> + Send;
 
     /// Look up an `Obligation` by id.
-    async fn get_obligation(&self, id: ObligationId) -> Result<Obligation, StoreError>;
+    fn get_obligation(
+        &self,
+        id: ObligationId,
+    ) -> impl std::future::Future<Output = Result<Obligation, StoreError>> + Send;
 
     /// Update the status of an existing obligation. Returns
     /// [`crate::error::StoreErrorKind::NotFound`] if the id is unknown.
-    async fn update_obligation(
+    fn update_obligation(
         &self,
         id: ObligationId,
         updated: &Obligation,
-    ) -> Result<(), StoreError>;
+    ) -> impl std::future::Future<Output = Result<(), StoreError>> + Send;
 
     /// List obligations attached to a job, in declaration order.
-    async fn list_obligations_for_job(
+    fn list_obligations_for_job(
         &self,
         job_id: JobId,
-    ) -> Result<Vec<ObligationId>, StoreError>;
+    ) -> impl std::future::Future<Output = Result<Vec<ObligationId>, StoreError>> + Send;
 }

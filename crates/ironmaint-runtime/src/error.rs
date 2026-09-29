@@ -46,6 +46,23 @@ pub enum RuntimeErrorKind {
     /// Invalid command input.
     #[error("invalid input")]
     InvalidInput,
+    /// The runtime does not implement this command, and will not
+    /// until the surrounding system can support it honestly.
+    ///
+    /// This is *not* "not yet wired" — it means the boundary is
+    /// real and the refusal is the design. `RequestApproval` is the
+    /// motivating case: an approval needs a human principal, and
+    /// the agent that would issue the request is exactly the party
+    /// that must not be able to grant it. Returning `InvalidInput`
+    /// or `Other` would both misdescribe that: the input is
+    /// well-formed, and the failure is structural, not a bug to be
+    /// fixed by a later commit.
+    ///
+    /// Mirrors [`ironmaint_adapter_api::AdapterErrorKind::Unsupported`]
+    /// so both layers report "the capability does not exist" the
+    /// same way on the wire.
+    #[error("unsupported")]
+    Unsupported,
     /// Optimistic-concurrency contention: another writer
     /// advanced the projection between read and write.
     /// Distinct from `Store` because callers (notably MCP

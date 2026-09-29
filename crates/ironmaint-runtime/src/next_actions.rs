@@ -12,7 +12,7 @@
 //! orchestrator's next move*. Both can coexist on the same
 //! job.
 
-use ironmaint_core::JobId;
+use ironmaint_core::{CheckId, JobId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum AllowedAction {
     CaptureCandidate,
-    RunCheck { tool_key: String },
+    RunCheck { check_id: CheckId },
     ApplyPatch,
     MarkObligationSatisfied,
     RequestApproval,
@@ -34,7 +34,16 @@ pub enum ActionBlocker {
     /// Job is already in a terminal state; no further moves.
     Terminal,
     /// A mandatory gate's evidence is still `NotEvaluated`.
-    GatePending { tool_key: String },
+    ///
+    /// `tool_key` is `None` when the job has no materialised check
+    /// for the pending gate, so there is no tool to name. It used
+    /// to be a hardcoded `"synthetic.build.validate"`, which put a
+    /// fixture string into a domain projection: a real job with no
+    /// adapter behind it was told to run a tool that does not
+    /// exist. The honest answer when nothing is materialised is to
+    /// say so, and the handler fills this in from the store when a
+    /// check does exist.
+    GatePending { tool_key: Option<String> },
     /// A mandatory gate's evidence is `Fail` and no exception
     /// is on file.
     GateFailed { tool_key: String },

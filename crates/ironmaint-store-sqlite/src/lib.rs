@@ -533,16 +533,16 @@ async fn apply_migrations(
         // Refuse downgraded history: a recorded version higher
         // than any file on disk means a migration was removed or
         // the directory was rewound.
-        if let Some(disk_max_v) = disk_max {
-            if *rv > disk_max_v {
-                return Err(StoreError::new(
-                    StoreErrorKind::Corrupt,
-                    format!(
-                        "migration history downgraded: recorded v={rv} ({rf}) \
-                         has no matching file on disk (disk max v={disk_max_v})"
-                    ),
-                ));
-            }
+        if let Some(disk_max_v) = disk_max
+            && *rv > disk_max_v
+        {
+            return Err(StoreError::new(
+                StoreErrorKind::Corrupt,
+                format!(
+                    "migration history downgraded: recorded v={rv} ({rf}) \
+                     has no matching file on disk (disk max v={disk_max_v})"
+                ),
+            ));
         }
         // Refuse drift: every recorded `(version, filename)` pair
         // must have a matching file on disk. A rename or deletion

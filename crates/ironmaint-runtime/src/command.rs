@@ -78,6 +78,42 @@ pub enum RuntimeCommand {
         // across commands.
         job_id: JobId,
     },
+    /// Ask a human to approve something.
+    ///
+    /// **Always refused** with [`RuntimeErrorKind::Unsupported`](crate::error::RuntimeErrorKind::Unsupported).
+    /// The command exists so the refusal is *observable*: an
+    /// orchestrator that reaches `ReadyForApproval` gets a typed
+    /// answer naming the boundary, rather than a missing-arms
+    /// `Other("unhandled command")` or a silent no-op that looks
+    /// like a queued request.
+    ///
+    /// Why refusal rather than implementation: an approval is a
+    /// human principal's decision, and the caller of this command
+    /// is the agent. 0B ships no approval principal, no
+    /// out-of-band delivery channel, and no durable
+    /// `ApprovalStore` — implementing the write would mean
+    /// recording a decision nobody made. Until those exist the
+    /// honest answer is that the capability does not exist, and
+    /// `reconcile` still reports `NeedsActorDecision` at
+    /// `ReadyForApproval` so the job parks rather than advancing.
+    ///
+    /// `next_actions` still advertises `RequestApproval` at that
+    /// state, and that is not a contradiction: asking for approval
+    /// *is* the orchestrator's next move, and the refusal is the
+    /// answer. What the runtime refuses is recording the request as
+    /// though a decision had been made. An agent that follows
+    /// `next_actions`, calls this, and reads the refusal has learned
+    /// it must hand off to a person — which is the exit checkpoint
+    /// in `SKILL.md` made executable rather than implied.
+    ///
+    /// The field is carried so the request is well-formed and a
+    /// future implementation has the category it would need; it is
+    /// never inspected today, and the refusal message echoes it so
+    /// the caller learns which approval was being asked for.
+    RequestApproval {
+        job_id: JobId,
+        category: ironmaint_policy::ApprovalCategory,
+    },
     /// Walk the static rule table and advance state until a
     /// blocker, an exceptional state, an actor-required
     /// transition, or a concurrent-modification error is hit

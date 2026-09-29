@@ -28,15 +28,27 @@ pub trait ArtifactMetadataStore: Send + Sync {
     /// Persist a new artifact's metadata. The blob itself is
     /// written separately by `ironmaint-artifacts`; this method
     /// only records the index entry.
-    async fn put_artifact(&self, record: &ArtifactRecord) -> Result<ArtifactId, StoreError>;
+    fn put_artifact(
+        &self,
+        record: &ArtifactRecord,
+    ) -> impl std::future::Future<Output = Result<ArtifactId, StoreError>> + Send;
 
     /// Look up an artifact's metadata by id.
-    async fn get_artifact(&self, id: ArtifactId) -> Result<ArtifactRecord, StoreError>;
+    fn get_artifact(
+        &self,
+        id: ArtifactId,
+    ) -> impl std::future::Future<Output = Result<ArtifactRecord, StoreError>> + Send;
 
     /// Check whether metadata exists for `id`. Cheaper than
     /// `get_artifact` when the caller only needs a presence check.
-    async fn artifact_exists(&self, id: ArtifactId) -> Result<bool, StoreError>;
+    fn artifact_exists(
+        &self,
+        id: ArtifactId,
+    ) -> impl std::future::Future<Output = Result<bool, StoreError>> + Send;
 
     /// List artifact ids attached to a job, newest-first.
-    async fn list_artifacts_for_job(&self, job_id: JobId) -> Result<Vec<ArtifactId>, StoreError>;
+    fn list_artifacts_for_job(
+        &self,
+        job_id: JobId,
+    ) -> impl std::future::Future<Output = Result<Vec<ArtifactId>, StoreError>> + Send;
 }

@@ -14,13 +14,15 @@
 
 use std::sync::Arc;
 
+use crate::outcome::CheckOutcome;
 use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_core::{
     CandidateFingerprint, DomainEventId, JobId, JobProjection, JobState, MaintenanceEventId,
     MaintenanceJob, SourceCandidate,
 };
-use ironmaint_evidence::{Evidence, EvidenceProducer, EvidenceScope};
+use ironmaint_evidence::{Evidence, EvidenceProducer, EvidenceScope, GateStatus};
 use ironmaint_executor::{ExecutionRequest, Executor, ToolRegistry};
+use ironmaint_policy::PrivilegedOperation;
 use ironmaint_state::{
     JobEvent, ToolOutcome, ToolRunFinished, TransitionBlocker, TransitionDecision,
 };
@@ -51,6 +53,8 @@ pub enum QueryResult {
     Job(serde_json::Value),
     Projection(serde_json::Value),
     NextActions(JobNextActions),
+    CheckOutcome(CheckOutcome),
+    Operation(PrivilegedOperation),
 }
 
 pub struct RuntimeService<S: IronMaintStore + ?Sized, E: Executor + ?Sized> {
@@ -125,6 +129,9 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 check_id,
                 retry_class,
             } => self.handle_run_check(job_id, check_id, retry_class).await,
+            RuntimeCommand::RequestApproval { job_id, category } => {
+                Err(refuse_approval(job_id, &category))
+            }
             RuntimeCommand::Reconcile { job_id } => {
                 let outcome = self.reconcile(job_id).await?;
                 Ok(CommandResult {
@@ -168,10 +175,149 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                     .get_projection(job_id)
                     .await
                     .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
-                let actions = project_next_actions(job_id, projection.state);
+                let mut actions = project_next_actions(job_id, projection.state);
+                self.attach_pending_checks(job_id, &mut actions).await?;
                 Ok(QueryResult::NextActions(actions))
             }
+            RuntimeQuery::GetCheckOutcome { check_id } => self.get_check_outcome(check_id).await,
+            RuntimeQuery::GetOperation { operation_id } => {
+                let operation =
+                    self.store
+                        .get_operation(operation_id)
+                        .await
+                        .map_err(|e| match e.kind() {
+                            ironmaint_store::StoreErrorKind::NotFound => RuntimeError::new(
+                                RuntimeErrorKind::InvalidInput,
+                                format!("unknown operation {operation_id}"),
+                            ),
+                            _ => RuntimeError::new(RuntimeErrorKind::Store, e.to_string()),
+                        })?;
+                Ok(QueryResult::Operation(operation))
+            }
         }
+    }
+
+    /// Resolve a pending gate against the job's materialised
+    /// checks: name the tool that would clear it, and surface the
+    /// `check_id` an orchestrator needs to run it.
+    ///
+    /// Without this, `next_actions` could only say "a gate is
+    /// pending" and `check.run` was unreachable — nothing else in
+    /// the MCP surface hands an agent a `check_id`. The mapping
+    /// from tool to `check_id` is a store read, which is why it
+    /// lives here rather than in the pure `project_next_actions`.
+    async fn attach_pending_checks(
+        &self,
+        job_id: JobId,
+        actions: &mut JobNextActions,
+    ) -> Result<(), RuntimeError> {
+        let pending = actions
+            .blockers
+            .iter()
+            .any(|b| matches!(b, ActionBlocker::GatePending { .. }));
+        if !pending {
+            return Ok(());
+        }
+
+        let check_ids = self
+            .store
+            .list_checks_for_job(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        if check_ids.is_empty() {
+            // No adapter has materialised checks for this job, so
+            // there is genuinely no tool to name. Leaving
+            // `tool_key` as `None` is the honest answer; the
+            // blocker itself still explains the hold.
+            return Ok(());
+        }
+
+        let mut first_key: Option<String> = None;
+        for check_id in check_ids {
+            let Ok(check) = self.store.get_check(check_id).await else {
+                continue;
+            };
+            let key = check.capability.as_str().to_string();
+            if first_key.is_none() {
+                first_key = Some(key);
+            }
+            if !actions
+                .allowed
+                .contains(&AllowedAction::RunCheck { check_id })
+            {
+                actions.allowed.push(AllowedAction::RunCheck { check_id });
+            }
+        }
+
+        for blocker in &mut actions.blockers {
+            if let ActionBlocker::GatePending { tool_key } = blocker {
+                *tool_key = first_key.clone();
+            }
+        }
+        Ok(())
+    }
+
+    /// Read the durable result of a check: the latest evidence
+    /// row matching its `evidence_kind`, plus the gate verdict that
+    /// row contributed to.
+    ///
+    /// A check with no evidence yet is not an error — the gate is
+    /// simply `NotEvaluated`, which is the state `check.run` leaves
+    /// a workflow in before the orchestrator runs anything. That
+    /// distinction matters: reporting it as a failure would make
+    /// "not run yet" and "ran and failed" indistinguishable.
+    async fn get_check_outcome(
+        &self,
+        check_id: ironmaint_core::CheckId,
+    ) -> Result<QueryResult, RuntimeError> {
+        let check = self
+            .store
+            .get_check(check_id)
+            .await
+            .map_err(|e| match e.kind() {
+                ironmaint_store::StoreErrorKind::NotFound => RuntimeError::new(
+                    RuntimeErrorKind::InvalidInput,
+                    format!("unknown check {check_id}"),
+                ),
+                _ => RuntimeError::new(RuntimeErrorKind::Store, e.to_string()),
+            })?;
+        let fingerprint = check.candidate.clone();
+        // `GateStore` keys results by `(gate_id, candidate)` and a
+        // row is only written once something has been evaluated, so
+        // `NotFound` is the normal state of a check that has not
+        // run — not a store failure. Turning it into an error here
+        // would make the first `check.run` of a job impossible to
+        // observe and would report "not run yet" as an
+        // infrastructure problem.
+        let gate_status = match self
+            .store
+            .get_gate_result(check.gate_id, &fingerprint)
+            .await
+        {
+            Ok(gate) => gate.status,
+            Err(e) if e.kind == ironmaint_store::StoreErrorKind::NotFound => {
+                GateStatus::NotEvaluated
+            }
+            Err(e) => return Err(RuntimeError::new(RuntimeErrorKind::Store, e.to_string())),
+        };
+        let evidence = crate::check::latest_evidence_for_check(&*self.store, &fingerprint, &check)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        let (evidence_id, evidence_status, truncated) = match evidence {
+            Some(ev) => (Some(ev.id), Some(ev.status), ev.truncated),
+            None => (None, None, false),
+        };
+        Ok(QueryResult::CheckOutcome(CheckOutcome {
+            job_id: check.job_id,
+            check_id,
+            gate_id: check.gate_id,
+            candidate: fingerprint,
+            tool_key: check.capability.as_str().to_string(),
+            evidence_id,
+            evidence_status,
+            gate_status,
+            truncated,
+        }))
     }
 }
 
@@ -329,10 +475,10 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 .await
                 .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
             gate_definitions.insert(*gid, def);
-            if let Some(fp) = active_candidate_fingerprint.as_ref() {
-                if let Ok(r) = self.store.get_gate_result(*gid, fp).await {
-                    gates.insert(*gid, r);
-                }
+            if let Some(fp) = active_candidate_fingerprint.as_ref()
+                && let Ok(r) = self.store.get_gate_result(*gid, fp).await
+            {
+                gates.insert(*gid, r);
             }
         }
 
@@ -535,10 +681,10 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                     if let Ok(def) = self.store.get_gate_definition(*gid).await {
                         gate_defs.insert(*gid, def);
                     }
-                    if let Some(fp) = active_fp.as_ref() {
-                        if let Ok(gres) = self.store.get_gate_result(*gid, fp).await {
-                            gate_results.insert(*gid, gres);
-                        }
+                    if let Some(fp) = active_fp.as_ref()
+                        && let Ok(gres) = self.store.get_gate_result(*gid, fp).await
+                    {
+                        gate_results.insert(*gid, gres);
                     }
                 }
                 let ob_ids = self
@@ -1116,11 +1262,53 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
 
         let request = ExecutionRequest::new(cap_key.clone(), retry_class, serde_json::Value::Null);
 
-        let record = self
-            .executor
-            .execute(request)
-            .await
-            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Executor, e.to_string()))?;
+        let started_at = self.clock.now_utc();
+        // A real executor reports a wall-clock timeout and a
+        // spawn/wait failure as *errors*, not as records with a
+        // non-zero exit. Propagating them with `?` aborted before
+        // any evidence was written, which left the gate
+        // `NotEvaluated` forever and made the Timeout /
+        // InfrastructureFailed arms of the mapping below
+        // unreachable — `ProcessExecutor` never returns a record
+        // for either case. Synthesise the record the executor would
+        // have produced and pin the outcome, so a timeout still
+        // records `Fail` evidence and an infrastructure failure
+        // still records `InfrastructureError` (PHASE-0B.md §32).
+        let (record, forced_outcome) = match self.executor.execute(request).await {
+            Ok(record) => (record, None),
+            Err(e) => {
+                let outcome = match e.kind {
+                    ironmaint_executor::ExecutorErrorKind::ToolFailed { timed_out: true } => {
+                        ironmaint_executor::Outcome::Timeout
+                    }
+                    ironmaint_executor::ExecutorErrorKind::InfrastructureFailed => {
+                        ironmaint_executor::Outcome::InfrastructureFailed
+                    }
+                    // Every other kind is a genuine runtime
+                    // failure with no domain verdict to record.
+                    _ => {
+                        return Err(RuntimeError::new(RuntimeErrorKind::Executor, e.to_string()));
+                    }
+                };
+                (
+                    ironmaint_executor::ExecutionRecord {
+                        tool_key: cap_key.clone(),
+                        retry_class,
+                        started_at,
+                        finished_at: self.clock.now_utc(),
+                        // Not a real process exit; the pinned
+                        // `forced_outcome` below is what drives
+                        // classification, not this field.
+                        exit_code: -1,
+                        stdout: String::new(),
+                        stderr: e.to_string(),
+                        retries_exhausted: false,
+                        truncated: false,
+                    },
+                    Some(outcome),
+                )
+            }
+        };
 
         // Translate executor-owned `Outcome` (PHASE-0B.md §32) into
         // the canonical evidence-status vocabulary. The mapping
@@ -1128,7 +1316,8 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         // outcomes, not infrastructure problems) and lifts
         // InfrastructureFailed into the dedicated evidence status so
         // gate evaluation can react accordingly.
-        let outcome = ironmaint_executor::outcome_from_record(&record);
+        let outcome =
+            forced_outcome.unwrap_or_else(|| ironmaint_executor::outcome_from_record(&record));
         let outcome_status = match outcome {
             ironmaint_executor::Outcome::Pass => ironmaint_evidence::EvidenceStatus::Pass,
             ironmaint_executor::Outcome::Fail => ironmaint_evidence::EvidenceStatus::Fail,
@@ -1141,7 +1330,16 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
 
         let now = self.clock.now_utc();
         let scope = EvidenceScope::Candidate(fingerprint.clone());
-        let producer = EvidenceProducer::new(cap_key.as_str().to_string());
+        // When the record was synthesised rather than produced by a
+        // real process, tag the producer so a timeout is
+        // distinguishable from the tool legitimately exiting
+        // non-zero. Both map to `Fail`, so this is the only signal
+        // that separates them.
+        let producer_name = match forced_outcome {
+            Some(_) => format!("{}#executor-error", cap_key.as_str()),
+            None => cap_key.as_str().to_string(),
+        };
+        let producer = EvidenceProducer::new(producer_name);
         // PHASE-0B.md §15: evidence rows must explicitly record
         // `truncated = true` when the executor bounded stdout/stderr.
         let evidence = Evidence::new(
@@ -1293,9 +1491,11 @@ fn project_next_actions(job_id: JobId, state: ironmaint_core::JobState) -> JobNe
         | S::UpgradeValidation => JobNextActions {
             job_id,
             allowed: vec![],
-            blockers: vec![ActionBlocker::GatePending {
-                tool_key: "synthetic.build.validate".to_string(),
-            }],
+            // Which tool is pending is a fact about the store, not
+            // about the state alone, so this pure projection cannot
+            // name one. `handle_query` fills it in from the job's
+            // materialised checks.
+            blockers: vec![ActionBlocker::GatePending { tool_key: None }],
         },
         S::ReleaseReview | S::FinalValidation => JobNextActions {
             job_id,
@@ -1385,6 +1585,28 @@ fn format_blockers(blockers: &[ironmaint_state::TransitionBlocker]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Build the refusal for [`RuntimeCommand::RequestApproval`].
+///
+/// A free function rather than a method on purpose: the handler
+/// has no `self`, so "this touches nothing" is a property the type
+/// system can see instead of a claim in a comment. Nothing is read
+/// and nothing is written — no projection bump, no event, no
+/// approval record — so a refused request leaves the job exactly
+/// as it found it and retrying is free.
+fn refuse_approval(job_id: JobId, category: &ironmaint_policy::ApprovalCategory) -> RuntimeError {
+    RuntimeError::new(
+        RuntimeErrorKind::Unsupported,
+        format!(
+            "RequestApproval is refused for job {job_id} (category `{category}`): an \
+             approval is a human principal's decision and the orchestrator that calls \
+             this command must not be able to grant it. No approval store or out-of-band \
+             delivery channel exists in 0B, so the request is not recorded. Leave the job \
+             at ReadyForApproval; `job.reconcile` reports NeedsActorDecision until a human \
+             acts outside this process."
+        ),
+    )
 }
 
 fn _assert_send_sync<T: Send + Sync>() {}

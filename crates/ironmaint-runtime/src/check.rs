@@ -17,7 +17,7 @@
 use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_core::{CandidateFingerprint, GateId, JobId};
 use ironmaint_evidence::{
-    EvidenceKind, EvidenceStatus, GateDefinition, GateRequirement, GateResult, GateStage,
+    Evidence, EvidenceKind, EvidenceStatus, GateDefinition, GateRequirement, GateResult, GateStage,
     GateStatus, RequiredEvidenceStatus,
 };
 use ironmaint_store::{CheckDefinition, CheckStore, EvidenceStore, GateStore, StoreError};
@@ -137,31 +137,36 @@ where
 /// For each `CheckDefinition` attached to a given gate (gate_id
 /// matching), find the latest `Evidence` whose `evidence_kind`
 /// matches the check's, scope is `Candidate(candidate)`, and
-/// return its id. Returns `None` for any check with no matching
-/// evidence.
-async fn latest_evidence_for_check<S>(
+/// return the row itself. Returns `None` for any check with no
+/// matching evidence.
+///
+/// Returning `Evidence` rather than `EvidenceId` means callers
+/// that only need the verdict (gate aggregation, the
+/// `GetCheckOutcome` query) do not each pay a second
+/// `get_evidence` round trip.
+pub async fn latest_evidence_for_check<S>(
     store: &S,
     candidate: &CandidateFingerprint,
     check: &CheckDefinition,
-) -> Result<Option<ironmaint_core::EvidenceId>, StoreError>
+) -> Result<Option<Evidence>, StoreError>
 where
     S: EvidenceStore + ?Sized,
 {
     let all = store.list_evidence_for_candidate(candidate).await?;
-    let mut latest: Option<(time::OffsetDateTime, ironmaint_core::EvidenceId)> = None;
+    let mut latest: Option<(time::OffsetDateTime, Evidence)> = None;
     for ev in all {
         if ev.kind != check.evidence_kind {
             continue;
         }
-        let better = match latest {
+        let better = match &latest {
             None => true,
-            Some((prior, _)) => ev.observed_at > prior,
+            Some((prior, _)) => ev.observed_at > *prior,
         };
         if better {
-            latest = Some((ev.observed_at, ev.id));
+            latest = Some((ev.observed_at, ev));
         }
     }
-    Ok(latest.map(|(_, id)| id))
+    Ok(latest.map(|(_, ev)| ev))
 }
 
 /// Aggregate the latest evidence for every check attached to a
@@ -209,14 +214,13 @@ where
         if check.gate_id != gate_id {
             continue;
         }
-        let Some(evidence_id) = latest_evidence_for_check(store, &candidate, check).await? else {
+        let Some(ev) = latest_evidence_for_check(store, &candidate, check).await? else {
             // No evidence yet — gate stays NotEvaluated.
             aggregate = combine_status(aggregate, GateStatus::NotEvaluated);
             continue;
         };
-        let ev = store.get_evidence(evidence_id).await?;
         let mapped = evidence_to_gate_status(ev.status);
-        evidence_ids.push(evidence_id);
+        evidence_ids.push(ev.id);
         aggregate = combine_status(aggregate, mapped);
     }
 

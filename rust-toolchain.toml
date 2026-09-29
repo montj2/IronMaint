@@ -1,6 +1,11 @@
 [toolchain]
-# Phase 0A floor: the first stable Rust with edition 2024 (1.85.0).
+# Phase 0A floor was the first stable Rust with edition 2024 (1.85.0).
+# Raised to 1.88.0 in Phase 0B.9, which is the floor declared by rmcp 3.x —
+# the MCP server crate pinned in Cargo.toml and first consumed when the
+# Streamable-HTTP transport is wired into ironmaintd. Edition 2024 itself
+# still only needs 1.85, so the domain crates are unaffected; only the
+# dependency graph moved.
 # Newer toolchains are supported; CI and contributors will resolve to the
 # latest compatible stable automatically.
-channel = "1.85.0"
+channel = "1.88.0"
 components = ["rustfmt", "clippy", "rust-src"]

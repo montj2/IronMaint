@@ -93,12 +93,21 @@ pub trait CheckStore: Send + Sync {
     /// Persist a `CheckDefinition`. The id is allocated by the
     /// caller (via `CheckDefinition::new`); the store does not
     /// re-mint.
-    async fn put_check(&self, check: &CheckDefinition) -> Result<(), StoreError>;
+    fn put_check(
+        &self,
+        check: &CheckDefinition,
+    ) -> impl std::future::Future<Output = Result<(), StoreError>> + Send;
 
     /// Fetch a `CheckDefinition` by id. Returns
     /// `StoreErrorKind::NotFound` for unknown ids.
-    async fn get_check(&self, id: CheckId) -> Result<CheckDefinition, StoreError>;
+    fn get_check(
+        &self,
+        id: CheckId,
+    ) -> impl std::future::Future<Output = Result<CheckDefinition, StoreError>> + Send;
 
     /// List all checks attached to a job, in id-sorted order.
-    async fn list_checks_for_job(&self, job_id: JobId) -> Result<Vec<CheckId>, StoreError>;
+    fn list_checks_for_job(
+        &self,
+        job_id: JobId,
+    ) -> impl std::future::Future<Output = Result<Vec<CheckId>, StoreError>> + Send;
 }

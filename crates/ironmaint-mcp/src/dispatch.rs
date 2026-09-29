@@ -12,13 +12,10 @@
 
 use std::sync::Arc;
 
-use ironmaint_core::{
-    GitHashAlgorithm, GitObjectId, PackageRevision, PackageVersion, RepositoryRef, SourceCandidate,
-    VcsKind,
-};
 use ironmaint_executor::Executor;
 use ironmaint_runtime::{RuntimeCommand, RuntimeQuery, RuntimeService};
 use ironmaint_store::IronMaintStore;
+use ironmaint_workspace::{WorkspaceError, WorkspaceErrorKind, WorkspaceManager};
 
 use crate::error::McpError;
 use crate::schema::McpToolName;
@@ -27,15 +24,53 @@ use crate::schema::McpToolName;
 /// any tool. Holds the runtime behind an `Arc` so the
 /// dispatcher is `Clone`-able and cheaply shared across
 /// concurrent HTTP handlers.
-#[derive(Clone)]
+///
+/// The workspace manager is optional: five of the nine tools are
+/// pure runtime calls and need no working tree, and requiring one
+/// would make `McpRuntime::new` unusable for them. The three that
+/// do need a tree report a typed error when it is absent rather
+/// than silently degrading to a stub.
 pub struct McpRuntime<S: IronMaintStore + ?Sized, E: Executor + ?Sized> {
     service: Arc<RuntimeService<S, E>>,
+    workspace: Option<Arc<WorkspaceManager<Arc<S>>>>,
+}
+
+/// Hand-written rather than `#[derive(Clone)]`: every field is an
+/// `Arc`, so cloning is unconditional, but the derive would add
+/// `S: Clone, E: Clone` bounds the fields do not need — and the
+/// transport needs to clone this per request, with a store type
+/// that is not `Clone`.
+impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> Clone for McpRuntime<S, E> {
+    fn clone(&self) -> Self {
+        Self {
+            service: Arc::clone(&self.service),
+            workspace: self.workspace.clone(),
+        }
+    }
 }
 
 impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> McpRuntime<S, E> {
     #[must_use]
     pub fn new(service: Arc<RuntimeService<S, E>>) -> Self {
-        Self { service }
+        Self {
+            service,
+            workspace: None,
+        }
+    }
+
+    /// Attach a workspace manager, enabling `workspace.stat`,
+    /// `workspace.apply_patch`, and a real `candidate.capture`.
+    ///
+    /// The manager borrows the *same* store the runtime holds, as
+    /// `Arc<S>`. `RuntimeService` keeps its store private and
+    /// exposes no accessor (PHASE-0B.md §98.6), and a daemon's
+    /// SQLite backend takes an exclusive `fs2` lock on its state
+    /// directory, so opening a second connection is not an
+    /// option either.
+    #[must_use]
+    pub fn with_workspace(mut self, workspace: Arc<WorkspaceManager<Arc<S>>>) -> Self {
+        self.workspace = Some(workspace);
+        self
     }
 
     /// Borrow the underlying runtime service. Used by tests and
@@ -44,6 +79,28 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> McpRuntime<S, E> {
     #[must_use]
     pub fn service(&self) -> &Arc<RuntimeService<S, E>> {
         &self.service
+    }
+
+    /// The configured workspace manager, or a typed error naming
+    /// the builder call that was missed.
+    fn workspace(&self) -> Result<&WorkspaceManager<Arc<S>>, McpError> {
+        self.workspace.as_deref().ok_or_else(|| {
+            McpError::Internal(
+                "this deployment has no workspace manager: the daemon must call \
+                 McpRuntime::with_workspace before serving workspace tools"
+                    .to_string(),
+            )
+        })
+    }
+}
+
+/// Translate a workspace failure into an MCP error, keeping an
+/// optimistic-concurrency conflict distinguishable from a genuine
+/// runtime failure so a client knows to re-read and retry.
+fn workspace_error(e: WorkspaceError) -> McpError {
+    match e.kind() {
+        WorkspaceErrorKind::Conflict { .. } => McpError::Conflict(e.to_string()),
+        other => McpError::Runtime(other.to_string()),
     }
 }
 
@@ -60,10 +117,10 @@ pub async fn dispatch<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         "job.next_actions" => dispatch_next_actions(&runtime, input).await,
         "job.reconcile" => dispatch_reconcile(&runtime, input).await,
         "candidate.capture" => dispatch_capture(&runtime, input).await,
-        "check.run" => dispatch_check_run(input).await,
-        "workspace.apply_patch" => dispatch_apply_patch(input).await,
-        "workspace.stat" => dispatch_workspace_stat(input).await,
-        "operation.get" => dispatch_operation_get(input).await,
+        "check.run" => dispatch_check_run(&runtime, input).await,
+        "workspace.apply_patch" => dispatch_apply_patch(&runtime, input).await,
+        "workspace.stat" => dispatch_workspace_stat(&runtime, input).await,
+        "operation.get" => dispatch_operation_get(&runtime, input).await,
         unknown => Err(McpError::Other(format!("unknown tool: {unknown}"))),
     }
 }
@@ -165,21 +222,32 @@ async fn dispatch_capture<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
 ) -> Result<serde_json::Value, McpError> {
     let input: crate::tools::candidate::CaptureInput =
         serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
-    let now = time::OffsetDateTime::from_unix_timestamp(1_700_000_000)
-        .unwrap_or_else(|_| time::OffsetDateTime::now_utc());
-    let repo_url = url::Url::parse(&input.repository_url)
-        .map_err(|e| McpError::InvalidInput(e.to_string()))?;
-    let repository = RepositoryRef::new(VcsKind::Git, repo_url)
-        .map_err(|e| McpError::InvalidInput(e.to_string()))?;
-    let commit = GitObjectId::new(GitHashAlgorithm::Sha1, "0".repeat(40))
-        .map_err(|e| McpError::InvalidInput(e.to_string()))?;
-    let tree = GitObjectId::new(GitHashAlgorithm::Sha1, "0".repeat(40))
-        .map_err(|e| McpError::InvalidInput(e.to_string()))?;
-    let version =
-        PackageVersion::new("0.0.0").map_err(|e| McpError::InvalidInput(e.to_string()))?;
-    let revision = PackageRevision::new(input.package.clone(), version);
-    let candidate = SourceCandidate::new(input.job_id, revision, repository, commit, tree, now);
-    let fp = candidate.fingerprint().clone();
+    let workspace = runtime.workspace()?;
+    let id = workspace
+        .ensure_workspace(input.job_id)
+        .await
+        .map_err(workspace_error)?;
+
+    // `capture_candidate` reads the real HEAD commit and the working
+    // tree's tree OID, so the fingerprint actually reflects source
+    // state. The 0B.6 stub hardcoded `"0".repeat(40)` for both,
+    // which made every capture of a given package collide on one
+    // fingerprint — and since `handle_capture_candidate` dedupes by
+    // fingerprint, a genuine source update would have been silently
+    // dropped as a duplicate.
+    let candidate = workspace
+        .capture_candidate(id, input.job_id, input.package, &input.repository_url)
+        .await
+        .map_err(workspace_error)?;
+    let fingerprint = candidate.fingerprint().clone();
+
+    // The workspace manager already persisted the candidate row in
+    // order to mint its `CandidateId` for the maintenance commit.
+    // The runtime's handler is idempotent — it looks the candidate
+    // up by fingerprint and reuses the existing id — so this
+    // records the audit envelope in the job's event log without
+    // writing a second row. `candidate_capture_is_idempotent`
+    // pins that.
     runtime
         .service
         .handle_command(RuntimeCommand::CaptureCandidate {
@@ -188,61 +256,117 @@ async fn dispatch_capture<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         })
         .await
         .map_err(|e| McpError::Runtime(e.message))?;
-    let out = crate::tools::candidate::CaptureOutput { fingerprint: fp };
+
+    let out = crate::tools::candidate::CaptureOutput { fingerprint };
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 
-async fn dispatch_check_run(input: serde_json::Value) -> Result<serde_json::Value, McpError> {
-    let _input: crate::tools::check::RunCheckInput =
+async fn dispatch_check_run<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let input: crate::tools::check::RunCheckInput =
         serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
-    // The actual execution lives on the runtime as
-    // `RuntimeCommand::RunCheck { job_id, check_id }`. The MCP
-    // layer for 0B.6 only validates the input shape; the streamable
-    // HTTP transport wires the runtime call when it adopts this
-    // dispatch in the next commit. Returning the parsed input as
-    // JSON keeps the tool round-trip observable end-to-end.
-    let out = crate::tools::check::RunCheckOutput {
-        tool_key: String::new(),
-        exit_code: 0,
-        stdout: String::new(),
-        stderr: String::new(),
+    runtime
+        .service
+        .handle_command(RuntimeCommand::RunCheck {
+            check_id: input.check_id,
+            retry_class: input
+                .retry_class
+                .unwrap_or(ironmaint_executor::RetryClass::Safe),
+            job_id: input.job_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    // Read the outcome back through the runtime's own query path
+    // rather than parsing the command's stringly-typed
+    // `side_effects`. The command deliberately reports only what it
+    // changed; the durable verdict is a separate read, and reusing
+    // the query keeps `check.run` from growing a second, subtly
+    // different answer.
+    let query = runtime
+        .service
+        .handle_query(RuntimeQuery::GetCheckOutcome {
+            check_id: input.check_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    let ironmaint_runtime::QueryResult::CheckOutcome(outcome) = query else {
+        return Err(McpError::Other(
+            "GetCheckOutcome returned wrong variant".into(),
+        ));
     };
+    let out = crate::tools::check::RunCheckOutput::from(outcome);
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 
-async fn dispatch_apply_patch(input: serde_json::Value) -> Result<serde_json::Value, McpError> {
+async fn dispatch_apply_patch<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
     let input: crate::tools::workspace::ApplyPatchInput =
         serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
-    let out = crate::tools::workspace::ApplyPatchOutput {
-        new_revision: input.expected_revision,
-    };
+    let workspace = runtime.workspace()?;
+    let id = workspace
+        .ensure_workspace(input.job_id)
+        .await
+        .map_err(workspace_error)?;
+    // Real CAS: a stale `expected_revision` surfaces as
+    // `WorkspaceErrorKind::Conflict` and is mapped to
+    // `McpError::Conflict`, so the caller can tell "re-read and
+    // retry" from "this will never work". The 0B.6 stub echoed
+    // `expected_revision` back unchanged, which would have made
+    // the documented retry contract unimplementable.
+    let new_revision = workspace
+        .apply_patch(id, input.expected_revision, &input.patch)
+        .await
+        .map_err(workspace_error)?;
+    let out = crate::tools::workspace::ApplyPatchOutput { new_revision };
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 
-async fn dispatch_workspace_stat(input: serde_json::Value) -> Result<serde_json::Value, McpError> {
-    let _input: crate::tools::workspace::StatInput =
+async fn dispatch_workspace_stat<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let input: crate::tools::workspace::StatInput =
         serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
-    let out = crate::tools::workspace::StatOutput {
-        revision: ironmaint_workspace::WorkspaceRevision::new(),
-    };
+    let workspace = runtime.workspace()?;
+    let id = workspace
+        .ensure_workspace(input.job_id)
+        .await
+        .map_err(workspace_error)?;
+    let revision = workspace
+        .current_revision(id)
+        .await
+        .map_err(workspace_error)?;
+    let out = crate::tools::workspace::StatOutput { revision };
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 
-async fn dispatch_operation_get(input: serde_json::Value) -> Result<serde_json::Value, McpError> {
-    let _input: crate::tools::operation::GetInput =
+async fn dispatch_operation_get<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let input: crate::tools::operation::GetInput =
         serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
-    // The MCP layer does not mint PrivilegedOperation objects on its
-    // own; the runtime is the only owner of the authorization state
-    // machine. Returning a sentinel `proposed` record here keeps the
-    // tool schema round-trippable until 0B.6 wires the actual
-    // `OperationStore::get` lookup behind this entry point.
-    let op = ironmaint_policy::PrivilegedOperation::proposed(
-        ironmaint_policy::PrivilegedOperationKind::CanonicalRepositoryPush,
-        ironmaint_core::CandidateFingerprint::from_hex(
-            "0000000000000000000000000000000000000000000000000000000000000000",
-        )
-        .map_err(|e| McpError::Other(e.to_string()))?,
-    );
+    // Routed through the runtime, not a store handle the MCP layer
+    // holds (§98.6). The 0B.6 stub returned a sentinel `proposed`
+    // record for *any* id, so `operation.get` never failed and
+    // never reported a real operation — a caller could not tell a
+    // real `Authorized` push from the placeholder.
+    let query = runtime
+        .service
+        .handle_query(RuntimeQuery::GetOperation {
+            operation_id: input.operation_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    let ironmaint_runtime::QueryResult::Operation(op) = query else {
+        return Err(McpError::Other(
+            "GetOperation returned wrong variant".into(),
+        ));
+    };
     let out = crate::tools::operation::GetOutput { operation: op };
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
