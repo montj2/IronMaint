@@ -536,7 +536,23 @@ blocker list in that configuration. The invariant under test ("the projection
 is unchanged") is solid; the specific error kind is not pinned. Worth
 tightening if the error taxonomy is considered stable API.
 
-### 16.8 A job cannot advance past `EventDetected` (HIGH) — found in 0B.9
+### 16.8 A job cannot advance past `EventDetected` (HIGH) — found in 0B.9, deferred to Phase 1
+
+> **Decision (architect, 2026-09-29): option (c) — leave it to the Phase 1
+> adapter.** 0B.10 is `CaptureResume`/`infrastructure_blocked` (§16.4), the
+> daemon reconcile loop (§16.6), and the privileged-operation producers.
+> §16.8 closes when the adapter that already has to exist for §106
+> materialises checks and activates a candidate. Options (a) and (b) are
+> not taken, so the nine-tool enumeration in §94 stands unchanged.
+>
+> *The risk of this choice, stated plainly so it is not rediscovered as a
+> surprise:* Phase 1's premise is "real adapters meeting real failures", and
+> §16.8 is precisely where those two do not meet. Phase 1 therefore opens
+> with the state machine unexercisable through the tool surface. The
+> adapter must activate the candidate as part of its first commit or the
+> premise is not actually being tested — that is the acceptance criterion
+> for Phase 1's first adapter, and it should be stated in Phase 1's own
+> plan rather than left here.
 
 This is the most consequential finding of 0B.9 and it was not on the
 list before. Everything in 16.1–16.3 is now fixed and all nine tools do
@@ -666,13 +682,12 @@ It is worth noting in the meantime that **the loop is not the reason
 §16.8 happens.** `reconcile` returns `NoOp` on its first iteration for a
 job with no active candidate, long before the loop bound could matter.
 
-**7. NEW — raised by 0B.9, and the most important question in this
-section. How should a job advance past `EventDetected` while there is no
-adapter?** See §16.8, which lays out three options and notes which of them
-are compatible with §94's nine-tool enumeration. This one should be
-answered before Phase 1 opens, because Phase 1's stated premise is real
-adapters meeting real failures, and §16.8 is a case where the two do not
-meet.
+**7. ~~How should a job advance past `EventDetected` while there is no
+adapter?~~ ANSWERED 2026-09-29: option (c), leave it to the Phase 1
+adapter.** See the decision block at the head of §16.8. The consequence
+for Phase 1 is written down there rather than left implicit: the first
+real adapter must activate the candidate, or Phase 1 is not exercising
+what it claims to. §94's nine tools are unchanged.
 
 ---
 
