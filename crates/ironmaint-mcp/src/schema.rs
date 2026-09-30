@@ -121,6 +121,13 @@ pub fn generate_all_schemas() -> BTreeMap<McpToolName, (Value, Value)> {
             serde_json::to_value(schema_for!(tools::actions::ResumeOutput)).unwrap_or(Value::Null),
         ),
     );
+    out.insert(
+        McpToolName("release.candidate.create".to_string()),
+        (
+            serde_json::to_value(schema_for!(tools::release::CreateInput)).unwrap_or(Value::Null),
+            serde_json::to_value(schema_for!(tools::release::CreateOutput)).unwrap_or(Value::Null),
+        ),
+    );
     out
 }
 
@@ -164,6 +171,10 @@ pub fn tool_description(name: &str) -> Option<&'static str> {
         "job.resume" => {
             "Return a job awaiting human review to the state recorded when it was \
              escalated."
+        }
+        "release.candidate.create" => {
+            "Assemble the release-candidate snapshot of the job's active candidate: the \
+             gates and obligations it was validated against. Publishes nothing."
         }
         _ => return None,
     })
@@ -341,21 +352,31 @@ mod tests {
     }
 
     #[test]
-    fn the_surface_is_ten_tools() {
+    fn the_surface_is_eleven_tools() {
         // §94 enumerates *capabilities* — "reconcile", "next-actions",
         // "candidate capture", and so on — not a count of nine, so
-        // growing the surface past nine does not contradict it. The
-        // tenth, `job.resume` (0B.10 C2), exists because an agent
-        // that lands in `HumanReviewRequired` otherwise has no way
-        // out, and §101 cannot be driven end to end over MCP
-        // without one.
+        // growing the surface past nine does not contradict it.
+        //
+        // Two tools have been added past the 0B.6 set, both
+        // deliberately, and both because §101's walk stops without
+        // them:
+        //
+        // - the tenth, `job.resume` (0B.10 C2): an agent that lands
+        //   in `HumanReviewRequired` otherwise has no way out.
+        // - the eleventh, `release.candidate.create` (0B.10 C5):
+        //   §101 steps 26-27 assemble a release candidate and assert
+        //   it is bound to the final candidate. §53 already grants
+        //   the agent `ironmaint_gate_list` and
+        //   `ironmaint_obligation_list`; the snapshot is the join of
+        //   those two, so withholding the join while handing over
+        //   its parts would be backwards.
         //
         // The original note here said a tenth "would be a scope
         // change and a client-compatibility question, so it should
         // be a deliberate edit to this assertion, not a surprise."
-        // That was right about the process and this is the
-        // deliberate edit. The guard stays: the next tool should
+        // That was right about the process and both of these are
+        // deliberate edits. The guard stays: the next tool should
         // have to come through here too.
-        assert_eq!(tool_names().len(), 10);
+        assert_eq!(tool_names().len(), 11);
     }
 }

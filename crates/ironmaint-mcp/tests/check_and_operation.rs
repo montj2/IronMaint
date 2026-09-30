@@ -349,3 +349,128 @@ async fn operation_get_rejects_an_unknown_id() {
     );
     assert!(err.to_string().contains("unknown operation"), "{err}");
 }
+
+// ---------------------------------------------------------------------------
+// release.candidate.create
+// ---------------------------------------------------------------------------
+
+/// §101 steps 26-27. The snapshot has to be reachable over the wire,
+/// and it has to name the candidate the job was actually validated
+/// against rather than the first one it ever captured.
+#[tokio::test]
+async fn release_candidate_create_returns_the_snapshot_of_the_active_candidate() {
+    let f = build();
+    let (job_id, _check_id) = job_with_check(&f).await;
+    // C1 is whatever `job_with_check` activated. Read through the
+    // store rather than a tool: `job.get` reports the projection's
+    // `active_candidate` as a `CandidateId`, not a fingerprint, and
+    // no tool exposes a candidate by id — §53 lists
+    // `ironmaint_candidate_get` in the read-only set and 0B never
+    // implemented it. Worth knowing and worth its own tool later;
+    // not this test's business.
+    let c1: CandidateFingerprint = f
+        .store
+        .get_source_candidate(
+            f.store
+                .active_source_candidate(job_id)
+                .await
+                .expect("active candidate")
+                .expect("an active candidate"),
+        )
+        .await
+        .expect("the active candidate row")
+        .fingerprint()
+        .clone();
+
+    // Supersede it, so a snapshot that ignored the active candidate
+    // would return C1's.
+    let c2 = SourceCandidate::new(
+        job_id,
+        PackageRevision::new(package(), PackageVersion::new("1.0.1").expect("version")),
+        RepositoryRef::new(
+            VcsKind::Git,
+            Url::parse("https://example.invalid/foo.git").unwrap(),
+        )
+        .expect("repository"),
+        ironmaint_core::GitObjectId::new(ironmaint_core::GitHashAlgorithm::Sha1, "1".repeat(40))
+            .expect("commit"),
+        ironmaint_core::GitObjectId::new(ironmaint_core::GitHashAlgorithm::Sha1, "3".repeat(40))
+            .expect("tree"),
+        OffsetDateTime::from_unix_timestamp(1_700_000_001).unwrap(),
+    );
+    let c2_fingerprint = c2.fingerprint().clone();
+    f.store
+        .put_source_candidate(&c2)
+        .await
+        .expect("put the second candidate");
+    f.mcp
+        .service()
+        .handle_command(RuntimeCommand::SetActiveCandidate {
+            job_id,
+            fingerprint: c2_fingerprint.clone(),
+        })
+        .await
+        .expect("activate the second candidate");
+
+    let out = call(
+        &f,
+        "release.candidate.create",
+        serde_json::json!({ "job_id": job_id }),
+    )
+    .await;
+    let release: ironmaint_policy::ReleaseCandidate =
+        serde_json::from_value(out["release_candidate"].clone())
+            .expect("the snapshot deserializes");
+    assert_eq!(release.source, c2_fingerprint, "§101 step 27");
+    assert_ne!(release.source, c1, "and not the superseded candidate");
+    assert!(
+        release.gate_ids.is_empty(),
+        "C2 was never materialised with a check, so the snapshot has no \
+         gates — and C1's gate did not leak in. The gates are filtered by \
+         fingerprint, not by job, which is what §101 step 27 is about: \
+         {:?}",
+        release.gate_ids
+    );
+
+    // Idempotent on the wire, not just at the command: a second call
+    // is a no-op a client can make without consequence.
+    let again = call(
+        &f,
+        "release.candidate.create",
+        serde_json::json!({ "job_id": job_id }),
+    )
+    .await;
+    assert_eq!(
+        again["release_candidate"]["id"], out["release_candidate"]["id"],
+        "calling twice returns the same snapshot, not a second one"
+    );
+    assert_eq!(
+        f.store
+            .list_release_candidates_for_job(job_id)
+            .await
+            .expect("list snapshots")
+            .len(),
+        1
+    );
+}
+
+#[tokio::test]
+async fn release_candidate_create_names_why_there_is_nothing_to_snapshot() {
+    let f = build();
+    let created = call(&f, "job.create", create_input()).await;
+    let job_id: JobId = serde_json::from_value(created["job_id"].clone()).expect("job id");
+
+    // No active candidate: mid-workflow, not a failure.
+    let err = dispatch(
+        f.mcp.clone(),
+        &McpToolName("release.candidate.create".to_string()),
+        serde_json::json!({ "job_id": job_id }),
+    )
+    .await
+    .expect_err("a job with no candidate has no release candidate");
+    assert!(
+        err.to_string().contains("no active candidate"),
+        "the error must say which of the two reasons it is, or a client \
+         cannot tell 'keep working' from 'assemble the snapshot': {err}"
+    );
+}

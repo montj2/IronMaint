@@ -32,7 +32,7 @@ calling the IronMaint MCP server. The runtime is the only writer of
 
 ## Tool surface
 
-Every action goes through one of these ten MCP tools:
+Every action goes through one of these eleven MCP tools:
 
 | Tool | When |
 |---|---|
@@ -46,6 +46,7 @@ Every action goes through one of these ten MCP tools:
 | `workspace.stat` | To read the current `WorkspaceRevision` before patching |
 | `operation.get` | To inspect a privileged operation's status |
 | `job.resume` | Only when `next_actions` offers `resume_job` — returns the job to the state recorded when it was escalated |
+| `release.candidate.create` | At `ReadyForApproval`, to assemble the snapshot of what was validated. It publishes nothing |
 
 ## Workflow loop
 

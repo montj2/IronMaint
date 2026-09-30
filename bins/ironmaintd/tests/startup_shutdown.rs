@@ -375,9 +375,11 @@ async fn an_unauthenticated_call_is_401() {
 async fn the_daemon_advertises_every_tool_the_server_registers() {
     // §94 enumerates tool *capabilities* — "reconcile", "next-actions",
     // "candidate capture", and so on — not a count of nine, so a tenth
-    // tool does not contradict it. The tenth, `job.resume` (0B.10 C2),
-    // exists because an agent that lands in `HumanReviewRequired`
-    // otherwise has no way out.
+    // or eleventh tool does not contradict it. The tenth, `job.resume`
+    // (0B.10 C2), exists because an agent that lands in
+    // `HumanReviewRequired` otherwise has no way out; the eleventh,
+    // `release.candidate.create` (0B.10 C5), exists because §101
+    // steps 26-27 are not expressible without it.
     //
     // The e2e script hardcodes the same list. A missing tool here is
     // the exact failure that made `ironclaw-e2e.sh` unrunnable.
@@ -407,6 +409,7 @@ async fn the_daemon_advertises_every_tool_the_server_registers() {
             "job.reconcile",
             "job.resume",
             "operation.get",
+            "release.candidate.create",
             "workspace.apply_patch",
             "workspace.stat",
         ]

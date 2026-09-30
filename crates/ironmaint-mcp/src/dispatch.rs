@@ -122,6 +122,7 @@ pub async fn dispatch<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         "workspace.apply_patch" => dispatch_apply_patch(&runtime, input).await,
         "workspace.stat" => dispatch_workspace_stat(&runtime, input).await,
         "operation.get" => dispatch_operation_get(&runtime, input).await,
+        "release.candidate.create" => dispatch_release_candidate_create(&runtime, input).await,
         unknown => Err(McpError::Other(format!("unknown tool: {unknown}"))),
     }
 }
@@ -447,5 +448,60 @@ async fn dispatch_operation_get<S: IronMaintStore + ?Sized, E: Executor + ?Sized
         ));
     };
     let out = crate::tools::operation::GetOutput { operation: op };
+    serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
+}
+
+/// Assemble and return the §42 release-candidate snapshot for a
+/// job's active candidate.
+///
+/// ## Why this is a tool at all
+///
+/// §53's read-only surface already includes
+/// `ironmaint_candidate_get`, `ironmaint_gate_list` and
+/// `ironmaint_obligation_list`, and the snapshot is exactly the join
+/// of the gates and obligations bound to one candidate. Withholding
+/// the join while handing over its parts would be backwards, and
+/// §101 steps 26-27 — assemble a release candidate, assert it is
+/// bound to C4 — are not expressible over the tool surface without
+/// it.
+///
+/// It is emphatically not a publish. Nothing here advances a state,
+/// signs anything, or proposes a `PrivilegedOperation`; §42's
+/// snapshot is a record of what was validated, and §54's
+/// `ironmaint_publish` is still absent.
+///
+/// The command mints the id and the query reads the durable value
+/// back, for the reason `dispatch_operation_get` and `check.run`
+/// already give: the snapshot is the thing a caller will act on, so
+/// it should be what the store says rather than what a side-effect
+/// string paraphrases.
+async fn dispatch_release_candidate_create<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let input: crate::tools::release::CreateInput =
+        serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
+    runtime
+        .service
+        .handle_command(RuntimeCommand::CreateReleaseCandidate {
+            job_id: input.job_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    let query = runtime
+        .service
+        .handle_query(RuntimeQuery::GetReleaseCandidate {
+            job_id: input.job_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    let ironmaint_runtime::QueryResult::ReleaseCandidate(release) = query else {
+        return Err(McpError::Other(
+            "GetReleaseCandidate returned wrong variant".into(),
+        ));
+    };
+    let out = crate::tools::release::CreateOutput {
+        release_candidate: release,
+    };
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }

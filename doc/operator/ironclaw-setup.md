@@ -128,6 +128,7 @@ extensions:
         - workspace.apply_patch
         - workspace.stat
         - operation.get
+        - release.candidate.create
 ```
 
 Install it:
@@ -213,6 +214,7 @@ waiting on.
 | `workspace.stat`, `workspace.apply_patch` | live — real revision, real `git apply` |
 | `operation.get` | live — reads the operation store; always empty in 0B, since §4.10/§26/§99 forbid creating a privileged operation |
 | `job.resume` | live, but a no-op in practice for 0B: nothing in 0B escalates a job to `HumanReviewRequired` on its own, so the runtime never offers `resume_job` and an agent has no reason to call it. It exists so the exit path is real when an operator escalates a job |
+| `release.candidate.create` | live — assembles the §42 snapshot of the job's active candidate (its gates and obligations) and returns it. Idempotent: a second call returns the snapshot that already exists. Publishes nothing and authorizes nothing; §54's `ironmaint_publish` is still absent |
 
 The daemon logs which adapter families it loaded at startup:
 

@@ -270,7 +270,7 @@ async fn tools_list_advertises_exactly_the_ten_known_tools() {
     advertised.sort();
     expected.sort();
     assert_eq!(advertised, expected);
-    assert_eq!(advertised.len(), 10);
+    assert_eq!(advertised.len(), 11);
     h.stop();
 }
 

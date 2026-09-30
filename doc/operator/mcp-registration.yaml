@@ -59,6 +59,10 @@ extensions:
         - workspace.stat
         # Privileged operations
         - operation.get
+        # §42 release-candidate snapshot: the join of the gates and
+        # obligations bound to the active candidate. Grants no
+        # authority — it publishes nothing and authorizes nothing.
+        - release.candidate.create
 
     # The IronMaint MCP server is a local sidecar; no egress is
     # required beyond the loopback endpoint declared above. Egress

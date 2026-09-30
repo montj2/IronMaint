@@ -5,4 +5,5 @@ pub mod candidate;
 pub mod check;
 pub mod job;
 pub mod operation;
+pub mod release;
 pub mod workspace;

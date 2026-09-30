@@ -1,0 +1,134 @@
+[
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "job_id": {
+        "format": "uuid",
+        "type": "string"
+      }
+    },
+    "required": [
+      "job_id"
+    ],
+    "title": "CreateInput",
+    "type": "object"
+  },
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "DistributionRef": {
+        "description": "Pair of `DistributionFamily` + `DistributionRelease`.\n\nThe core represents the authority-target identity as a `family` + `release` pair. The adapter interprets the pair. Nothing here encodes Debian-vs-Fedora semantics.",
+        "properties": {
+          "family": {
+            "type": "string"
+          },
+          "release": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "family",
+          "release"
+        ],
+        "type": "object"
+      },
+      "PolicyBaseline": {
+        "description": "A snapshot of the trusted authorities for one distribution (§36).\n\n`authorities` is the list adapters consume when they produce [`Obligation`]s; `distribution` identifies which distribution's baseline this is. The baseline is itself produced by the adapter, not by core — core just stores it.",
+        "properties": {
+          "authorities": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "distribution": {
+            "$ref": "#/definitions/DistributionRef"
+          }
+        },
+        "required": [
+          "authorities",
+          "distribution"
+        ],
+        "type": "object"
+      },
+      "ReleaseCandidate": {
+        "description": "A snapshot of \"everything required to release\" for one candidate (§42).\n\n`policy_baseline` carries the [`AuthorityId`]s the candidate is held against. The candidate is releasable only after the state machine's `FinalValidation → ReadyForApproval → Approved → PublicationPending → Published` path completes (and only when all referenced obligations / gates / issue actions have cleared).",
+        "properties": {
+          "created_at": {
+            "$ref": "#/definitions/Rfc3339DateTime"
+          },
+          "gate_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "issue_actions": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "job_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "obligation_ids": {
+            "items": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "policy_baseline": {
+            "$ref": "#/definitions/PolicyBaseline"
+          },
+          "schema_version": {
+            "default": 1,
+            "description": "Wire-format schema version (§60). Always serializes as `SchemaVersion::V1`; on parse, a missing field defaults to `V1`.",
+            "format": "uint16",
+            "minimum": 0.0,
+            "type": "integer"
+          },
+          "source": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "created_at",
+          "id",
+          "job_id",
+          "policy_baseline",
+          "source"
+        ],
+        "type": "object"
+      },
+      "Rfc3339DateTime": {
+        "format": "date-time",
+        "type": "string"
+      }
+    },
+    "properties": {
+      "release_candidate": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ReleaseCandidate"
+          }
+        ],
+        "description": "The snapshot bound to the job's active candidate.\n\nIdempotent, so this is the same value whether this call assembled it or found an earlier one. There is deliberately no \"did I create it\" flag: the command reports that in a side-effect string, and putting a boolean derived from parsing that string on the wire would be a second, weaker account of what happened — the same reason `check.run` and `job.resume` read the durable state back instead."
+      }
+    },
+    "required": [
+      "release_candidate"
+    ],
+    "title": "CreateOutput",
+    "type": "object"
+  }
+]
