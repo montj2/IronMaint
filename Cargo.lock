@@ -1268,6 +1268,7 @@ dependencies = [
  "ironmaint-runtime",
  "ironmaint-state",
  "ironmaint-store",
+ "ironmaint-store-sqlite",
  "ironmaint-synthetic-tools",
  "pretty_assertions",
  "serde",

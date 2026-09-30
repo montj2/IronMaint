@@ -26,6 +26,12 @@ url = { workspace = true }
 [dev-dependencies]
 insta = { workspace = true }
 ironmaint-artifacts = { path = "../ironmaint-artifacts" }
+# The §101 acceptance scenario drives the real `SqliteStore` rather
+# than the mock, because steps 4, 5 and 30 are about surviving a
+# restart and a mock cannot be restarted. Allowed here (and already
+# in `ironmaint-runtime`) by PHASE-0B.md §98: the test-support crate
+# is not a production dependency direction.
+ironmaint-store-sqlite = { path = "../ironmaint-store-sqlite" }
 pretty_assertions = { workspace = true }
 serde = { workspace = true }
 tempfile = { workspace = true }
@@ -39,6 +45,11 @@ workspace = true
 
 [features]
 integration = []
+
+[[test]]
+name = "acceptance_scenario"
+path = "tests/acceptance_scenario.rs"
+required-features = ["integration"]
 
 [[test]]
 name = "synthetic_e2e"
