@@ -211,6 +211,7 @@ waiting on.
 | `check.run` | live — runs the tool, records evidence, updates the gate; reports `unknown tool` for a `debian.*`/`fedora.*` key until Phase 1 registers real ones |
 | `workspace.stat`, `workspace.apply_patch` | live — real revision, real `git apply` |
 | `operation.get` | live — reads the operation store; always empty in 0B, since §4.10/§26/§99 forbid creating a privileged operation |
+| `job.resume` | live, but a no-op in practice for 0B: nothing in 0B escalates a job to `HumanReviewRequired` on its own, so the runtime never offers `resume_job` and an agent has no reason to call it. It exists so the exit path is real when an operator escalates a job |
 
 The daemon logs which adapter families it loaded at startup:
 

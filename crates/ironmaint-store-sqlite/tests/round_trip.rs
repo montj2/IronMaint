@@ -20,7 +20,9 @@ use ironmaint_policy::{
     Applicability, AuthorizationState, Obligation, ObligationStrength, PrivilegedOperation,
     PrivilegedOperationKind,
 };
-use ironmaint_state::{JobEvent, StateTransitioned, ToolOutcome, ToolRunFinished, Transition};
+use ironmaint_state::{
+    JobEvent, ResumeRecord, StateTransitioned, ToolOutcome, ToolRunFinished, Transition,
+};
 use ironmaint_store::mock::MockStore;
 use ironmaint_store::workspace::WorkspaceState;
 use ironmaint_store::{
@@ -187,6 +189,54 @@ async fn tool_run_finished_event_persists_and_rebuilds() {
 
     // rebuild_projection must equal the seed transition's
     // projection_after (tool run did not advance the FSM).
+    let rebuilt = s.rebuild_projection(jid).await.unwrap();
+    assert_eq!(rebuilt.state, transitioned.projection_after.state);
+    assert_eq!(rebuilt.version, transitioned.projection_after.version);
+}
+
+#[tokio::test]
+async fn resume_recorded_event_persists_and_rebuilds() {
+    // 0A §21: the resume state must be a *recorded event*, so it
+    // has to survive the SQLite round-trip with `from`/`to`/
+    // `recorded_at` intact — a resume that read back a lossy record
+    // would send the job somewhere the human never chose. It must
+    // also not advance the FSM, for the same reason
+    // `ToolRunFinished` does not: it records intent, not a state
+    // change.
+    let s = SqliteStore::open_in_memory().await.unwrap();
+    let jid = job_id();
+    create_projection(&s, jid).await;
+
+    let transitioned = transitioned_event_for(jid);
+    s.append_event(&ironmaint_store::EventEnvelope::new(
+        MaintenanceEventId::new(),
+        jid,
+        1,
+        datetime!(2026-01-02 00:00:00 UTC),
+        JobEvent::Transitioned(transitioned.clone()),
+    ))
+    .await
+    .unwrap();
+
+    let record = ResumeRecord::new(
+        ironmaint_core::JobState::HumanReviewRequired,
+        ironmaint_core::JobState::EventDetected,
+        datetime!(2026-01-02 00:00:01 UTC),
+    );
+    s.append_event(&ironmaint_store::EventEnvelope::new(
+        MaintenanceEventId::new(),
+        jid,
+        2,
+        datetime!(2026-01-02 00:00:01 UTC),
+        JobEvent::ResumeRecorded(record.clone()),
+    ))
+    .await
+    .unwrap();
+
+    let got = s.get_event(jid, 2).await.unwrap();
+    assert_eq!(got.event, JobEvent::ResumeRecorded(record.clone()));
+    assert_eq!(got.event, JobEvent::ResumeRecorded(record));
+
     let rebuilt = s.rebuild_projection(jid).await.unwrap();
     assert_eq!(rebuilt.state, transitioned.projection_after.state);
     assert_eq!(rebuilt.version, transitioned.projection_after.version);

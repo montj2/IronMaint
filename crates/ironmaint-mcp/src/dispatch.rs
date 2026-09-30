@@ -116,6 +116,7 @@ pub async fn dispatch<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         "job.get" => dispatch_job_get(&runtime, input).await,
         "job.next_actions" => dispatch_next_actions(&runtime, input).await,
         "job.reconcile" => dispatch_reconcile(&runtime, input).await,
+        "job.resume" => dispatch_resume(&runtime, input).await,
         "candidate.capture" => dispatch_capture(&runtime, input).await,
         "check.run" => dispatch_check_run(&runtime, input).await,
         "workspace.apply_patch" => dispatch_apply_patch(&runtime, input).await,
@@ -213,6 +214,48 @@ async fn dispatch_reconcile<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         .await
         .map_err(|e| McpError::Runtime(e.message))?;
     let out = crate::tools::actions::ReconcileOutput { outcome };
+    serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
+}
+
+async fn dispatch_resume<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let input: crate::tools::actions::ResumeInput =
+        serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
+    runtime
+        .service
+        .handle_command(RuntimeCommand::ResumeJob {
+            job_id: input.job_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    // Read the resulting state back through the runtime's query
+    // path, for the same reason `check.run` does: the command
+    // reports what it changed, but the durable answer is a
+    // separate read, and parsing the side-effect string here
+    // would give this tool a second, subtly different account of
+    // where the job ended up.
+    let query = runtime
+        .service
+        .handle_query(RuntimeQuery::GetJob {
+            job_id: input.job_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    // `QueryResult::Projection` carries the projection as
+    // `serde_json::Value` (it is the MCP wire form), so recover
+    // the typed state from it rather than reaching into the
+    // object's fields.
+    let value = match query {
+        ironmaint_runtime::QueryResult::Projection(p) => p,
+        _ => return Err(McpError::Other("GetJob returned wrong variant".into())),
+    };
+    let projection: ironmaint_core::JobProjection =
+        serde_json::from_value(value).map_err(|e| McpError::Internal(e.to_string()))?;
+    let out = crate::tools::actions::ResumeOutput {
+        resumed_to: projection.state,
+    };
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 

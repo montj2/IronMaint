@@ -143,6 +143,13 @@
               "run_check"
             ],
             "type": "object"
+          },
+          {
+            "description": "Return a job in an exceptional state to the state named by its recorded resume state (0A §21).\n\nEmitted only when such a record actually exists. The pure projection cannot know that, so the runtime attaches it from the query handler after reading the log — advertising a move that would be refused would make `allowed` a lie, and this field's documented contract is \"the `AllowedAction`s it can take *right now*\".",
+            "enum": [
+              "resume_job"
+            ],
+            "type": "string"
           }
         ]
       },

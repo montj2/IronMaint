@@ -240,7 +240,7 @@ async fn auth_is_enforced_before_rmcp_validates_the_request_shape() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn tools_list_advertises_exactly_the_nine_known_tools() {
+async fn tools_list_advertises_exactly_the_ten_known_tools() {
     // The advertised surface is generated from the same function
     // `verify-mcp-schemas` snapshots, so this cannot drift from the
     // verified schemas. If it ever does, this test names the
@@ -270,7 +270,7 @@ async fn tools_list_advertises_exactly_the_nine_known_tools() {
     advertised.sort();
     expected.sort();
     assert_eq!(advertised, expected);
-    assert_eq!(advertised.len(), 9);
+    assert_eq!(advertised.len(), 10);
     h.stop();
 }
 

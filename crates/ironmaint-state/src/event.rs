@@ -12,6 +12,13 @@
 //!   when a tool subprocess returns (PHASE-0B §15 last bullet,
 //!   §65 partial). Does NOT advance the FSM: tool runs are
 //!   observability signals, not state changes.
+//!
+//! 0B.10 added a fourth:
+//!
+//! - [`JobEvent::ResumeRecorded`] — the record 0A §21 requires
+//!   before a job may leave an exceptional state. Also does NOT
+//!   advance the FSM: it is written at the moment of *entering*
+//!   the exceptional state, and names the state to return to.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -19,7 +26,7 @@ use time::OffsetDateTime;
 
 use ironmaint_core::{DomainEventId, EvidenceId, JobProjection, SchemaVersion};
 
-use crate::transition::Transition;
+use crate::transition::{ResumeRecord, Transition};
 
 /// The event emitted by [`crate::TransitionEngine::apply`] on an
 /// allowed transition.
@@ -139,6 +146,7 @@ pub enum JobEvent {
     Transitioned(StateTransitioned),
     Domain(DomainEventId),
     ToolRunFinished(ToolRunFinished),
+    ResumeRecorded(ResumeRecord),
 }
 
 #[cfg(test)]

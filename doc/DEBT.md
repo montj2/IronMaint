@@ -65,6 +65,7 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-11 | LOW | No real Debian/Fedora adapters | DEFERRED to Phase 1 (§106) |
 | D-12 | LOW | 0B.8 hardening suite is not exhaustive | DEFERRED |
 | D-13 | LOW | `git add -A` in this repo can sweep in unrelated local artifacts | PROCESS |
+| D-14 | MEDIUM | `rebuild_projection` rejects every real job's event log, so the §36 operator escape hatch cannot rebuild anything | OPEN — found 2026-09-30 by 0B.10 C2's tests |
 
 ---
 
@@ -380,12 +381,12 @@ phase is not testing the premise it exists to test.
 The architect delegated this call. Recommendation taken, and it is now the
 governing criterion for Phase 1 (§106):
 
-> **A job must reach `ReadyForApproval` driven only through the nine MCP tools —
+> **A job must reach `ReadyForApproval` driven only through the MCP tools —
 > no `RuntimeService` handle, no test-only command, no direct store access.**
 
 This phrasing is deliberate on three points:
 
-- **"Driven only through the nine tools"** rules out the pattern the 0B.9 tests
+- **"Driven only through the tools"** rules out the pattern the 0B.9 tests
   currently use — `check_and_operation.rs:131-134` openly says it calls the
   runtime "standing in for an adapter". If Phase 1's tests keep standing in, the
   gap is merely relocated, not closed.
@@ -597,6 +598,56 @@ not the class.
 
 ---
 
+## D-14 — `rebuild_projection` rejects every real job (MEDIUM)
+
+**Found 2026-09-30**, while writing 0B.10 C2's projection-replay test. It is not a
+C2 regression; C2's event variant is additive and every pre-existing test still
+passes.
+
+`ProjectionStore::rebuild_projection` refuses any log whose first event is not a
+`JobEvent::Transitioned`:
+
+```text
+"first event is a Domain reference; no projection to seed rebuild"
+```
+
+But `handle_create_job` seeds the projection with `put_projection` and *then*
+appends a `JobEvent::Domain` as sequence 1. So the first event of every job the
+runtime has ever created is a `Domain` reference, and the rebuild **always**
+fails.
+
+**Why it matters:** `ironmaintctl rebuild-projections` (`bins/ironmaintctl/src/rebuild.rs`)
+is the §36 operator escape hatch for "a projection row drifts from the event log"
+— manual edits, recovery from a corrupted DB. On any real database it reports
+every job as an error and rebuilds nothing. It is the tool an operator reaches for
+precisely when things are already wrong, and the tool silently does nothing. It
+also means §101 step 30 ("entire history is reconstructable after restart") cannot
+be demonstrated through this path.
+
+**Why the existing tests miss it:** every `rebuild_projection` caller in
+`ironmaint-store-sqlite/tests/` builds its log by hand, starting from a
+`Transitioned`. No test drives `CreateJob` and then rebuilds.
+
+**The fix is not obvious, and that is why it is logged rather than fixed inline.**
+The projection's *initial* contents live in the `put_projection` write, not in any
+event — a `Domain` event carries only an id. So "rebuild from the log alone" is
+genuinely impossible for a job that has never transitioned. The real design
+question is whether the job-creation seed should emit a `Transitioned` (it is not
+a transition, so probably not), whether `rebuild_projection` should read the
+existing projection row as the seed and only replay from there (defeats the
+purpose of the escape hatch), or whether the rebuild contract should be
+"replay events *after* the first transition" with the seed taken from the DB.
+
+**Deliberately not fixed in C2:** `AGENTS.md` — "One feature or fix per branch. Do
+not stack unrelated work on branch." C2 is exceptional states and resume; this is
+a pre-existing defect in a different subsystem, found by C2's tests. Fixing it
+here would also have required a design decision this commit should not make.
+
+**It blocks §101 step 30** (C4), so it needs a decision before C4, the same way
+`RecordObligationOutcome` does.
+
+---
+
 ## Suggested ordering
 
 Not a plan — the user decides. In rough order of value-per-effort:
@@ -621,7 +672,7 @@ Two calls the architect delegated, both now recorded above rather than left open
 
 | Question | Decision | Where it lands |
 |---|---|---|
-| Should Phase 1's first adapter be required to drive a job through the tool surface? | **Yes** — "reaches `ReadyForApproval` driven only through the nine MCP tools, no runtime handle, no direct store access" is the governing acceptance criterion | Phase 1 (§106) |
+| Should Phase 1's first adapter be required to drive a job through the tool surface? | **Yes** — "reaches `ReadyForApproval` driven only through the MCP tools, no runtime handle, no direct store access" is the governing acceptance criterion | Phase 1 (§106) |
 | Should `next_actions` keep advertising actions with no verb behind them? | **No** — `allowed` becomes strictly tool-performable, the human-action case moves to its own field, an enforcement test makes an unperformable `AllowedAction` a gate failure, and `Publish` is removed as never-emitted. Agent behaviour is unchanged. | Top of 0B.10 |
 
 Neither has been started. `AGENTS.md` requires an explicit go-ahead before a new

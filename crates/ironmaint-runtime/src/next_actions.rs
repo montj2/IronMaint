@@ -20,12 +20,24 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "snake_case")]
 pub enum AllowedAction {
     CaptureCandidate,
-    RunCheck { check_id: CheckId },
+    RunCheck {
+        check_id: CheckId,
+    },
     ApplyPatch,
     MarkObligationSatisfied,
     RequestApproval,
     AuthorizeOperation,
     Publish,
+    /// Return a job in an exceptional state to the state named by
+    /// its recorded resume state (0A §21).
+    ///
+    /// Emitted only when such a record actually exists. The pure
+    /// projection cannot know that, so the runtime attaches it
+    /// from the query handler after reading the log — advertising a
+    /// move that would be refused would make `allowed` a lie, and
+    /// this field's documented contract is "the `AllowedAction`s it
+    /// can take *right now*".
+    ResumeJob,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

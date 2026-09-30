@@ -32,7 +32,7 @@ calling the IronMaint MCP server. The runtime is the only writer of
 
 ## Tool surface
 
-Every action goes through one of these nine MCP tools:
+Every action goes through one of these ten MCP tools:
 
 | Tool | When |
 |---|---|
@@ -45,6 +45,7 @@ Every action goes through one of these nine MCP tools:
 | `workspace.apply_patch` | To apply a candidate patch to the workspace |
 | `workspace.stat` | To read the current `WorkspaceRevision` before patching |
 | `operation.get` | To inspect a privileged operation's status |
+| `job.resume` | Only when `next_actions` offers `resume_job` — returns the job to the state recorded when it was escalated |
 
 ## Workflow loop
 
@@ -53,10 +54,15 @@ loop:
     projection := job.get(job_id)
     if projection.state == ReadyForApproval:
         return SUCCESS
+    if projection.state == HumanReviewRequired or
+       projection.state == InfrastructureBlocked:
+        stop and narrate — a human is needed (see below)
     actions := job.next_actions(job_id)
     if actions.allowed contains capture_candidate:
         candidate.capture(job_id, package, repository_url)   # see below
         continue
+    if actions.allowed contains resume_job:
+        do not call it — see "Human review" below
     if actions.blockers is non-empty:
         drive the first blocker (see below)
         continue
@@ -93,6 +99,23 @@ variant:
 `reconcile` advances at most **one** transition per call. A job walks the
 chain only if you call it again.
 
+## Human review
+
+`HumanReviewRequired` means a person has to look at this job. **Stop and
+say so.** Do not call `job.resume`.
+
+That tool exists, and it is *not* yours. Resuming returns the job to the
+state that was recorded when someone escalated it — so the recorded state
+is a human's decision, and calling it yourself would silently undo an
+escalation you have no basis to overrule. `job.resume` is offered so the
+path exists and is discoverable, not so an agent can take it.
+
+The runtime will tell you when this has happened. A failed mandatory
+obligation does **not** cause it: the runtime only escalates when
+orchestration explicitly asks it to. A policy obligation that has not
+passed yet is reported as a blocker, which is the state you can actually
+work on — patch, capture a new candidate, re-run.
+
 ## Driving blockers
 
 `next_actions` enumerates blockers in priority order. Resolve them in the
@@ -118,7 +141,7 @@ Blockers are externally tagged too, so you match on the first key:
   - stop and narrate the failure to the user.
 - **`obligation_pending {reference}`** → consult the policy reference it
   names, then either satisfy it through the check the runtime points at or
-  stop and narrate. **There is no obligation tool.** The nine tools are the
+  stop and narrate. **There is no obligation tool.** The ten tools are the
   whole surface and reading an obligation's body is not one of them; the
   only thing available to you is the reference string. You never self-grant
   `ExceptionApproved`.

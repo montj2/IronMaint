@@ -722,7 +722,10 @@ adapter?~~ ANSWERED 2026-09-29: option (c), leave it to the Phase 1
 adapter.** See the decision block at the head of §16.8. The consequence
 for Phase 1 is written down there rather than left implicit: the first
 real adapter must activate the candidate, or Phase 1 is not exercising
-what it claims to. §94's nine tools are unchanged.
+what it claims to. §94's tool *capabilities* are unchanged. (The count
+is now ten: 0B.10 C2 added `job.resume`, because an agent that lands in
+`HumanReviewRequired` otherwise had no way out and §101 could not be
+driven end to end over MCP.)
 
 ---
 

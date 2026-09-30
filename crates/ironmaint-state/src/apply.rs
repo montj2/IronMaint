@@ -44,6 +44,13 @@ impl ProjectionApply for JobProjection {
             // advance the FSM (PHASE-0B.md §15 last bullet,
             // §65 partial).
             JobEvent::ToolRunFinished(_) => self.clone(),
+            // The resume record is written at the moment the job
+            // *enters* an exceptional state, so by the time it is
+            // replayed the state change it accompanies has already
+            // been carried by the preceding `Transitioned`. Like
+            // `ToolRunFinished` it is a record of intent, not a
+            // state change — replaying it must not move the job.
+            JobEvent::ResumeRecorded(_) => self.clone(),
         }
     }
 }

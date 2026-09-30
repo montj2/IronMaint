@@ -39,6 +39,18 @@
         }
       },
       "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "resume_recorded"
+      ],
+      "properties": {
+        "resume_recorded": {
+          "$ref": "#/definitions/ResumeRecord"
+        }
+      },
+      "additionalProperties": false
     }
   ],
   "definitions": {
@@ -270,6 +282,26 @@
         },
         "source_name": {
           "type": "string"
+        }
+      }
+    },
+    "ResumeRecord": {
+      "description": "Recorded event allowing an exceptional state to be resumed (§21).\n\nCaptured at runtime by the executor; the engine treats it as an opaque input that bounds which transitions out of an exceptional state are valid.",
+      "type": "object",
+      "required": [
+        "from",
+        "recorded_at",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "#/definitions/JobState"
+        },
+        "recorded_at": {
+          "$ref": "#/definitions/Rfc3339DateTime"
+        },
+        "to": {
+          "$ref": "#/definitions/JobState"
         }
       }
     },

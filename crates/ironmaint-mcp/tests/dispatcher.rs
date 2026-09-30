@@ -191,6 +191,94 @@ async fn dispatcher_round_trips_reconcile_outcome() {
 }
 
 #[tokio::test]
+async fn dispatcher_resumes_a_job_awaiting_review() {
+    // An agent that lands in `HumanReviewRequired` has exactly one
+    // way forward, and it has to be reachable over MCP — the C5
+    // driver holds no `RuntimeService`, so a resume command that
+    // only existed in the runtime would strand the scenario.
+    //
+    // There is deliberately no matching `job.enter_human_review`
+    // tool: escalation is an orchestration decision, and an agent
+    // that could raise it against itself could also strand itself.
+    // The test therefore enters via the runtime handle the harness
+    // already has, and resumes via `dispatch`.
+    let service = build_runtime();
+    let mcp = McpRuntime::new(Arc::new(service));
+
+    let create_out = dispatch(
+        mcp.clone(),
+        &McpToolName("job.create".to_string()),
+        create_input(),
+    )
+    .await
+    .expect("create must succeed");
+    let job_id: JobId = serde_json::from_value(create_out.get("job_id").cloned().unwrap()).unwrap();
+
+    // Resuming a job that is not awaiting review is refused, not
+    // silently accepted.
+    let err = dispatch(
+        mcp.clone(),
+        &McpToolName("job.resume".to_string()),
+        serde_json::json!({ "job_id": job_id }),
+    )
+    .await
+    .expect_err("a healthy job cannot be resumed");
+    assert!(
+        err.to_string().contains("not an exceptional state"),
+        "got: {err}"
+    );
+
+    mcp.service()
+        .handle_command(ironmaint_runtime::RuntimeCommand::EnterHumanReview {
+            job_id,
+            reason: "needs a human".to_string(),
+        })
+        .await
+        .expect("enter human review");
+
+    // The agent can see that resume is the move available.
+    let next = dispatch(
+        mcp.clone(),
+        &McpToolName("job.next_actions".to_string()),
+        serde_json::json!({ "job_id": job_id }),
+    )
+    .await
+    .expect("next_actions");
+    assert_eq!(
+        next.pointer("/actions/allowed/0"),
+        Some(&serde_json::json!("resume_job")),
+        "next_actions must offer the way out: {next}"
+    );
+
+    let resumed = dispatch(
+        mcp.clone(),
+        &McpToolName("job.resume".to_string()),
+        serde_json::json!({ "job_id": job_id }),
+    )
+    .await
+    .expect("resume must succeed");
+    assert_eq!(
+        resumed.get("resumed_to").and_then(|v| v.as_str()),
+        Some("event_detected"),
+        "resumed to the recorded state, got: {resumed}"
+    );
+
+    // And the projection agrees, read through a second tool.
+    let got = dispatch(
+        mcp.clone(),
+        &McpToolName("job.get".to_string()),
+        serde_json::json!({ "job_id": job_id }),
+    )
+    .await
+    .expect("job.get");
+    assert_eq!(
+        got.pointer("/projection/state").and_then(|v| v.as_str()),
+        Some("event_detected"),
+        "got: {got}"
+    );
+}
+
+#[tokio::test]
 async fn dispatcher_rejects_unknown_tool() {
     let mcp = McpRuntime::new(Arc::new(build_runtime()));
     let err = dispatch(

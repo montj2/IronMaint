@@ -120,4 +120,42 @@ pub enum RuntimeCommand {
     /// (§41). Returns a [`ReconcileOutcome`] describing where
     /// the walk stopped.
     Reconcile { job_id: JobId },
+    /// Move a job into `HumanReviewRequired` (0A §21).
+    ///
+    /// §21 says deterministic orchestration *may* do this from any
+    /// nonterminal state, so this is an explicit, deliberate act
+    /// rather than a side effect of anything. That is deliberate:
+    /// 0B §83 tells the agent to *stop* when the runtime reports
+    /// `HumanReviewRequired`, so a transition that fired on every
+    /// transient policy failure would strand a job the agent is
+    /// supposed to repair and re-run — which is precisely §101's
+    /// shape at step 18.
+    ///
+    /// Entering writes a [`ResumeRecord`](ironmaint_state::ResumeRecord)
+    /// naming the state to return to. 0A §21: "Returning ...
+    /// requires a recorded event containing the resume state. Do
+    /// not infer the previous state from history at runtime.
+    /// Record it explicitly." The record is written **here**, at the
+    /// moment of entry, from the pre-transition projection — which
+    /// is what makes it a record rather than a later inference.
+    EnterHumanReview {
+        job_id: JobId,
+        /// Why a human is needed. Carried into the event trail so
+        /// whoever later resumes the job knows what they were
+        /// being asked to look at.
+        reason: String,
+    },
+    /// Return a job to the state named by its recorded
+    /// [`ResumeRecord`](ironmaint_state::ResumeRecord).
+    ///
+    /// The target is read back from the event log, never derived
+    /// from the job's history: a job in an exceptional state whose
+    /// record is missing is refused with
+    /// [`RuntimeErrorKind::InvalidInput`](crate::error::RuntimeErrorKind::InvalidInput),
+    /// because the alternative — guessing the prior state — is what
+    /// 0A §21 forbids.
+    ///
+    /// Only ever returns the job to where a human-side actor
+    /// already chose to put it.
+    ResumeJob { job_id: JobId },
 }

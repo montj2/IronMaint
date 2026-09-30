@@ -167,6 +167,10 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                     side_effects: vec![format!("reconcile:{outcome:?}")],
                 })
             }
+            RuntimeCommand::EnterHumanReview { job_id, reason } => {
+                self.handle_enter_human_review(job_id, reason).await
+            }
+            RuntimeCommand::ResumeJob { job_id } => self.handle_resume_job(job_id).await,
         }
     }
 
@@ -204,6 +208,7 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                     .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
                 let mut actions = project_next_actions(job_id, projection.state);
                 self.attach_pending_checks(job_id, &mut actions).await?;
+                self.attach_resume_action(job_id, &mut actions).await?;
                 Ok(QueryResult::NextActions(actions))
             }
             RuntimeQuery::GetCheckOutcome { check_id } => self.get_check_outcome(check_id).await,
@@ -222,6 +227,48 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 Ok(QueryResult::Operation(operation))
             }
         }
+    }
+
+    /// Offer [`AllowedAction::ResumeJob`] when — and only when —
+    /// the job is in an exceptional state *and* has a recorded
+    /// resume state to return to (0A §21).
+    ///
+    /// The exceptional arms of the pure projection advertise
+    /// nothing, which reads as a dead end: an agent that lands in
+    /// `HumanReviewRequired` has no move, and no blocker that would
+    /// ever clear either. This is the same "wait for a blocker
+    /// that will never arrive" trap `SKILL.md` already warns about
+    /// for approvals.
+    ///
+    /// The existence check is a log read, which is why the
+    /// attachment lives here rather than in the pure projection.
+    /// Gating on it is not pedantry: a job in an exceptional state
+    /// with no record cannot be resumed at all, so advertising the
+    /// action would send an agent to a call that is guaranteed to
+    /// fail.
+    async fn attach_resume_action(
+        &self,
+        job_id: JobId,
+        actions: &mut crate::next_actions::JobNextActions,
+    ) -> Result<(), RuntimeError> {
+        let projection = self
+            .store
+            .get_projection(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        if !projection.state.is_exceptional() {
+            return Ok(());
+        }
+        if self
+            .load_resume_record(job_id, projection.state)
+            .await?
+            .is_some()
+        {
+            actions
+                .allowed
+                .push(crate::next_actions::AllowedAction::ResumeJob);
+        }
+        Ok(())
     }
 
     /// Resolve a pending gate against the job's materialised
@@ -481,6 +528,28 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         target: ironmaint_core::JobState,
         expected_version: u64,
     ) -> Result<ironmaint_state::Transition, RuntimeError> {
+        self.try_transition_with_resume(job_id, target, expected_version, None)
+            .await
+    }
+
+    /// [`Self::try_transition`] with the [`ironmaint_state::ResumeRecord`]
+    /// that 0A §21 requires in order to leave an exceptional state.
+    ///
+    /// The public `try_transition` keeps its three-argument shape
+    /// and passes `None`, because every other caller is either
+    /// walking the forward rule table (where a resume is
+    /// meaningless) or driving a test. Only [`Self::handle_resume_job`]
+    /// passes a record, and it reads that record back out of the
+    /// event log rather than constructing one — which is the whole
+    /// point of §21: "Do not infer the previous state from history
+    /// at runtime. Record it explicitly."
+    async fn try_transition_with_resume(
+        &self,
+        job_id: JobId,
+        target: ironmaint_core::JobState,
+        expected_version: u64,
+        resume: Option<&ironmaint_state::ResumeRecord>,
+    ) -> Result<ironmaint_state::Transition, RuntimeError> {
         use ironmaint_core::GateId;
         use ironmaint_state::{TransitionContext, TransitionEngine, TransitionRequest};
         use std::collections::BTreeMap;
@@ -587,7 +656,7 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             obligations: &obligations,
             approvals: &approvals,
             infrastructure_blocked: false,
-            resume_event: None,
+            resume_event: resume,
         };
 
         let engine = TransitionEngine::new();
@@ -652,6 +721,170 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             from: ctx.current.state,
             to: new_projection.state,
             rule_index: 0, // rule_index is carried inside `applied.transition`; surfaced via the audit event.
+        })
+    }
+
+    /// The resume state recorded for a job currently sitting in
+    /// `from`, if any.
+    ///
+    /// Reads the last matching [`JobEvent::ResumeRecorded`] out of
+    /// the log rather than reconstructing one. 0A §21: "Do not
+    /// infer the previous state from history at runtime. Record it
+    /// explicitly." The distinction is the whole feature — a
+    /// derived answer would be indistinguishable from a recorded
+    /// one right up until the day the job took a different path
+    /// through the exceptional state than the reconstruction
+    /// assumes.
+    ///
+    /// Taking the *last* match rather than the first is what makes
+    /// repeated excursions work: a job that is reviewed, resumed,
+    /// and reviewed again carries two records, and the current one
+    /// is the second.
+    async fn load_resume_record(
+        &self,
+        job_id: JobId,
+        from: ironmaint_core::JobState,
+    ) -> Result<Option<ironmaint_state::ResumeRecord>, RuntimeError> {
+        let events = self
+            .store
+            .list_events_for_job(job_id, 1, None)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        Ok(events.iter().rev().find_map(|env| match &env.event {
+            ironmaint_state::JobEvent::ResumeRecorded(r) if r.from == from => Some(r.clone()),
+            _ => None,
+        }))
+    }
+
+    /// `EnterHumanReview`: move the job to `HumanReviewRequired`
+    /// and record where it should return to (0A §21).
+    ///
+    /// The engine permits this from any nonterminal state with no
+    /// requirements, so there is nothing to evaluate — the work is
+    /// in writing the record, and in doing it *before* the state
+    /// moves so the pre-transition state is the one captured.
+    async fn handle_enter_human_review(
+        &self,
+        job_id: JobId,
+        reason: String,
+    ) -> Result<CommandResult, RuntimeError> {
+        let projection = self
+            .store
+            .get_projection(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+
+        // Re-entering an exceptional state is refused rather than
+        // allowed. The engine would permit `HumanReviewRequired →
+        // HumanReviewRequired` — it is "any nonterminal state" —
+        // but doing so would overwrite the recorded resume target
+        // with `HumanReviewRequired` itself, leaving a job that can
+        // never leave. That is a hole the engine cannot see and
+        // this guard closes.
+        if projection.state.is_exceptional() {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidInput,
+                format!(
+                    "job {job_id} is already in {}; resume it instead of re-entering, \
+                     so the recorded resume state is not overwritten",
+                    projection.state
+                ),
+            ));
+        }
+
+        // Captured before the transition: after it, `projection.state`
+        // is stale and naming the wrong thing here would record a
+        // resume target of `HumanReviewRequired`.
+        let resume_to = projection.state;
+        let now = self.clock.now_utc();
+
+        self.try_transition_with_resume(
+            job_id,
+            ironmaint_core::JobState::HumanReviewRequired,
+            projection.version,
+            None,
+        )
+        .await?;
+
+        let record = ironmaint_state::ResumeRecord::new(
+            ironmaint_core::JobState::HumanReviewRequired,
+            resume_to,
+            now,
+        );
+        let sequence = self
+            .store
+            .next_sequence(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        let envelope = ironmaint_store::envelope::EventEnvelope::new(
+            ironmaint_core::MaintenanceEventId::new(),
+            job_id,
+            sequence,
+            now,
+            ironmaint_state::JobEvent::ResumeRecorded(record.clone()),
+        );
+        self.store
+            .append_event(&envelope)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+
+        Ok(CommandResult {
+            new_version: projection.version + 1,
+            new_sequence: sequence,
+            side_effects: vec![
+                format!("job:{job_id} entered HumanReviewRequired: {reason}"),
+                format!("resume state recorded: HumanReviewRequired -> {resume_to}"),
+            ],
+        })
+    }
+
+    /// `ResumeJob`: return the job to the state named by its
+    /// recorded resume state (0A §21).
+    async fn handle_resume_job(&self, job_id: JobId) -> Result<CommandResult, RuntimeError> {
+        let projection = self
+            .store
+            .get_projection(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+
+        if !projection.state.is_exceptional() {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidInput,
+                format!(
+                    "job {job_id} is in {}, which is not an exceptional state; \
+                     only HumanReviewRequired and InfrastructureBlocked can be resumed",
+                    projection.state
+                ),
+            ));
+        }
+
+        let record = self
+            .load_resume_record(job_id, projection.state)
+            .await?
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    RuntimeErrorKind::InvalidInput,
+                    format!(
+                        "no recorded resume state for job {job_id} in {}; \
+                         0A §21 requires the resume state to be recorded at \
+                         entry and not inferred from history, so the job \
+                         cannot be resumed",
+                        projection.state
+                    ),
+                )
+            })?;
+
+        let resume_to = record.to;
+        self.try_transition_with_resume(job_id, resume_to, projection.version, Some(&record))
+            .await?;
+
+        Ok(CommandResult {
+            new_version: projection.version + 1,
+            new_sequence: 0,
+            side_effects: vec![format!(
+                "job:{job_id} resumed from {} to {resume_to}",
+                projection.state
+            )],
         })
     }
 
@@ -1109,10 +1342,27 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 notes.push(format!("activated fingerprint {fingerprint}"));
                 Ok(notes)
             }
-            Err(e) if e.kind == RuntimeErrorKind::InvalidInput => Ok(vec![format!(
-                "captured fingerprint {fingerprint} but did not activate it: {}",
-                e.message
-            )]),
+            Err(e) if e.kind == RuntimeErrorKind::InvalidInput => {
+                // Report why, and — when the reason is an
+                // exceptional state — what would unblock it. The
+                // underlying message names the state but not the
+                // remedy, and an agent that captures a patched
+                // candidate against a job awaiting review would
+                // otherwise have no way to tell "my capture was
+                // inert" from "I am expected to resume first".
+                let remedy = if current.state.is_exceptional() {
+                    format!(
+                        " — job is in {}; resume it before a candidate can be activated",
+                        current.state
+                    )
+                } else {
+                    String::new()
+                };
+                Ok(vec![format!(
+                    "captured fingerprint {fingerprint} but did not activate it: {}{remedy}",
+                    e.message
+                )])
+            }
             Err(e) => Err(e),
         }
     }

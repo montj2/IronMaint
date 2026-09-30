@@ -87,6 +87,13 @@ pub fn generate_all_schemas() -> BTreeMap<McpToolName, (Value, Value)> {
             serde_json::to_value(schema_for!(tools::operation::GetOutput)).unwrap_or(Value::Null),
         ),
     );
+    out.insert(
+        McpToolName("job.resume".to_string()),
+        (
+            serde_json::to_value(schema_for!(tools::actions::ResumeInput)).unwrap_or(Value::Null),
+            serde_json::to_value(schema_for!(tools::actions::ResumeOutput)).unwrap_or(Value::Null),
+        ),
+    );
     out
 }
 
@@ -127,6 +134,10 @@ pub fn tool_description(name: &str) -> Option<&'static str> {
         }
         "workspace.stat" => "Read the job's working-tree revision.",
         "operation.get" => "Read one privileged operation's kind and authorization state.",
+        "job.resume" => {
+            "Return a job awaiting human review to the state recorded when it was \
+             escalated."
+        }
         _ => return None,
     })
 }
@@ -152,10 +163,21 @@ mod tests {
     }
 
     #[test]
-    fn the_surface_is_nine_tools() {
-        // §94 enumerates nine. A tenth would be a scope change and
-        // a client-compatibility question, so it should be a
-        // deliberate edit to this assertion, not a surprise.
-        assert_eq!(tool_names().len(), 9);
+    fn the_surface_is_ten_tools() {
+        // §94 enumerates *capabilities* — "reconcile", "next-actions",
+        // "candidate capture", and so on — not a count of nine, so
+        // growing the surface past nine does not contradict it. The
+        // tenth, `job.resume` (0B.10 C2), exists because an agent
+        // that lands in `HumanReviewRequired` otherwise has no way
+        // out, and §101 cannot be driven end to end over MCP
+        // without one.
+        //
+        // The original note here said a tenth "would be a scope
+        // change and a client-compatibility question, so it should
+        // be a deliberate edit to this assertion, not a surprise."
+        // That was right about the process and this is the
+        // deliberate edit. The guard stays: the next tool should
+        // have to come through here too.
+        assert_eq!(tool_names().len(), 10);
     }
 }
