@@ -227,6 +227,129 @@ fn assert_policy_conforms(p: &dyn PolicyCapability, d: &AdapterDescriptor) {
     // `Ord` so duplicate detection would require a custom comparator;
     // uniqueness is the adapter author's responsibility, not a §68
     // requirement.
+    assert_obligation_evaluation_conforms(p, d, &ctx, &plan);
+}
+
+// -----------------------------------------------------------------------------
+// §68 item 5, second half: the obligations a plan proposes can be
+// ruled on by the same adapter.
+// -----------------------------------------------------------------------------
+
+/// §48's evaluator contract, as a §68 conformance property.
+///
+/// The method exists because `RuntimeService` derives an obligation's
+/// verdict by handing the adapter a template *it previously derived*
+/// plus the evidence its own policy evaluator produced. Three things
+/// have to hold for that call to be meaningful, and none of them is
+/// visible from the trait signature:
+///
+/// 1. **Every template the adapter proposes is one it will rule on.**
+///    If `derive_obligation_plan` emits a requirement that
+///    `evaluate_obligation` refuses, the runtime leaves that
+///    obligation `NotEvaluated` forever and reports it as a note — a
+///    job that cannot reach `ReadyForApproval` with no failing check
+///    and no failing obligation to explain why. That is the failure
+///    this assertion exists to prevent, and it is a seam rather than a
+///    bug in either method.
+///
+/// 2. **A requirement the adapter does not recognise is refused
+///    rather than answered.** Answering it would mean the evaluator
+///    ruling on a policy statement it never made, which is the one
+///    thing §48's "deterministic fixture policy evaluator" is not.
+///
+/// 3. **The verdict is a function of the evidence status, and only
+///    of it.** Calling twice with the same evidence must give the
+///    same answer: §48 says this is not an LLM judgment, and the
+///    cheapest way to keep that true is to be unable to write a
+///    non-deterministic evaluator into the port. Failing evidence
+///    must additionally never read as `Pass` — see the assertion.
+///
+/// Assertion 1 is stated weakly — `is_err` would also satisfy it — so
+/// it is the *pair* of these that carries the contract: the adapter
+/// must rule on everything it proposes, and refuse everything it does
+/// not.
+fn assert_obligation_evaluation_conforms(
+    p: &dyn PolicyCapability,
+    d: &AdapterDescriptor,
+    ctx: &ironmaint_adapter_api::PolicyContext,
+    plan: &ironmaint_adapter_api::PolicyPlan,
+) {
+    let candidate = ctx.candidate;
+
+    for template in &plan.obligation_templates {
+        for status in [
+            ironmaint_evidence::EvidenceStatus::Pass,
+            ironmaint_evidence::EvidenceStatus::Fail,
+            ironmaint_evidence::EvidenceStatus::NotApplicable,
+        ] {
+            let verdict = p
+                .evaluate_obligation(ctx, template, &fixtures::evidence(candidate, status))
+                .unwrap_or_else(|e| {
+                    panic!(
+                        "{} proposed obligation `{}` but declined to rule on it for {} \
+                         evidence: {e}",
+                        d.family,
+                        template.requirement,
+                        status.name(),
+                    )
+                });
+            // One direction only. Failing evidence must never be
+            // read as a satisfied obligation — that would be an
+            // adapter granting its own exception, which the
+            // architecture rules call a red flag. The other
+            // direction is deliberately *not* pinned: an adapter is
+            // entitled to be stricter than the §48 default, and a
+            // conformance suite that forbade it would be forbidding
+            // a real implementation from existing.
+            if status == ironmaint_evidence::EvidenceStatus::Fail {
+                assert_ne!(
+                    verdict,
+                    ironmaint_policy::ObligationOutcome::Pass,
+                    "{}: failing policy evidence produced a `Pass` verdict for `{}`",
+                    d.family,
+                    template.requirement,
+                );
+            }
+        }
+
+        // Determinism: same inputs, same answer, twice. Cheap to
+        // write, and it is the property that would break first if
+        // anything nondeterministic were ever introduced here.
+        let once = fixtures::evidence(candidate, ironmaint_evidence::EvidenceStatus::Fail);
+        let twice = fixtures::evidence(candidate, ironmaint_evidence::EvidenceStatus::Fail);
+        assert_eq!(
+            p.evaluate_obligation(ctx, template, &once).ok(),
+            p.evaluate_obligation(ctx, template, &twice).ok(),
+            "{}: ruling on `{}` must be a function of the evidence, not of a run",
+            d.family,
+            template.requirement,
+        );
+    }
+
+    // A requirement no adapter proposed. The name is deliberately not
+    // a valid obligation for any known distribution, so a refusal
+    // here cannot be an accident of naming.
+    let unrecognised = ironmaint_adapter_api::ObligationTemplate::new(
+        plan.obligation_templates.first().map_or_else(
+            || ironmaint_policy::PolicyReference::new(ironmaint_core::AuthorityId::new()),
+            |t| t.reference.clone(),
+        ),
+        ironmaint_policy::ObligationStrength::Mandatory,
+        ironmaint_policy::Applicability::Applicable,
+        "conformance.a-requirement-no-adapter-proposes",
+    );
+    let verdict = p.evaluate_obligation(
+        ctx,
+        &unrecognised,
+        &fixtures::evidence(candidate, ironmaint_evidence::EvidenceStatus::Pass),
+    );
+    assert!(
+        verdict.is_err(),
+        "{}: the evaluator answered for `{}`, a requirement it never proposed; \
+         §48 makes the evaluator a function of a named policy statement",
+        d.family,
+        unrecognised.requirement,
+    );
 }
 
 // -----------------------------------------------------------------------------

@@ -45,7 +45,7 @@ use ironmaint_adapter_api::{
     AdapterCapabilities, AdapterDescriptor, AdapterError, AdapterErrorKind, BuildCapability,
     BuildPlan, CandidateContext, DistributionAdapter, IssueCapability, ObligationTemplate,
     PackageModelCapability, PlannedCheck, PolicyCapability, PolicyContext, PolicyPlan, QaPlan,
-    ReleaseCapability, ToolCapabilityKey, VersioningCapability,
+    ReleaseCapability, ToolCapabilityKey, VersioningCapability, verdict_from_evidence_status,
 };
 use ironmaint_core::{
     AuthorityId, DistributionFamily, DistributionRef, DistributionRelease, GitHashAlgorithm,
@@ -55,8 +55,8 @@ use ironmaint_core::{
 use ironmaint_evidence::EvidenceKind;
 use ironmaint_executor::{NullExecutor, ToolRegistry};
 use ironmaint_policy::{
-    Applicability, AuthorityClassification, ObligationStatus, ObligationStrength, PolicyBaseline,
-    PolicyReference,
+    Applicability, AuthorityClassification, ObligationOutcome, ObligationStatus,
+    ObligationStrength, PolicyBaseline, PolicyReference,
 };
 use ironmaint_runtime::{
     AdapterRegistry, Clock, FixedClock, OrchestratorRef, RuntimeCommand, RuntimeErrorKind,
@@ -241,6 +241,32 @@ impl PolicyCapability for TestAdapter {
             baseline,
             obligation_templates: templates,
         })
+    }
+
+    /// §48: the verdict is the evaluator's, and nothing else. These
+    /// tests exercise derivation, not evaluation, so this exists to
+    /// keep the trait whole.
+    fn evaluate_obligation(
+        &self,
+        _context: &PolicyContext,
+        obligation: &ObligationTemplate,
+        evidence: &ironmaint_evidence::Evidence,
+    ) -> Result<ObligationOutcome, AdapterError> {
+        if !self
+            .script
+            .obligations
+            .iter()
+            .any(|(_, _, requirement)| requirement == &obligation.requirement)
+        {
+            return Err(AdapterError::new(
+                AdapterErrorKind::InvalidConfiguration,
+                format!(
+                    "`{}` is not an obligation this adapter derives",
+                    obligation.requirement
+                ),
+            ));
+        }
+        verdict_from_evidence_status(evidence.status)
     }
 }
 

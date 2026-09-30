@@ -2299,6 +2299,19 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             .await
             .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
 
+        // §48: "A deterministic fixture policy evaluator produces
+        // the evidence." A policy-evaluation check is that
+        // evaluator, so its evidence is what an obligation's
+        // verdict is derived from — never a field a caller writes.
+        // There is deliberately no MCP tool for this: §53 forbids
+        // `ironmaint_obligation_set_pass` and §102 item 25 says the
+        // same. Without this step a mandatory obligation could
+        // only ever be `NotEvaluated` over the tool surface, and a
+        // job could never reach `ReadyForApproval` (§101 step 28).
+        let mut obligation_notes = self
+            .derive_obligation_verdicts(job_id, &source, &check.evidence_kind, &evidence)
+            .await?;
+
         let sequence = self
             .store
             .next_sequence(job_id)
@@ -2319,18 +2332,123 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             .await
             .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
 
+        let mut side_effects = vec![
+            format!(
+                "ran tool {cap} on job:{job}",
+                cap = cap_key.as_str(),
+                job = job_id
+            ),
+            format!("gate {gate_id} -> {status}", status = result.status),
+        ];
+        side_effects.append(&mut obligation_notes);
         Ok(CommandResult {
             new_version: current.version,
             new_sequence: sequence,
-            side_effects: vec![
-                format!(
-                    "ran tool {cap} on job:{job}",
-                    cap = cap_key.as_str(),
-                    job = job_id
-                ),
-                format!("gate {gate_id} -> {status}", status = result.status),
-            ],
+            side_effects,
         })
+    }
+
+    /// Record an obligation verdict for every obligation of the
+    /// active candidate, when the check that just ran was the
+    /// adapter's policy evaluator.
+    ///
+    /// Returns human-readable notes for the caller's
+    /// `side_effects`, and nothing at all when the check was not a
+    /// policy evaluation — the overwhelmingly common case.
+    ///
+    /// Why "every obligation of the candidate" rather than one
+    /// named by the check: §48's evaluator judges a *policy*, and a
+    /// policy plan can carry several obligations (the Debian stub
+    /// derives two). A `PlannedCheck` names a tool, not a
+    /// requirement, so there is nothing narrower to key on. What the
+    /// adapter refuses — because the runtime only ever offers it
+    /// templates this same adapter derived — is a requirement the
+    /// adapter does not recognise.
+    ///
+    /// An obligation the evaluator declines to rule on
+    /// (`verdict_from_evidence_status` returns an error for
+    /// `Inconclusive` and `InfrastructureError`) is left
+    /// `NotEvaluated` and reported as a note. That is the honest
+    /// outcome: the gate stays shut, and the note says why.
+    async fn derive_obligation_verdicts(
+        &self,
+        job_id: JobId,
+        source: &ironmaint_core::SourceCandidate,
+        evidence_kind: &ironmaint_evidence::EvidenceKind,
+        evidence: &ironmaint_evidence::Evidence,
+    ) -> Result<Vec<String>, RuntimeError> {
+        if *evidence_kind != ironmaint_evidence::EvidenceKind::PolicyEvaluation {
+            return Ok(Vec::new());
+        }
+        let Some(adapter) = self
+            .adapters
+            .get(&source.package().package.distribution.family)
+        else {
+            return Ok(vec![format!(
+                "no adapter registered for family `{}`; obligation verdicts not derived",
+                source.package().package.distribution.family
+            )]);
+        };
+        let Some(policy) = adapter.policy() else {
+            return Ok(vec![format!(
+                "adapter `{}` has no policy capability; obligation verdicts not derived",
+                adapter.descriptor().implementation_name
+            )]);
+        };
+
+        let context = ironmaint_adapter_api::PolicyContext {
+            package: source.package(),
+            candidate: source,
+            requested_baseline: None,
+        };
+        let ids = self
+            .store
+            .list_obligations_for_job(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        let mut notes = Vec::new();
+        for id in ids {
+            let obligation = self
+                .store
+                .get_obligation(id)
+                .await
+                .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+            if obligation.candidate != *source.fingerprint() {
+                continue;
+            }
+            let template = ironmaint_adapter_api::ObligationTemplate::new(
+                obligation.reference.clone(),
+                obligation.strength,
+                obligation.applicability,
+                obligation.requirement.clone(),
+            );
+            match policy.evaluate_obligation(&context, &template, evidence) {
+                Ok(outcome) => {
+                    let mut updated = obligation.clone();
+                    updated.status = outcome.as_status();
+                    if !updated.evidence.contains(&evidence.id) {
+                        updated.evidence.push(evidence.id);
+                    }
+                    self.store
+                        .put_obligation(&updated, job_id)
+                        .await
+                        .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+                    notes.push(format!(
+                        "obligation {id} -> {:?} from {}",
+                        outcome.as_status(),
+                        evidence.producer.name
+                    ));
+                }
+                Err(e) => {
+                    // A declined verdict is not a failure of the
+                    // check: the obligation stays `NotEvaluated`,
+                    // the gate stays shut, and the reason is on the
+                    // record.
+                    notes.push(format!("obligation {id} left NotEvaluated: {}", e.message));
+                }
+            }
+        }
+        Ok(notes)
     }
 }
 

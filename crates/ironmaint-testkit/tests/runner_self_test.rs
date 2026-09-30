@@ -19,9 +19,10 @@
 )]
 
 use ironmaint_adapter_api::{
-    AdapterCapabilities, AdapterCapability, AdapterDescriptor, BuildCapability, BuildPlan,
-    ChangedPath, DistributionAdapter, IssueCapability, PackageModelCapability, PathRole,
-    PlannedCheck, PolicyCapability, PolicyPlan, PublicationPlanTemplate, QaPlan, ReleaseCapability,
+    AdapterCapabilities, AdapterCapability, AdapterDescriptor, AdapterError, AdapterErrorKind,
+    BuildCapability, BuildPlan, ChangedPath, DistributionAdapter, IssueCapability,
+    ObligationTemplate, PackageModelCapability, PathRole, PlannedCheck, PolicyCapability,
+    PolicyContext, PolicyPlan, PublicationPlanTemplate, QaPlan, ReleaseCapability,
     VersioningCapability,
 };
 use ironmaint_core::{
@@ -30,7 +31,8 @@ use ironmaint_core::{
 };
 use ironmaint_evidence::{ChangeDomain, EvidenceKind};
 use ironmaint_policy::{
-    AuthorityClassification, IssueActionKind, PolicyBaseline, PrivilegedOperationKind,
+    AuthorityClassification, IssueActionKind, ObligationOutcome, PolicyBaseline,
+    PrivilegedOperationKind,
 };
 use ironmaint_testkit::assert_distribution_adapter_conformance;
 
@@ -128,6 +130,25 @@ mod local {
                 baseline: PolicyBaseline::new(dref()),
                 obligation_templates: vec![],
             })
+        }
+        /// The conformance fixtures derive no obligations, so any
+        /// obligation presented to one is by definition not one it
+        /// derived. The branch is unreachable from the runner, which
+        /// never evaluates; it is here so the trait is implemented
+        /// honestly rather than with a `todo!()`.
+        fn evaluate_obligation(
+            &self,
+            _: &PolicyContext,
+            obligation: &ObligationTemplate,
+            _: &ironmaint_evidence::Evidence,
+        ) -> Result<ObligationOutcome, AdapterError> {
+            Err(AdapterError::new(
+                AdapterErrorKind::InvalidConfiguration,
+                format!(
+                    "this fixture derives no obligations; `{}` is not one of them",
+                    obligation.requirement
+                ),
+            ))
         }
     }
 
@@ -374,6 +395,22 @@ mod broken {
                 )),
                 obligation_templates: vec![],
             })
+        }
+        /// As on `LocalPolicy`: this fixture derives none, so it
+        /// admits none.
+        fn evaluate_obligation(
+            &self,
+            _: &PolicyContext,
+            obligation: &ObligationTemplate,
+            _: &ironmaint_evidence::Evidence,
+        ) -> Result<ObligationOutcome, AdapterError> {
+            Err(AdapterError::new(
+                AdapterErrorKind::InvalidConfiguration,
+                format!(
+                    "this fixture derives no obligations; `{}` is not one of them",
+                    obligation.requirement
+                ),
+            ))
         }
     }
 

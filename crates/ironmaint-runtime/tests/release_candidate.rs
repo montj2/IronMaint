@@ -37,7 +37,7 @@ use ironmaint_adapter_api::{
     AdapterCapabilities, AdapterDescriptor, AdapterError, BuildCapability, BuildPlan,
     CandidateContext, DistributionAdapter, IssueCapability, ObligationTemplate,
     PackageModelCapability, PlannedCheck, PolicyCapability, PolicyContext, PolicyPlan, QaPlan,
-    ReleaseCapability, ToolCapabilityKey, VersioningCapability,
+    ReleaseCapability, ToolCapabilityKey, VersioningCapability, verdict_from_evidence_status,
 };
 use ironmaint_core::{
     AuthorityId, DistributionFamily, DistributionRef, DistributionRelease, GateId,
@@ -47,7 +47,8 @@ use ironmaint_core::{
 use ironmaint_evidence::EvidenceKind;
 use ironmaint_executor::{NullExecutor, ToolRegistry};
 use ironmaint_policy::{
-    Applicability, AuthorityClassification, ObligationStrength, PolicyBaseline, PolicyReference,
+    Applicability, AuthorityClassification, ObligationOutcome, ObligationStrength, PolicyBaseline,
+    PolicyReference,
 };
 use ironmaint_runtime::{
     AdapterRegistry, FixedClock, OrchestratorRef, RuntimeCommand, RuntimeErrorKind, RuntimeService,
@@ -133,11 +134,37 @@ impl PolicyCapability for SnapshotAdapter {
                 PolicyReference::new(AuthorityId::new()),
                 ObligationStrength::Mandatory,
                 Applicability::Applicable,
-                "policy.source-is-maintained",
+                SNAPSHOT_OBLIGATION_REQUIREMENT,
             )],
         })
     }
+
+    /// §48: the verdict is the evaluator's, and nothing else.
+    /// These tests never run the evaluator, so this exists to keep
+    /// the trait whole rather than to be exercised.
+    fn evaluate_obligation(
+        &self,
+        _context: &PolicyContext,
+        obligation: &ObligationTemplate,
+        evidence: &ironmaint_evidence::Evidence,
+    ) -> Result<ObligationOutcome, AdapterError> {
+        if obligation.requirement != SNAPSHOT_OBLIGATION_REQUIREMENT {
+            return Err(AdapterError::new(
+                ironmaint_adapter_api::AdapterErrorKind::InvalidConfiguration,
+                format!(
+                    "`{}` is not an obligation this adapter derives",
+                    obligation.requirement
+                ),
+            ));
+        }
+        verdict_from_evidence_status(evidence.status)
+    }
 }
+
+/// The one obligation `SnapshotAdapter` derives. Named so
+/// `evaluate_obligation` and `derive_obligation_plan` cannot
+/// disagree about it.
+const SNAPSHOT_OBLIGATION_REQUIREMENT: &str = "policy.source-is-maintained";
 
 fn tool_key(literal: &str) -> ToolCapabilityKey {
     ToolCapabilityKey::new(literal).expect("test literal must be a valid tool key")

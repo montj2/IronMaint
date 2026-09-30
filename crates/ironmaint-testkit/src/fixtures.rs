@@ -24,6 +24,7 @@ use ironmaint_core::{
     GitHashAlgorithm, GitObjectId, IssueProviderId, IssueRef, JobId, PackageIdentity, PackageName,
     PackageRevision, PackageVersion, RepositoryRef, SourceCandidate, VcsKind,
 };
+use ironmaint_evidence::{Evidence, EvidenceKind, EvidenceProducer, EvidenceScope, EvidenceStatus};
 use ironmaint_policy::{IssueAction, IssueActionKind, PolicyBaseline, ReleaseCandidate};
 use time::macros::datetime;
 use url::Url;
@@ -92,6 +93,24 @@ pub fn release_candidate(
             .expect("64-char hex must satisfy CandidateFingerprint::from_hex"),
         PolicyBaseline::new(DistributionRef::new(family, release)),
         datetime!(2026-01-02 00:00:00 UTC),
+    )
+}
+
+/// Canonical `Evidence` from the candidate's own policy evaluator,
+/// at a caller-chosen status.
+///
+/// `kind` is fixed to `PolicyEvaluation` because that is the only
+/// kind `RuntimeService` ever offers an adapter when deriving
+/// obligation verdicts, so a fixture at any other kind would be
+/// asserting a call the runtime cannot make.
+pub fn evidence(candidate: &SourceCandidate, status: EvidenceStatus) -> Evidence {
+    Evidence::new(
+        candidate.fingerprint().clone(),
+        EvidenceKind::PolicyEvaluation,
+        status,
+        EvidenceProducer::new("conformance.policy-evaluator"),
+        EvidenceScope::Candidate(candidate.fingerprint().clone()),
+        datetime!(2026-01-01 00:00:01 UTC),
     )
 }
 

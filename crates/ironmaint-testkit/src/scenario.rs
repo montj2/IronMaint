@@ -47,12 +47,14 @@ use ironmaint_adapter_api::{
     BuildPlan, CandidateContext, ChangedPath, DistributionAdapter, IssueCapability,
     ObligationTemplate, PackageModelCapability, PathRole, PlannedCheck, PolicyCapability,
     PolicyContext, PolicyPlan, QaPlan, ReleaseCapability, ToolCapabilityKey, VersioningCapability,
+    verdict_from_evidence_status,
 };
 use ironmaint_core::{AuthorityId, DistributionFamily, PackageName, PackageVersion};
 use ironmaint_evidence::{ChangeDomain, EvidenceKind, GateStage};
 use ironmaint_executor::{ExecutionClass, ExecutionLimits, ToolDefinitionRecord, ToolRegistry};
 use ironmaint_policy::{
-    Applicability, AuthorityClassification, ObligationStrength, PolicyBaseline, PolicyReference,
+    Applicability, AuthorityClassification, ObligationOutcome, ObligationStrength, PolicyBaseline,
+    PolicyReference,
 };
 
 /// A synthetic check that passes. Keyed off the fixture binary's
@@ -65,6 +67,13 @@ pub const SYNTHETIC_BUILD_FAIL: &str = "synthetic.build.fail";
 pub const SYNTHETIC_QA_PASS: &str = "synthetic.qa.lintian";
 /// A synthetic QA check that fails.
 pub const SYNTHETIC_QA_FAIL: &str = "synthetic.qa.fail";
+/// A synthetic policy evaluation that passes. §48's "deterministic
+/// fixture policy evaluator" — the evidence it produces is what an
+/// obligation's verdict is derived from.
+pub const SYNTHETIC_POLICY_PASS: &str = "synthetic.policy.validate";
+/// A synthetic policy evaluation that fails, and so leaves every
+/// obligation it judges `Fail`.
+pub const SYNTHETIC_POLICY_FAIL: &str = "synthetic.policy.fail";
 
 /// Which gate stage the §101 walk needs a passing check for, and
 /// the evidence kind that produces it.
@@ -110,12 +119,14 @@ pub struct ScenarioTools {
     pub build_fail: ToolCapabilityKey,
     pub qa_pass: ToolCapabilityKey,
     pub qa_fail: ToolCapabilityKey,
+    pub policy_pass: ToolCapabilityKey,
+    pub policy_fail: ToolCapabilityKey,
 }
 
-/// Register the six §92 fixture tools plus the two `synthetic.qa.*`
-/// keys the scenario needs.
+/// Register the six §92 fixture tools plus the four extra keys the
+/// scenario needs: `synthetic.qa.*` and `synthetic.policy.*`.
 ///
-/// The two QA keys are deliberately *not* added to
+/// The four are deliberately *not* added to
 /// `ironmaint_synthetic_tools::register_synthetic_tools`: that set
 /// is the §92 exit checkpoint and the daemon registers it verbatim.
 /// Widening the daemon's registry to serve a test double would make
@@ -143,11 +154,15 @@ pub fn register_scenario_tools(
     }
     let qa_pass = register_one(registry, SYNTHETIC_QA_PASS, fixture_bin)?;
     let qa_fail = register_one(registry, SYNTHETIC_QA_FAIL, fixture_bin)?;
+    let policy_pass = register_one(registry, SYNTHETIC_POLICY_PASS, fixture_bin)?;
+    let policy_fail = register_one(registry, SYNTHETIC_POLICY_FAIL, fixture_bin)?;
     Ok(ScenarioTools {
         build_pass: six.validate,
         build_fail: six.fail,
         qa_pass,
         qa_fail,
+        policy_pass,
+        policy_fail,
     })
 }
 
@@ -183,7 +198,11 @@ fn register_one(
 /// `RuntimeCommand::RecordObligationOutcome` addresses an obligation
 /// by its `requirement` string, so the driver that records §101
 /// step 18's failure and step 24's pass needs this exact text. It
-/// is exported rather than retyped so the two cannot drift.
+/// is exported rather than retyped so the two cannot drift. A
+/// tool-only driver never types it at all — it runs
+/// `synthetic.policy.*` and the runtime asks the adapter for the
+/// verdict, which is the point of
+/// [`PolicyCapability::evaluate_obligation`].
 pub const SCENARIO_OBLIGATION_REQUIREMENT: &str =
     "the source is the version the distribution ships";
 
@@ -199,17 +218,53 @@ pub struct ScenarioScript {
     pub build_failures: Vec<String>,
     /// Versions whose *QA* check is scripted to fail.
     pub qa_failures: Vec<String>,
+    /// Versions whose *policy* check is scripted to fail.
+    ///
+    /// This is how §101 step 18 happens on a tool surface: there
+    /// is no `RecordObligationOutcome` tool — §53 forbids
+    /// `ironmaint_obligation_set_pass` — so the only way an agent
+    /// can leave a mandatory obligation failing is to run the
+    /// policy evaluator and have its evidence come back negative.
+    pub policy_failures: Vec<String>,
 }
 
 impl ScenarioScript {
-    /// The script §101 describes: the first capture fails to
-    /// build, the second builds but fails QA, and the third and
-    /// fourth are clean.
+    /// The script §101 describes, for a driver holding the command
+    /// surface: the first capture fails to build, the second builds
+    /// but fails QA, the third and fourth are clean, and the
+    /// obligation's verdict is written with
+    /// `RuntimeCommand::RecordObligationOutcome`.
+    ///
+    /// Every check passes at C3, so the walk gets all the way to
+    /// rule 12 and stops there — the isolated shape of "a failed
+    /// mandatory obligation is the only thing holding the job
+    /// back".
     #[must_use]
     pub fn section_101() -> Self {
         Self {
             build_failures: vec!["1.0.0".to_string()],
             qa_failures: vec!["1.0.1".to_string()],
+            policy_failures: Vec::new(),
+        }
+    }
+
+    /// The same script for a driver holding **only** the MCP tool
+    /// surface, where the obligation's verdict is derived from the
+    /// policy evaluator's evidence rather than written.
+    ///
+    /// C3's policy check fails too. That is not a deviation from
+    /// §101 — step 18 says the *obligation* fails, and it fails
+    /// because its evaluator produced failing evidence — but it
+    /// does mean the walk stops at rule 5 (`SourceRevision →
+    /// SourceIntegrity`, which requires the `PolicyEvaluation`
+    /// gate) as well as at rule 12, and C4 repairs both.
+    /// [`ScenarioScript::section_101`] is the script that isolates
+    /// rule 12; this is the one a tool-only driver can run at all.
+    #[must_use]
+    pub fn section_101_policy_derived() -> Self {
+        Self {
+            policy_failures: vec!["1.0.2".to_string()],
+            ..Self::section_101()
         }
     }
 }
@@ -226,6 +281,8 @@ pub struct ScenarioAdapter {
     build_fail: ToolCapabilityKey,
     qa_pass: ToolCapabilityKey,
     qa_fail: ToolCapabilityKey,
+    policy_pass: ToolCapabilityKey,
+    policy_fail: ToolCapabilityKey,
 }
 
 impl ScenarioAdapter {
@@ -247,6 +304,8 @@ impl ScenarioAdapter {
             build_fail: parse_key(SYNTHETIC_BUILD_FAIL)?,
             qa_pass: parse_key(SYNTHETIC_QA_PASS)?,
             qa_fail: parse_key(SYNTHETIC_QA_FAIL)?,
+            policy_pass: parse_key(SYNTHETIC_POLICY_PASS)?,
+            policy_fail: parse_key(SYNTHETIC_POLICY_FAIL)?,
         })
     }
 
@@ -269,6 +328,23 @@ impl ScenarioAdapter {
         )
     }
 
+    /// The §101 script for a driver holding only the MCP tool
+    /// surface — see [`ScenarioScript::section_101_policy_derived`]
+    /// for why the policy check has to fail alongside the
+    /// obligation.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`ScenarioAdapter::new`].
+    pub fn section_101_policy_derived() -> Result<Self, AdapterError> {
+        Self::new(
+            DistributionFamily::new(SYNTHETIC_FAMILY).map_err(|e| {
+                AdapterError::new(AdapterErrorKind::InvalidConfiguration, e.to_string())
+            })?,
+            ScenarioScript::section_101_policy_derived(),
+        )
+    }
+
     /// The script this adapter is running, for a driver that wants
     /// to assert against the same data the adapter planned from.
     #[must_use]
@@ -288,6 +364,12 @@ impl ScenarioAdapter {
             && self.script.qa_failures.iter().any(|v| v == version)
         {
             self.qa_fail.clone()
+        } else if kind == &EvidenceKind::PolicyEvaluation {
+            if self.script.policy_failures.iter().any(|v| v == version) {
+                self.policy_fail.clone()
+            } else {
+                self.policy_pass.clone()
+            }
         } else if is_qa_stage(kind) {
             self.qa_pass.clone()
         } else {
@@ -403,6 +485,28 @@ impl PolicyCapability for ScenarioAdapter {
             baseline: PolicyBaseline::new(ctx.package.package.distribution.clone()),
             obligation_templates: vec![template],
         })
+    }
+
+    /// §48: the obligation's verdict is the policy evaluator's
+    /// verdict, and by nothing else. A tool-only driver never
+    /// writes it, so the only way this obligation can fail is by
+    /// the evidence coming back `Fail`.
+    fn evaluate_obligation(
+        &self,
+        _context: &PolicyContext,
+        obligation: &ObligationTemplate,
+        evidence: &ironmaint_evidence::Evidence,
+    ) -> Result<ObligationOutcome, AdapterError> {
+        if obligation.requirement != SCENARIO_OBLIGATION_REQUIREMENT {
+            return Err(AdapterError::new(
+                AdapterErrorKind::InvalidConfiguration,
+                format!(
+                    "`{}` is not an obligation the scenario adapter derives",
+                    obligation.requirement
+                ),
+            ));
+        }
+        verdict_from_evidence_status(evidence.status)
     }
 }
 
