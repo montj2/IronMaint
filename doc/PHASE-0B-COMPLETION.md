@@ -407,6 +407,22 @@ UTC for timestamps, schema version on top-level durable records.
 
 Ordered by risk to Phase 1.
 
+> **This section is not the complete list.** `doc/DEBT.md` is the standing
+> technical-debt register, audited 2026-09-29 against `0acaedc`. It carries four
+> items this report does not (§16.x does not mention them), one of which is HIGH
+> and concerns a safety invariant this document's §18 implicitly claims:
+>
+> - **D-01** — `ironmaint-store` and `ironmaint-store-sqlite` inherit no lint
+>   set, so the no-panic / no-`unsafe` policy is unenforced in the persistence
+>   layer, which contains 4 real violations.
+> - **D-02** — the `SKILL.md` path named by `PHASE-0B.md:2077` is a **stale
+>   duplicate** documenting a `check.run` wire format the server no longer accepts.
+> - **D-04 / D-05** — `dead_code` was never promoted to `deny` as its own comment
+>   promises, and 4 of 6 suppressions are vestigial.
+> - **D-03** below is **wider** than §16.8 records: `next_actions` also advertises
+>   3 actions (`MarkObligationSatisfied`, `AuthorizeOperation`, `Publish`) that no
+>   tool can perform.
+
 ### 16.1 ~~Four MCP tools are shape-only~~ — CLOSED in 0B.9
 
 All four now execute against real subsystems rather than returning a constant:
@@ -623,6 +639,25 @@ Closing it means one of:
 
 Worth an architect's decision before Phase 1. Options (a) and (c) are
 compatible; (b) is not compatible with §94 without a spec amendment.
+
+**Post-merge note (2026-09-29, revised 2026-09-30).** A follow-up audit
+(`doc/DEBT.md` D-03) widened this. The census is not two commands but **5 of 9
+`RuntimeCommand` variants and 1 of 5 `RuntimeQuery` variants** with no MCP entry
+point. `next_actions` also emits `MarkObligationSatisfied`, `RequestApproval` and
+`AuthorizeOperation` into `allowed` for which no tool exists.
+
+An initial reading called that "the runtime offers the agent a verb it does not
+have," which overstated it: `SKILL.md` rules 7–8 tell the agent these are *not*
+callable and to stop at `ReadyForApproval`, and two tests pin that. The agent is
+not misled. The genuine defect is that `next_actions.rs:1-12` documents `allowed`
+as "the `AllowedAction`s it can take right now" while the field is carrying two
+meanings at once.
+
+**Decided 2026-09-30:** `allowed` becomes strictly tool-performable, the
+human-action case moves to its own field, an enforcement test makes an
+unperformable `AllowedAction` a gate failure, and the never-emitted `Publish`
+variant is removed. Behaviour is unchanged — the agent still stops at
+`ReadyForApproval`. Lands at the top of 0B.10.
 
 ---
 
