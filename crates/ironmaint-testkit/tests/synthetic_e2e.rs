@@ -29,7 +29,7 @@ use ironmaint_executor::{
     ToolDefinitionRecord, ToolRegistry,
 };
 use ironmaint_runtime::{
-    AllowedAction, ReconcileOutcome, RuntimeCommand, RuntimeQuery, RuntimeService, SystemClock,
+    HumanAction, ReconcileOutcome, RuntimeCommand, RuntimeQuery, RuntimeService, SystemClock,
 };
 use ironmaint_state::JobEvent as StateJobEvent;
 use ironmaint_store::{EventStore, GateStore, ObligationStore, ProjectionStore, mock::MockStore};
@@ -264,7 +264,7 @@ async fn synthetic_debian_driver_reaches_ready_for_approval() {
         "fixture driver must reach ReadyForApproval; outcome was {last_outcome:?}"
     );
 
-    // Step 7: next_actions must surface RequestApproval.
+    // Step 7: next_actions must say the job is waiting on a person.
     let next = svc
         .handle_query(RuntimeQuery::ListNextActions { job_id })
         .await
@@ -273,12 +273,15 @@ async fn synthetic_debian_driver_reaches_ready_for_approval() {
         ironmaint_runtime::service::QueryResult::NextActions(a) => a,
         _ => unreachable!("expected NextActions"),
     };
+    assert_eq!(
+        actions.requires_human,
+        Some(HumanAction::ApproveRelease),
+        "next_actions at ReadyForApproval must park on the approval: {actions:?}"
+    );
     assert!(
-        actions
-            .allowed
-            .iter()
-            .any(|a| matches!(a, AllowedAction::RequestApproval)),
-        "next_actions at ReadyForApproval must include RequestApproval: {actions:?}"
+        actions.allowed.is_empty(),
+        "nothing at ReadyForApproval is the agent's to take: {:?}",
+        actions.allowed
     );
     assert_eq!(actions.job_id, job_id);
     let _ = Mutex::new(());

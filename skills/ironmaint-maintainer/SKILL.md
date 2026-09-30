@@ -75,12 +75,18 @@ loop:
         blocked | concurrent_modification  → stop, narrate to the user
 ```
 
-`next_actions` returns **two** lists and they mean different things.
-`allowed` names the moves the runtime will accept *now*; `blockers` names
+`next_actions` returns **three** fields, and they mean different things.
+`allowed` names the moves the runtime will accept *now* — every entry has a
+tool behind it, and calling anything else is not your move. `requires_human`
+names the one move that belongs to a person, or is absent. `blockers` names
 what is standing in the way of the rest. A fresh job returns
 `allowed: ["capture_candidate"]` with no blockers — so a loop that only
 inspects `blockers` sees nothing to do and stops on a job that has barely
 started.
+
+If `requires_human` is set, **stop.** Do not look for a tool that performs
+it. Two of its values (`approve_release`, `authorize_publication`) have no
+tool in 0B at all, and the phase forbids adding one.
 
 `job.reconcile` answers with one of these shapes:
 
@@ -102,13 +108,16 @@ chain only if you call it again.
 ## Human review
 
 `HumanReviewRequired` means a person has to look at this job. **Stop and
-say so.** Do not call `job.resume`.
+say so.** `next_actions` reports it as
+`requires_human: {review_escalation}`, and you do not clear it.
 
-That tool exists, and it is *not* yours. Resuming returns the job to the
-state that was recorded when someone escalated it — so the recorded state
-is a human's decision, and calling it yourself would silently undo an
-escalation you have no basis to overrule. `job.resume` is offered so the
-path exists and is discoverable, not so an agent can take it.
+You will also see `resume_job` in `allowed`, because the runtime only lists
+what a tool can actually perform and there *is* a tool. Having one is not
+permission. Resuming returns the job to the state that was recorded when
+someone escalated it, so the recorded state is a human's decision — calling
+it yourself would silently undo an escalation you have no basis to overrule.
+`job.resume` is offered so the path exists and is discoverable to an
+operator, not so an agent can take it.
 
 The runtime will tell you when this has happened. A failed mandatory
 obligation does **not** cause it: the runtime only escalates when
@@ -151,11 +160,12 @@ Blockers are externally tagged too, so you match on the first key:
 - **`terminal`** → the job is finished or cancelled. Stop.
 - **`state_machine_blocked {message}`** → the engine refused the transition
   and the message says why. Stop and narrate it verbatim.
-- **There is no `missing_approval` blocker.** At `ReadyForApproval` the
-  runtime reports `allowed: ["request_approval"]` and *no* blockers, so do
-  not wait for a blocker that will never arrive — that state is your exit
-  checkpoint, and a human maintainer is the only principal who can act on
-  it.
+- **`requires_human` is not a blocker and you cannot clear it.** At
+  `ReadyForApproval` the runtime reports `requires_human:
+  {approve_release}` with `allowed: []` and *no* blockers. Do not wait for a
+  blocker that will never arrive, and do not go looking for a tool that
+  performs the approval — that state is your exit checkpoint, and a human
+  maintainer is the only principal who can act on it.
 
 ## Hard rules
 
@@ -225,12 +235,12 @@ At that point:
 
 1. Stop the loop.
 2. Call `job.next_actions` once more. It will return
-   `allowed: ["request_approval"]` and no blockers.
+   `requires_human: {approve_release}`, an empty `allowed`, and no blockers.
 3. Narrate to the user: "IronMaint job `<job_id>` is at
    `ReadyForApproval`. The next step is a human approval; I cannot request
    or grant one."
 
-Do not try to act on `request_approval`. There is no tool for it, and the
+Do not try to act on `requires_human`. There is no tool for it, and the
 runtime command behind it is refused by design.
 
 ## Where the loop currently stops

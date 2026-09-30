@@ -45,6 +45,11 @@ extensions:
         - job.get
         - job.next_actions
         - job.reconcile
+        # Human-review exit. Deliberately still granted: the tool only
+        # succeeds when a resume record already exists, which a person
+        # wrote at escalation time. It cannot manufacture a move out of
+        # an exceptional state that a human did not authorise.
+        - job.resume
         # Candidate handling
         - candidate.capture
         # Evidence / gate execution

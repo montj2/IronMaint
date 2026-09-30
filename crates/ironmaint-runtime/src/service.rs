@@ -34,7 +34,7 @@ use crate::adapters::AdapterRegistry;
 use crate::clock::Clock;
 use crate::command::RuntimeCommand;
 use crate::error::{RuntimeError, RuntimeErrorKind};
-use crate::next_actions::{ActionBlocker, AllowedAction, JobNextActions};
+use crate::next_actions::{ActionBlocker, AllowedAction, HumanAction, JobNextActions};
 use crate::query::RuntimeQuery;
 use crate::reconcile::ReconcileOutcome;
 
@@ -2113,6 +2113,7 @@ fn project_next_actions(job_id: JobId, state: ironmaint_core::JobState) -> JobNe
         S::EventDetected | S::Intake | S::SourceReview | S::CandidateAssembly => JobNextActions {
             job_id,
             allowed: vec![AllowedAction::CaptureCandidate],
+            requires_human: None,
             blockers: vec![],
         },
         S::SourceRevision
@@ -2122,39 +2123,54 @@ fn project_next_actions(job_id: JobId, state: ironmaint_core::JobState) -> JobNe
         | S::FunctionalValidation
         | S::UpgradeValidation => JobNextActions {
             job_id,
+            // `RunCheck` entries are attached by `handle_query`,
+            // not here: which checks exist is a fact about the
+            // store, not about the state alone.
             allowed: vec![],
-            // Which tool is pending is a fact about the store, not
-            // about the state alone, so this pure projection cannot
-            // name one. `handle_query` fills it in from the job's
-            // materialised checks.
+            requires_human: None,
+            // Which tool is pending is likewise a fact about the
+            // store, so this pure projection cannot name one.
             blockers: vec![ActionBlocker::GatePending { tool_key: None }],
         },
+        // Policy completion is a person's judgement. `MarkObligationSatisfied`
+        // has no MCP tool in 0B, and §102 item 25 forbids adding
+        // one — "MCP cannot directly set state, gates, obligations,
+        // approvals, or evidence".
         S::ReleaseReview | S::FinalValidation => JobNextActions {
             job_id,
-            allowed: vec![AllowedAction::MarkObligationSatisfied],
+            allowed: vec![],
+            requires_human: Some(HumanAction::SatisfyObligation { reference: None }),
             blockers: vec![],
         },
         S::ReadyForApproval => JobNextActions {
             job_id,
-            allowed: vec![AllowedAction::RequestApproval],
+            allowed: vec![],
+            requires_human: Some(HumanAction::ApproveRelease),
             blockers: vec![],
         },
         S::Approved | S::PublicationPending => JobNextActions {
             job_id,
-            allowed: vec![AllowedAction::AuthorizeOperation],
+            allowed: vec![],
+            requires_human: Some(HumanAction::AuthorizePublication),
             blockers: vec![],
         },
         S::Published | S::Cancelled => JobNextActions::empty(job_id),
+        // Neither exceptional state waits on a person by definition
+        // of the name — `HumanReviewRequired` does, but 0A §21
+        // gives it no entry point, so the runtime cannot yet produce
+        // this projection and would be inventing a state. `allowed`
+        // is filled in from the log by `attach_resume_action` when a
+        // resume record exists; the human is notified out of band.
         S::HumanReviewRequired => JobNextActions {
             job_id,
             allowed: vec![],
-            blockers: vec![ActionBlocker::ObligationPending {
-                reference: "human".to_string(),
-            }],
+            requires_human: Some(HumanAction::ReviewEscalation),
+            blockers: vec![],
         },
         S::InfrastructureBlocked => JobNextActions {
             job_id,
             allowed: vec![],
+            requires_human: None,
             blockers: vec![ActionBlocker::StateMachineBlocked(
                 "infrastructure_blocked".to_string(),
             )],

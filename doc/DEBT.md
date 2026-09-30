@@ -53,8 +53,8 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | ID | Severity | Item | Status |
 |---|---|---|---|
 | D-01 | HIGH | `ironmaint-store` and `ironmaint-store-sqlite` inherit no lint set — the no-panic and no-unsafe policies are unenforced in the persistence layer | OPEN |
-| D-02 | HIGH | The spec-designated `SKILL.md` is stale and documents a wire format the server rejects | OPEN |
-| D-03 | HIGH | A job cannot advance past `EventDetected`; 5 of 9 runtime commands and 1 of 5 queries have no MCP entry point, and `next_actions` overloads `allowed` as both "moves you can make" and "this needs a human" | **PARTLY CLOSED** by 0B.10 C1 — the three missing production links (activate, materialise, derive) now have one caller each. The `allowed` wire split + enforcement test remain open |
+| D-02 | HIGH | The spec-designated `SKILL.md` is stale and documents a wire format the server rejects | **CLOSED** by 0B.10 C3 — `skills/` is canonical, the stale `integrations/` copy is deleted, and `PHASE-0B.md` §61 has been amended to point at the surviving file |
+| D-03 | HIGH | A job cannot advance past `EventDetected`; 5 of 9 runtime commands and 1 of 5 queries have no MCP entry point, and `next_actions` overloads `allowed` as both "moves you can make" and "this needs a human" | **PARTLY CLOSED** by 0B.10 C1 — the three missing production links (activate, materialise, derive) now have one caller each. The `allowed` wire split + enforcement test were closed by C3; the missing MCP entry points remain open |
 | D-04 | MEDIUM | `dead_code = "warn"` carries a promise ("promoted once 0A.6 lands") that was never kept | OPEN |
 | D-05 | MEDIUM | 4 of 6 `#[allow(dead_code)]` sites are vestigial, two with false justifications | OPEN |
 | D-06 | MEDIUM | `mcp-registration.yaml` field names never round-tripped through a real `ironclaw extension install` | OPEN (no binary available) |
@@ -138,57 +138,64 @@ see D-04's note on guardrail philosophy.
 
 ---
 
-## D-02 — the spec-designated `SKILL.md` is stale (HIGH)
+## D-02 — the spec-designated `SKILL.md` is stale (HIGH) — **CLOSED 2026-09-30 (0B.10 C3)**
 
 **Severity rationale:** an agent that follows the spec's own path installs
 instructions to call `check.run` with a field the server rejects. This is a
 documented interface that is wrong, not merely incomplete.
 
-### Evidence
+### Evidence (as found)
 
-There are **two** `SKILL.md` files, and they are not in sync:
+There were **two** `SKILL.md` files, and they were not in sync:
 
 | Path | Lines | `check.run` signature documented |
 |---|---|---|
 | `integrations/ironclaw/skills/ironmaint-maintainer/SKILL.md` | 68 | `{ job_id, tool_key, retry_class? }` → `{ tool_key, exit_code, stdout, stderr }` |
 | `skills/ironmaint-maintainer/SKILL.md` | 227 | `check.run(check_id)` → evidence + gate outcome |
 
-Phase 0B.9 corrected the 227-line file. The 68-line file still describes the
+Phase 0B.9 corrected the 227-line file. The 68-line file still described the
 **pre-0B.9 wire format**, which no longer exists:
 `RunCheckInput` takes `check_id`, not `tool_key`, and `RunCheckOutput` no longer
 returns raw `exit_code`/`stdout`/`stderr`.
 
-### Which one is authoritative
+### Which one was authoritative
 
-This is the part that makes it HIGH rather than LOW, and it is the reverse of the
+This is the part that made it HIGH rather than LOW, and it is the reverse of the
 intuition:
 
-- `doc/phases/PHASE-0B.md:2077` — **the spec** — names
-  `integrations/ironclaw/skills/ironmaint-maintainer/SKILL.md`. That is the
+- `doc/phases/PHASE-0B.md:2077` — **the spec** — named
+  `integrations/ironclaw/skills/ironmaint-maintainer/SKILL.md`. That was the
   **stale** one.
 - `doc/operator/ironclaw-setup.md:144,153` — the operator runbook, and the file an
   operator actually copies — points at `skills/ironmaint-maintainer/`. That is the
   **corrected** one.
 - `doc/operator/tool-permissions.md:9` also points at the corrected one.
 
-So the spec and the runbook disagree about where the skill lives, and the spec's
-answer is the wrong file. A reader following `PHASE-0B.md` gets the stale skill; a
-reader following the operator doc gets the right one.
+So the spec and the runbook disagreed about where the skill lives, and the spec's
+answer was the wrong file. A reader following `PHASE-0B.md` got the stale skill; a
+reader following the operator doc got the right one.
 
-### Fix
+### Resolution
 
-Decide which path is canonical, then:
+`skills/ironmaint-maintainer/SKILL.md` is canonical, on the evidence the two
+referring documents already formed: the runbook is what an operator copies from,
+`tool-permissions.md` agrees, and the file had already been corrected in 0B.9.
+Choosing the spec's path would have meant reverting that correction and re-breaking
+the wire format.
 
-- delete the other, or
-- make one a symlink / generated copy, so they cannot drift again.
+Rather than keep a second copy in sync, the `integrations/` tree is **deleted** —
+it contained nothing else, so `integrations/` is gone entirely. The residual-drift
+hazard the fix named ("two hand-maintained copies of an agent-facing contract")
+cannot recur with one file in the tree.
 
-Two hand-maintained copies of an agent-facing contract is the underlying defect;
-the specific divergence is just this instance. `doc/operator/ironclaw-setup.md:144`
-and `PHASE-0B.md:2077` must then agree.
+`PHASE-0B.md` §61 was amended to name `skills/`, with a dated note recording that
+the path changed and why. The spec is the document a fresh reader trusts, and
+leaving it pointing at a deleted file would have converted a wrong skill into a
+missing one.
 
-**Not yet done deliberately:** choosing the canonical path is an architectural
-decision (does IronMaint own `integrations/`, or does the vendor?). Deferred rather
-than guessed.
+`skills/ironmaint-maintainer/SKILL.md` gained a **Human review** section in the
+same commit, so the surviving copy documents the `job.resume` / `requires_human`
+behaviour C2 and C3 introduced. It is 250 lines as of 0B.10 C3.
 
 ---
 

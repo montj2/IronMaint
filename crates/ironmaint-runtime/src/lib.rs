@@ -50,7 +50,7 @@ pub use clock::{Clock, FixedClock, SystemClock};
 pub use command::RuntimeCommand;
 pub use config::RuntimeConfig;
 pub use error::{RuntimeError, RuntimeErrorKind};
-pub use next_actions::{ActionBlocker, AllowedAction, JobNextActions};
+pub use next_actions::{ActionBlocker, AllowedAction, HumanAction, JobNextActions};
 pub use orchestrator::{OrchestratorKind, OrchestratorRef};
 pub use query::RuntimeQuery;
 pub use reconcile::ReconcileOutcome;

@@ -25,7 +25,7 @@ use crate::schema::McpToolName;
 /// dispatcher is `Clone`-able and cheaply shared across
 /// concurrent HTTP handlers.
 ///
-/// The workspace manager is optional: five of the nine tools are
+/// The workspace manager is optional: most of the tools are
 /// pure runtime calls and need no working tree, and requiring one
 /// would make `McpRuntime::new` unusable for them. The three that
 /// do need a tree report a typed error when it is absent rather

@@ -1,21 +1,41 @@
 //! `JobNextActions` (PHASE-0B.md §42).
 //!
-//! Materialises the *next allowed moves* for the orchestrator:
-//! the `AllowedAction`s it can take right now, and the
-//! `ActionBlocker`s that explain why anything not listed is
-//! off-limits.
+//! Materialises the *next allowed moves* for the orchestrator: the
+//! [`AllowedAction`]s it can take right now, the [`HumanAction`]
+//! it must route to a person, and the [`ActionBlocker`]s that
+//! explain why anything not listed is off-limits.
 //!
-//! `ActionBlocker` is the runtime's own enum — distinct from
-//! `ironmaint_state::TransitionBlocker`. The state machine's
-//! blocker explains *why a transition cannot fire*; the
-//! runtime's blocker explains *what is blocking the
-//! orchestrator's next move*. Both can coexist on the same
-//! job.
+//! # Why there are three fields
+//!
+//! The field is called `allowed` and its documented contract is "the
+//! `AllowedAction`s it can take *right now*". That was false for
+//! three of the seven variants it used to contain:
+//! `MarkObligationSatisfied`, `RequestApproval` and
+//! `AuthorizeOperation` were emitted with no MCP tool behind them,
+//! and `RuntimeCommand::RequestApproval` is not merely tool-less but
+//! actively refused. An agent following the field's contract would
+//! call a tool that does not exist.
+//!
+//! The human cases now live in [`HumanAction`], on their own field,
+//! rather than in [`ActionBlocker`]. They are not blockers in the
+//! sense that word means here — a blocker explains why a move is
+//! unavailable, and these moves are available, just not to an
+//! agent. Filing them as blockers is what produced
+//! `SKILL.md`'s own warning that there is no `missing_approval`
+//! blocker and an agent should not "wait for a blocker that will
+//! never arrive".
 
 use ironmaint_core::{CheckId, JobId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// A move the orchestrator can perform right now, by calling a tool.
+///
+/// Every variant has exactly one MCP tool behind it, and
+/// `ironmaint_mcp::tool_for_action` maps each to its name. The match
+/// there is exhaustive with no wildcard arm, so adding a variant
+/// without a tool is a compile error rather than a silent lie — the
+/// property this enum exists to have.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum AllowedAction {
@@ -24,10 +44,6 @@ pub enum AllowedAction {
         check_id: CheckId,
     },
     ApplyPatch,
-    MarkObligationSatisfied,
-    RequestApproval,
-    AuthorizeOperation,
-    Publish,
     /// Return a job in an exceptional state to the state named by
     /// its recorded resume state (0A §21).
     ///
@@ -37,7 +53,52 @@ pub enum AllowedAction {
     /// move that would be refused would make `allowed` a lie, and
     /// this field's documented contract is "the `AllowedAction`s it
     /// can take *right now*".
+    ///
+    /// Being listed is not an instruction to take it. `allowed` says
+    /// what a tool can perform; whether the caller *should* is a
+    /// separate question, and `SKILL.md` tells an agent not to: the
+    /// recorded target is the escalator's decision, so resuming is an
+    /// operator's move. The two answers are deliberately different
+    /// fields — `requires_human: ReviewEscalation` carries the second.
     ResumeJob,
+}
+
+/// A move that is available but belongs to a person, not an agent.
+///
+/// 0B ships no tool for any of these, and for two of them shipping
+/// one is forbidden: §4.10/§26/§99 stop the privileged producers
+/// (`RecordApprovalDecision`, `AuthorizeOperation`) from existing in
+/// this phase at all. Reporting them as `allowed` would advertise a
+/// capability the phase deliberately withholds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanAction {
+    /// A mandatory policy obligation must be evaluated and
+    /// satisfied before the job can advance.
+    SatisfyObligation {
+        /// The obligation's `requirement` string, when one is
+        /// known. `None` at the pre-capture states, where no
+        /// adapter has derived an obligation for the job yet.
+        reference: Option<String>,
+    },
+    /// The job is complete and awaits explicit human approval
+    /// (0A §35: the agent cannot grant its own approval).
+    ApproveRelease,
+    /// A privileged operation awaits authorization. No tool can
+    /// perform this in 0B, and §4.10/§26/§99 forbid adding one.
+    AuthorizePublication,
+    /// The job was escalated to `HumanReviewRequired` (0A §21) and
+    /// is waiting on a person. `job.resume` — which returns the job
+    /// to the state recorded at escalation — is a *human-side* move
+    /// in 0B: `SKILL.md` tells the agent to stop rather than take
+    /// it, because the recorded state is the escalator's decision
+    /// and the agent has no basis to overrule it.
+    ///
+    /// The same job also lists `AllowedAction::ResumeJob`, because a
+    /// tool for it exists. This variant is the reason that listing is
+    /// not an instruction: `allowed` answers "what is performable",
+    /// `requires_human` answers "whose move is it".
+    ReviewEscalation,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -71,7 +132,13 @@ pub enum ActionBlocker {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct JobNextActions {
     pub job_id: JobId,
+    /// Moves an orchestrator can take right now, each backed by an
+    /// MCP tool. Never contains an action a tool cannot perform.
     pub allowed: Vec<AllowedAction>,
+    /// The move that belongs to a person, if the job is parked on
+    /// one. `None` at every state that is not waiting on a human.
+    pub requires_human: Option<HumanAction>,
+    /// Why the moves not listed in `allowed` are unavailable.
     pub blockers: Vec<ActionBlocker>,
 }
 
@@ -81,6 +148,7 @@ impl JobNextActions {
         Self {
             job_id,
             allowed: vec![],
+            requires_human: None,
             blockers: vec![ActionBlocker::Terminal],
         }
     }

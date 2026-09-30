@@ -372,10 +372,15 @@ async fn an_unauthenticated_call_is_401() {
 }
 
 #[tokio::test]
-async fn the_daemon_advertises_all_nine_tools() {
-    // §94 enumerates nine, and the e2e script hardcodes the same
-    // list. A missing tool here is the exact failure that made
-    // `ironclaw-e2e.sh` unrunnable.
+async fn the_daemon_advertises_every_tool_the_server_registers() {
+    // §94 enumerates tool *capabilities* — "reconcile", "next-actions",
+    // "candidate capture", and so on — not a count of nine, so a tenth
+    // tool does not contradict it. The tenth, `job.resume` (0B.10 C2),
+    // exists because an agent that lands in `HumanReviewRequired`
+    // otherwise has no way out.
+    //
+    // The e2e script hardcodes the same list. A missing tool here is
+    // the exact failure that made `ironclaw-e2e.sh` unrunnable.
     let d = Daemon::start().await;
     let response = d
         .post(
@@ -400,6 +405,7 @@ async fn the_daemon_advertises_all_nine_tools() {
             "job.get",
             "job.next_actions",
             "job.reconcile",
+            "job.resume",
             "operation.get",
             "workspace.apply_patch",
             "workspace.stat",

@@ -2074,8 +2074,19 @@ Production architecture must not assume shared filesystem authority.
 Create:
 
 ```text
-integrations/ironclaw/skills/ironmaint-maintainer/SKILL.md
+skills/ironmaint-maintainer/SKILL.md
 ```
+
+> **Amended 2026-09-30 (0B.10 C3, resolving D-02).** This section
+> originally named `integrations/ironclaw/skills/ironmaint-maintainer/SKILL.md`.
+> That path and `skills/` had drifted into two hand-maintained copies
+> documenting different `check.run` wire formats, and the one this section
+> pointed at was the stale one — an agent following the spec installed a
+> skill calling a field the server rejects. `skills/` is canonical, matching
+> `doc/operator/ironclaw-setup.md` (the runbook an operator actually copies
+> from) and `doc/operator/tool-permissions.md`; the `integrations/` copy is
+> deleted rather than kept in sync, so there is nothing left to drift.
+> See `doc/DEBT.md` D-02.
 
 Its behavioral contract should tell the agent:
 

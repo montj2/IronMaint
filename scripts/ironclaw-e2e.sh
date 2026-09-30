@@ -90,14 +90,17 @@ TOOLS_BODY="${TOOLS%$'\n'*}"
 TOOLS_STATUS="${TOOLS##*$'\n'}"
 [[ "$TOOLS_STATUS" == "200" ]] || die "tools/list returned HTTP $TOOLS_STATUS: $TOOLS_BODY" 1
 
-for tool in job.create job.get job.next_actions job.reconcile \
+for tool in job.create job.get job.next_actions job.reconcile job.resume \
             candidate.capture check.run workspace.apply_patch \
             workspace.stat operation.get; do
     [[ "$TOOLS_BODY" == *"\"$tool\""* ]] \
         || die "tools/list does not advertise $tool: $TOOLS_BODY" 1
 done
+# §94 enumerates tool capabilities, not a count, so the tenth tool
+# (`job.resume`, 0B.10 C2) is spec-compatible. The count is still pinned
+# so a tool disappearing is caught here rather than at first use.
 TOOL_COUNT="$(printf '%s' "$TOOLS_BODY" | json result.tools | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-[[ "$TOOL_COUNT" == "9" ]] || die "expected 9 tools, got $TOOL_COUNT" 1
+[[ "$TOOL_COUNT" == "10" ]] || die "expected 10 tools, got $TOOL_COUNT" 1
 
 # 4. job.create -> job.get round-trip, over the wire.
 CREATED="$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"job.create","arguments":{"orchestrator":{"kind":"ironclaw"},"package":{"distribution":{"family":"debian","release":"sid"},"source_name":"ironclaw-e2e-probe","binary_names":[]}}}}' | sed '$d')"
@@ -130,5 +133,5 @@ fi
 
 echo "ironclaw-e2e: OK"
 echo "  server:  $IRONMAINT_URL (auth enforced: 401 without a token)"
-echo "  surface: 9 tools advertised"
+echo "  surface: $TOOL_COUNT tools advertised"
 echo "  job:     $JOB_ID created and read back"

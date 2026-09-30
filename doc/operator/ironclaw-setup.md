@@ -122,6 +122,7 @@ extensions:
         - job.get
         - job.next_actions
         - job.reconcile
+        - job.resume
         - candidate.capture
         - check.run
         - workspace.apply_patch
