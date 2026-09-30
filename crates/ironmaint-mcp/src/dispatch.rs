@@ -291,6 +291,13 @@ async fn dispatch_capture<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
     // records the audit envelope in the job's event log without
     // writing a second row. `candidate_capture_is_idempotent`
     // pins that.
+    //
+    // The clone is for the workspace-activation step below, which
+    // needs the candidate after the command has taken it. A
+    // `SourceCandidate` is a handful of identifiers, so paying for
+    // it beats reading the row back out of the store to recover
+    // what we were just holding.
+    let to_activate = candidate.clone();
     let result = runtime
         .service
         .handle_command(RuntimeCommand::CaptureCandidate {
@@ -300,14 +307,36 @@ async fn dispatch_capture<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         .await
         .map_err(|e| McpError::Runtime(e.message))?;
 
+    // §43 closes `candidate.capture` with "mark workspace clean",
+    // and until this line nothing did. `WorkspaceManager::activate_candidate`
+    // is the only writer that clears `dirty`, and the only caller it
+    // had was a workspace test — so over the tool surface a job could
+    // be patched exactly once. `apply_patch` refuses a dirty tree,
+    // §101 needs three patches, and the second one failed with
+    // "workspace is dirty" naming a cause the agent had no way to
+    // clear.
+    //
+    // This runs *after* the runtime's capture, not before: the
+    // workspace must not be marked clean for a candidate the runtime
+    // refused.
+    let mut notes = result.side_effects;
+    match workspace.activate_candidate(id, &to_activate).await {
+        Ok(new_revision) => notes.push(format!(
+            "workspace marked clean at revision {new_revision}; the next \
+             workspace.apply_patch is accepted"
+        )),
+        Err(e) => notes.push(format!(
+            "captured {fingerprint} but could not mark the workspace clean: \
+             {e}. The job is at the captured source; a further \
+             workspace.apply_patch will be refused until this succeeds."
+        )),
+    }
+
     // The side effects are returned rather than logged: they are the
     // only place an agent can learn that the candidate was not
     // activated, or that no adapter claims its family, or that the
     // adapter it did find plans no gates. See `CaptureOutput::notes`.
-    let out = crate::tools::candidate::CaptureOutput {
-        fingerprint,
-        notes: result.side_effects,
-    };
+    let out = crate::tools::candidate::CaptureOutput { fingerprint, notes };
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 
