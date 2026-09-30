@@ -54,7 +54,7 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 |---|---|---|---|
 | D-01 | HIGH | `ironmaint-store` and `ironmaint-store-sqlite` inherit no lint set — the no-panic and no-unsafe policies are unenforced in the persistence layer | OPEN |
 | D-02 | HIGH | The spec-designated `SKILL.md` is stale and documents a wire format the server rejects | OPEN |
-| D-03 | HIGH | A job cannot advance past `EventDetected`; 5 of 9 runtime commands and 1 of 5 queries have no MCP entry point, and `next_actions` advertises 3 actions nothing can perform | DEFERRED to Phase 1 |
+| D-03 | HIGH | A job cannot advance past `EventDetected`; 5 of 9 runtime commands and 1 of 5 queries have no MCP entry point, and `next_actions` overloads `allowed` as both "moves you can make" and "this needs a human" | DECIDED — wire split + enforcement test at top of 0B.10; tool-surface fix is Phase 1's first acceptance criterion |
 | D-04 | MEDIUM | `dead_code = "warn"` carries a promise ("promoted once 0A.6 lands") that was never kept | OPEN |
 | D-05 | MEDIUM | 4 of 6 `#[allow(dead_code)]` sites are vestigial, two with false justifications | OPEN |
 | D-06 | MEDIUM | `mcp-registration.yaml` field names never round-tripped through a real `ironclaw extension install` | OPEN (no binary available) |
@@ -232,41 +232,72 @@ HIGH and deferred to Phase 1 by decision. Re-verified here, and **widened**: the
 
 The orphaned commands are one face of this. The more consequential face is that
 `job.next_actions` **tells the agent it may take an action for which there is no
-tool, and in two cases no command either.**
+tool, and in one case no command either.**
 
 `AllowedAction` (`crates/ironmaint-runtime/src/next_actions.rs:21-29`) has 7
-variants. Mapping each to the MCP tool that would perform it:
+variants:
 
-| Advertised action | Tool that performs it | Reachable? |
+| Variant | Tool that performs it | Actually emitted? |
 |---|---|---|
 | `CaptureCandidate` | `candidate.capture` | yes |
 | `RunCheck { check_id }` | `check.run` | yes |
 | `ApplyPatch` | `workspace.apply_patch` | yes |
-| `MarkObligationSatisfied` | — | **no tool** (command exists, orphaned) |
-| `RequestApproval` | — | no tool *by design*; returns typed `Unsupported` |
-| `AuthorizeOperation` | — | **no tool, and no `RuntimeCommand` exists** |
-| `Publish` | — | **no tool, and no `RuntimeCommand` exists** |
+| `MarkObligationSatisfied` | — | yes, at `ReleaseReview` / `FinalValidation` |
+| `RequestApproval` | — | yes, at `ReadyForApproval` |
+| `AuthorizeOperation` | — | yes, at `Approved` / `PublicationPending` |
+| `Publish` | — | **never emitted at all** — a dead variant |
 
-All three orphans are emitted from the per-state fallback table at
+All three live orphans come from the per-state fallback table at
 `service.rs:1496-1515`, which the code's own comment (`service.rs:1470-1475`)
 describes as the *fallback* used "when no evidence-derived action can be
 produced". The evidence-derived path emits only `RunCheck`
 (`service.rs:246-248`).
 
-**Why this is worse than an orphaned command.** An unreachable command is dead
-weight. An advertised-but-unperformable action is the runtime making a claim about
-what the agent may do, and then not honouring it. The project's north-star is that
-IronClaw proposes and IronMaint disposes — an `allowed` list that cannot be acted
-on undercuts the first half of that contract, because the agent is told "you may
-proceed" and then finds no verb.
+**Correction to the 2026-09-29 first pass.** This was initially recorded here as
+"the runtime tells the agent it may act and then offers no verb", which overstates
+it. The 0B.9 design is deliberate and largely sound: `SKILL.md` rule 7 states
+*"It is not exposed as a tool, so calling it is not something you can do even by
+accident"*, rule 8 says to stop at `ReadyForApproval`, and the behaviour is pinned
+by two tests (`ironmaint-runtime/tests/approval_refusal.rs:352` and
+`ironmaint-testkit/tests/synthetic_e2e.rs:280`). The agent is not being misled —
+it is being told to stop.
 
-Two of the three are scheduled (privileged-operation producers are 0B.10 scope;
-`RequestApproval`'s refusal is intentional and documented). `Publish` and
-`MarkObligationSatisfied` have no owner recorded anywhere.
+The real defect is narrower and is a **wire-format** one. The module doc
+(`next_actions.rs:1-12`) promises `allowed` is "the `AllowedAction`s it can take
+**right now**". For 3 of 7 variants that is false. `allowed` is doing two jobs at
+once — "moves you can make with the tools you have" and "this state needs a
+principal that isn't you" — and a field that means two things can only satisfy
+whichever one a reader happens to assume.
 
-**Fix is not "add three tools."** It is a decision on which of these the tool
-surface should advertise before Phase 1. Silently advertising a capability is the
-one option that is wrong.
+### DECIDED (2026-09-30): split the two meanings, do not overload `allowed`
+
+The architect delegated this call. Recommendation taken:
+
+1. **`allowed` becomes strictly honest** — only moves the tool surface can
+   actually perform. `RequestApproval`, `AuthorizeOperation`, and
+   `MarkObligationSatisfied` leave `allowed`.
+2. **A separate field carries the human-action state**, e.g.
+   `requires_principal: Option<Principal>` on `JobNextActions`. This is preferred
+   over promoting them to `ActionBlocker` precisely *because* `SKILL.md` already
+   warns agents "there is no `missing_approval` blocker … do not wait for a
+   blocker that will never arrive". Turning them into blockers would contradict
+   documented guidance; a distinct field contradicts nothing and preserves both
+   facts — the job needs a human, *and* the agent has no verb for it.
+3. **An enforcement test makes the class non-reintroducible**: every
+   `AllowedAction` the runtime can emit must have a corresponding MCP tool. A new
+   `AllowedAction` with no tool fails the gate rather than shipping as a lie.
+4. **`Publish` is removed** as a never-emitted variant, and re-added by 0B.10
+   wired to a real publication producer.
+
+This preserves the current behaviour exactly — the agent still stops at
+`ReadyForApproval` — while making the wire format say what it means.
+
+**Sequencing:** lands at the top of 0B.10, not as a 0B.9 follow-up. Rationale:
+0B.10 already adds the privileged-operation producers that resolve two of the
+three, and a semantics change to a merged sub-phase would need a fixup commit or a
+new sub-phase number. The enforcement test lands *first*, so the list cannot grow
+in the meantime. `AGENTS.md` requires an explicit go-ahead before a new sub-phase
+begins, so this is recorded here as a committed 0B.10 decision, not started.
 
 ### Store methods with no production caller
 
@@ -297,8 +328,34 @@ adapters are supposed to do this."* That contract has no implementation;
 
 Phase 1 opens with the state machine unexercisable through the tool surface. Its
 first adapter **must** activate the candidate and materialise the checks, or the
-phase is not testing the premise it exists to test. This should be the first
-acceptance criterion of Phase 1, not an incidental outcome of it.
+phase is not testing the premise it exists to test.
+
+### DECIDED (2026-09-30): Phase 1's first acceptance criterion
+
+The architect delegated this call. Recommendation taken, and it is now the
+governing criterion for Phase 1 (§106):
+
+> **A job must reach `ReadyForApproval` driven only through the nine MCP tools —
+> no `RuntimeService` handle, no test-only command, no direct store access.**
+
+This phrasing is deliberate on three points:
+
+- **"Driven only through the nine tools"** rules out the pattern the 0B.9 tests
+  currently use — `check_and_operation.rs:131-134` openly says it calls the
+  runtime "standing in for an adapter". If Phase 1's tests keep standing in, the
+  gap is merely relocated, not closed.
+- **"No `RuntimeService` handle, no direct store access"** keeps the trust
+  boundary honest: everything the agent does must cross the same auth'd HTTP
+  transport an IronClaw agent would use.
+- **"`ReadyForApproval`"** rather than "`Published`" matches §95's exit
+  checkpoint and stops at the point where a human principal — not the agent — is
+  the next actor. Going further would require exactly the approval machinery the
+  project deliberately refuses to let the orchestrator manufacture.
+
+Until this passes, §102 item 26 ("IronClaw can call the MCP server") is true only
+in the weak sense that the socket answers. The strong sense — that an agent can
+drive a job through the workflow — is what Phase 1 exists to establish, and this
+criterion is what makes that measurable rather than assumed.
 
 ### Confirmed NOT the cause
 
@@ -507,7 +564,20 @@ Not a plan — the user decides. In rough order of value-per-effort:
 3. **D-02** — needs one architectural decision, then a deletion.
 4. **D-07** — needs one semantic decision, then a deletion.
 5. **D-04** + **D-08** — same two `ProcessExecutor` fields; land together or not at all.
-6. **D-03** — Phase 1, and should be its first acceptance criterion.
+6. **D-03 wire split** — top of 0B.10, enforcement test first.
 7. **D-06** — blocked on an external binary; nothing to do until one exists.
 8. **D-09**, **D-10** — 0B.10.
-9. **D-11**, **D-12**, **D-13** — as scheduled.
+9. **D-11** — Phase 1, gated on the `ReadyForApproval`-through-the-tools criterion above.
+10. **D-12**, **D-13** — as scheduled.
+
+## Decisions taken 2026-09-30
+
+Two calls the architect delegated, both now recorded above rather than left open:
+
+| Question | Decision | Where it lands |
+|---|---|---|
+| Should Phase 1's first adapter be required to drive a job through the tool surface? | **Yes** — "reaches `ReadyForApproval` driven only through the nine MCP tools, no runtime handle, no direct store access" is the governing acceptance criterion | Phase 1 (§106) |
+| Should `next_actions` keep advertising actions with no verb behind them? | **No** — `allowed` becomes strictly tool-performable, the human-action case moves to its own field, an enforcement test makes an unperformable `AllowedAction` a gate failure, and `Publish` is removed as never-emitted. Agent behaviour is unchanged. | Top of 0B.10 |
+
+Neither has been started. `AGENTS.md` requires an explicit go-ahead before a new
+sub-phase begins.

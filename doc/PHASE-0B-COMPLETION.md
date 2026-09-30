@@ -640,15 +640,24 @@ Closing it means one of:
 Worth an architect's decision before Phase 1. Options (a) and (c) are
 compatible; (b) is not compatible with §94 without a spec amendment.
 
-**Post-merge note (2026-09-29).** A follow-up audit (`doc/DEBT.md` D-03) widened
-this. The census is not two commands but **5 of 9 `RuntimeCommand` variants and
-1 of 5 `RuntimeQuery` variants** with no MCP entry point, and — the part §16.8
-does not record — `job.next_actions` **advertises three `AllowedAction`s that no
-tool can perform**: `MarkObligationSatisfied` (command exists, orphaned),
-`AuthorizeOperation` and `Publish` (neither a tool nor a `RuntimeCommand` exists).
-The runtime is telling the agent it may act and then offering no verb. That
-sub-question is *not* answered by the §16.8 decision, which covered the state
-machine's reachability, not the honesty of the `allowed` list.
+**Post-merge note (2026-09-29, revised 2026-09-30).** A follow-up audit
+(`doc/DEBT.md` D-03) widened this. The census is not two commands but **5 of 9
+`RuntimeCommand` variants and 1 of 5 `RuntimeQuery` variants** with no MCP entry
+point. `next_actions` also emits `MarkObligationSatisfied`, `RequestApproval` and
+`AuthorizeOperation` into `allowed` for which no tool exists.
+
+An initial reading called that "the runtime offers the agent a verb it does not
+have," which overstated it: `SKILL.md` rules 7–8 tell the agent these are *not*
+callable and to stop at `ReadyForApproval`, and two tests pin that. The agent is
+not misled. The genuine defect is that `next_actions.rs:1-12` documents `allowed`
+as "the `AllowedAction`s it can take right now" while the field is carrying two
+meanings at once.
+
+**Decided 2026-09-30:** `allowed` becomes strictly tool-performable, the
+human-action case moves to its own field, an enforcement test makes an
+unperformable `AllowedAction` a gate failure, and the never-emitted `Publish`
+variant is removed. Behaviour is unchanged — the agent still stops at
+`ReadyForApproval`. Lands at the top of 0B.10.
 
 ---
 
