@@ -10,7 +10,7 @@
 //! The field is called `allowed` and its documented contract is "the
 //! `AllowedAction`s it can take *right now*". That was false for
 //! three of the seven variants it used to contain:
-//! `MarkObligationSatisfied`, `RequestApproval` and
+//! `RecordObligationOutcome`, `RequestApproval` and
 //! `AuthorizeOperation` were emitted with no MCP tool behind them,
 //! and `RuntimeCommand::RequestApproval` is not merely tool-less but
 //! actively refused. An agent following the field's contract would

@@ -22,7 +22,7 @@ use ironmaint_core::{
 };
 use ironmaint_evidence::{Evidence, EvidenceProducer, EvidenceScope, GateStatus};
 use ironmaint_executor::{ExecutionRequest, Executor, ToolRegistry};
-use ironmaint_policy::PrivilegedOperation;
+use ironmaint_policy::{ObligationOutcome, ObligationStatus, PrivilegedOperation};
 use ironmaint_state::{
     JobEvent, ToolOutcome, ToolRunFinished, TransitionBlocker, TransitionDecision,
 };
@@ -144,11 +144,12 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 self.handle_record_check_evidence(job_id, tool_key, evidence_kind, status, producer)
                     .await
             }
-            RuntimeCommand::MarkObligationSatisfied {
+            RuntimeCommand::RecordObligationOutcome {
                 job_id,
                 obligation_ref,
+                outcome,
             } => {
-                self.handle_mark_obligation_satisfied(job_id, obligation_ref)
+                self.handle_record_obligation_outcome(job_id, obligation_ref, outcome)
                     .await
             }
             RuntimeCommand::RunCheck {
@@ -208,6 +209,7 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                     .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
                 let mut actions = project_next_actions(job_id, projection.state);
                 self.attach_pending_checks(job_id, &mut actions).await?;
+                self.attach_obligation_state(job_id, &mut actions).await?;
                 self.attach_resume_action(job_id, &mut actions).await?;
                 Ok(QueryResult::NextActions(actions))
             }
@@ -227,6 +229,113 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 Ok(QueryResult::Operation(operation))
             }
         }
+    }
+
+    /// The active candidate's fingerprint, read through the
+    /// projection and then the candidate row.
+    ///
+    /// Gates, obligations, and evidence are all keyed by
+    /// fingerprint rather than by job or candidate id, so this
+    /// three-line walk is the precondition for reading any of them.
+    /// Three call sites need it; a fourth would be a sign the store
+    /// should offer the join directly.
+    async fn active_fingerprint(
+        &self,
+        job_id: JobId,
+    ) -> Result<Option<ironmaint_core::CandidateFingerprint>, RuntimeError> {
+        let projection = self
+            .store
+            .get_projection(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        let Some(candidate_id) = projection.active_candidate else {
+            return Ok(None);
+        };
+        let source = self
+            .store
+            .get_source_candidate(candidate_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        Ok(Some(source.fingerprint().clone()))
+    }
+
+    /// Replace the pure projection's unconditional
+    /// `SatisfyObligation` with the actual outstanding obligations.
+    ///
+    /// `project_next_actions` is pure, so at `ReleaseReview` and
+    /// `FinalValidation` it can only say "policy completion is a
+    /// person's judgement" without reading whether any obligation is
+    /// outstanding. That was defensible while nothing could ever make
+    /// one fail. It is not now: with `RecordObligationOutcome` a
+    /// mandatory obligation can genuinely be in `Fail`, and a caller
+    /// told only "requires_human: satisfy_obligation" would be told
+    /// nothing about *which* assertion failed or that it failed at
+    /// all. `ActionBlocker::ObligationPending` exists to carry that
+    /// and, before this, was never constructed.
+    ///
+    /// Only mandatory + applicable obligations are reported, matching
+    /// `check_obligations` in the engine exactly: a `Recommended`
+    /// obligation that has not been evaluated does not block, so
+    /// calling it a blocker would send an agent after work the state
+    /// machine does not require.
+    async fn attach_obligation_state(
+        &self,
+        job_id: JobId,
+        actions: &mut crate::next_actions::JobNextActions,
+    ) -> Result<(), RuntimeError> {
+        if !matches!(
+            actions.requires_human,
+            Some(HumanAction::SatisfyObligation { .. })
+        ) {
+            return Ok(());
+        }
+
+        let fingerprint = self.active_fingerprint(job_id).await?.ok_or_else(|| {
+            RuntimeError::new(
+                RuntimeErrorKind::InvalidInput,
+                format!("no active candidate on job {job_id}; cannot report obligations"),
+            )
+        })?;
+
+        let ids = self
+            .store
+            .list_obligations_for_job(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        for id in ids {
+            let ob = self
+                .store
+                .get_obligation(id)
+                .await
+                .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+            if ob.candidate != fingerprint
+                || ob.strength != ironmaint_policy::ObligationStrength::Mandatory
+                || ob.applicability != ironmaint_policy::Applicability::Applicable
+            {
+                continue;
+            }
+            if ob.status == ObligationStatus::Pass {
+                continue;
+            }
+            // An approved exception is unsatisfied-but-allowed. The
+            // engine's `UnbackedException` blocker is about an
+            // exception recorded with no approval behind it, which
+            // is a different fact and not this projection's to judge.
+            if ob.status == ObligationStatus::ExceptionApproved {
+                continue;
+            }
+            actions.blockers.push(ActionBlocker::ObligationPending {
+                reference: ob.requirement.clone(),
+            });
+            // The first outstanding mandatory obligation is the one
+            // to work on; naming it is the difference between an
+            // agent that can act and one that has to guess.
+            actions.requires_human = Some(HumanAction::SatisfyObligation {
+                reference: Some(ob.requirement.clone()),
+            });
+            break;
+        }
+        Ok(())
     }
 
     /// Offer [`AllowedAction::ResumeJob`] when — and only when —
@@ -1659,18 +1768,19 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         })
     }
 
-    /// `MarkObligationSatisfied`: flip an obligation's status to
-    /// `Pass`. The `obligation_ref` is matched against the
-    /// obligation's `requirement` text (the human-readable
-    /// assertion). The job must have an active candidate (the
-    /// obligation is bound to a fingerprint).
-    async fn handle_mark_obligation_satisfied(
+    /// `RecordObligationOutcome`: write the verdict of a policy
+    /// evaluation onto one obligation. The `obligation_ref` is
+    /// matched against the obligation's `requirement` text (the
+    /// human-readable assertion), exactly and case-sensitively. The
+    /// job must have an active candidate — the obligation is bound
+    /// to a fingerprint, and an obligation belonging to a superseded
+    /// candidate is not this job's current policy surface.
+    async fn handle_record_obligation_outcome(
         &self,
         job_id: JobId,
         obligation_ref: String,
+        outcome: ObligationOutcome,
     ) -> Result<CommandResult, RuntimeError> {
-        use ironmaint_policy::ObligationStatus;
-
         let current = self
             .store
             .get_projection(job_id)
@@ -1706,7 +1816,23 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 .await
                 .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
             if obligation.requirement == obligation_ref && obligation.candidate == fingerprint {
-                obligation.status = ObligationStatus::Pass;
+                // An approved exception is backed by an explicit
+                // approval record (0A §35). Re-evaluating the
+                // assertion and recording a fresh verdict here would
+                // silently revoke that approval without anyone
+                // deciding to — a policy evaluation is not authority
+                // to withdraw authority. Refuse instead.
+                if obligation.status == ObligationStatus::ExceptionApproved {
+                    return Err(RuntimeError::new(
+                        RuntimeErrorKind::InvalidInput,
+                        format!(
+                            "obligation {} carries an approved exception; record an \
+                             approval decision to change it, not an evaluation outcome",
+                            obligation.id
+                        ),
+                    ));
+                }
+                obligation.status = outcome.as_status();
                 matched = Some(obligation);
                 break;
             }
@@ -1721,7 +1847,9 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             )
         })?;
 
-        // Preserve the existing evidence list.
+        // Written whole, so the obligation's existing evidence list
+        // is carried across untouched: a verdict records what the
+        // evaluation concluded, not which evidence it replaced.
         self.store
             .update_obligation(obligation.id, &obligation)
             .await
@@ -1747,13 +1875,17 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             .await
             .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
 
-        let _ = obligation.evidence; // silence unused warning if obligation.evidence is unused below
+        // The obligation is not moved by this. Policy completion is
+        // gated by the transition engine, which reads the status on
+        // the next reconcile or attempt; a job parks where it is and
+        // reports the blocking obligation through `next_actions`.
         Ok(CommandResult {
             new_version: current.version,
             new_sequence: sequence,
             side_effects: vec![format!(
-                "obligation:{} marked satisfied on job:{job_id}",
-                obligation.id
+                "obligation:{} recorded {} on job:{job_id}",
+                obligation.id,
+                outcome.name(),
             )],
         })
     }
@@ -2132,10 +2264,12 @@ fn project_next_actions(job_id: JobId, state: ironmaint_core::JobState) -> JobNe
             // store, so this pure projection cannot name one.
             blockers: vec![ActionBlocker::GatePending { tool_key: None }],
         },
-        // Policy completion is a person's judgement. `MarkObligationSatisfied`
-        // has no MCP tool in 0B, and §102 item 25 forbids adding
-        // one — "MCP cannot directly set state, gates, obligations,
-        // approvals, or evidence".
+        // Policy completion is a person's judgement.
+        // `RecordObligationOutcome` has no MCP tool in 0B, and
+        // §102 item 25 forbids adding one — "MCP cannot directly set
+        // state, gates, obligations, approvals, or evidence". Which
+        // obligations are actually outstanding is a fact about the
+        // store, so `attach_obligation_state` fills that in.
         S::ReleaseReview | S::FinalValidation => JobNextActions {
             job_id,
             allowed: vec![],
