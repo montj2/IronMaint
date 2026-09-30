@@ -204,8 +204,24 @@ async fn materialize_checks_maps_evidence_kind_to_gate_stage() {
 fn gate_stage_for_maps_all_kinds() {
     // Table-driven mapping — pins down the canonical lookup.
     assert_eq!(
+        gate_stage_for(&EvidenceKind::SourcePreparation),
+        Some(GateStage::SourcePreparation)
+    );
+    assert_eq!(
         gate_stage_for(&EvidenceKind::SourceIntegrity),
         Some(GateStage::SourceAnalysis)
+    );
+    assert_eq!(
+        gate_stage_for(&EvidenceKind::IssueCorrelation),
+        Some(GateStage::IssueAnalysis)
+    );
+    assert_eq!(
+        gate_stage_for(&EvidenceKind::Maintenance),
+        Some(GateStage::Maintenance)
+    );
+    assert_eq!(
+        gate_stage_for(&EvidenceKind::PolicyEvaluation),
+        Some(GateStage::PolicyEvaluation)
     );
     assert_eq!(
         gate_stage_for(&EvidenceKind::Build),
@@ -224,6 +240,14 @@ fn gate_stage_for_maps_all_kinds() {
         Some(GateStage::UpgradeValidation)
     );
     assert_eq!(
+        gate_stage_for(&EvidenceKind::ReleaseReview),
+        Some(GateStage::ReleaseReview)
+    );
+    assert_eq!(
+        gate_stage_for(&EvidenceKind::ReleaseAssembly),
+        Some(GateStage::CandidateAssembly)
+    );
+    assert_eq!(
         gate_stage_for(&EvidenceKind::Reproducibility),
         Some(GateStage::FinalValidation)
     );
@@ -236,20 +260,69 @@ fn gate_stage_for_maps_all_kinds() {
         Some(GateStage::FinalValidation)
     );
     assert_eq!(
-        gate_stage_for(&EvidenceKind::IssueCorrelation),
-        Some(GateStage::IssueAnalysis)
-    );
-    assert_eq!(
-        gate_stage_for(&EvidenceKind::ReleaseAssembly),
-        Some(GateStage::CandidateAssembly)
-    );
-    assert_eq!(
         gate_stage_for(&EvidenceKind::PublicationValidation),
         Some(GateStage::Publication)
     );
     assert_eq!(
         gate_stage_for(&EvidenceKind::Other("tool_output".into())),
         None
+    );
+}
+
+/// The bug this whole commit exists for. Three of the gate stages a
+/// transition rule can require — `SourcePreparation`, `Maintenance`
+/// and `ReleaseReview` — had no `EvidenceKind` mapping, so no
+/// adapter could plan a check that materialises them, so
+/// `check_gates` emitted `MissingGate` for them, so the walk to
+/// `ReadyForApproval` was unreachable for *every* adapter. Not slow,
+/// not untested: impossible.
+///
+/// Nothing above could have caught it. `gate_stage_for_maps_all_kinds`
+/// asserts the mapping is right for the kinds that exist; it says
+/// nothing about the kinds that should. This asserts the other
+/// direction — the vocabulary covers what the state machine
+/// demands — and fails with the name of the stage that slipped
+/// through, so the fix is adding a kind rather than guessing.
+#[test]
+fn every_required_gate_stage_has_an_evidence_kind() {
+    // The `Other` case is excluded deliberately: it maps to `None`
+    // by design and is not part of the enumerated vocabulary.
+    let kinds = [
+        EvidenceKind::SourcePreparation,
+        EvidenceKind::SourceIntegrity,
+        EvidenceKind::IssueCorrelation,
+        EvidenceKind::Maintenance,
+        EvidenceKind::PolicyEvaluation,
+        EvidenceKind::Build,
+        EvidenceKind::PackageQa,
+        EvidenceKind::FunctionalTest,
+        EvidenceKind::UpgradeTest,
+        EvidenceKind::ReleaseReview,
+        EvidenceKind::ReleaseAssembly,
+        EvidenceKind::Reproducibility,
+        EvidenceKind::LicenseReview,
+        EvidenceKind::PublicationValidation,
+    ];
+    let reachable: std::collections::HashSet<GateStage> =
+        kinds.iter().filter_map(gate_stage_for).collect();
+
+    let mut unreachable = Vec::new();
+    for rule in ironmaint_state::TRANSITION_RULES {
+        for stage in rule.requirements.gates {
+            if !reachable.contains(stage) {
+                unreachable.push(format!(
+                    "{} -> {} requires gate stage `{}`, which no EvidenceKind maps to",
+                    rule.from.name(),
+                    rule.to.name(),
+                    stage.name(),
+                ));
+            }
+        }
+    }
+    assert!(
+        unreachable.is_empty(),
+        "these required gate stages are unreachable by any adapter:\n{}",
+        unreachable.join("\n")
     );
 }
 
