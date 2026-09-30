@@ -29,6 +29,12 @@ time = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+# §98: the runtime is the one crate allowed to bridge into
+# persistence, and a dev-dependency is how the §101 scenario and the
+# projection-replay tests exercise a *real* event log rather than a
+# hand-built one. D-14 existed precisely because every rebuild test
+# hand-built its log.
+ironmaint-store-sqlite = { path = "../ironmaint-store-sqlite" }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 url = { workspace = true }

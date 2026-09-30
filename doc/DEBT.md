@@ -65,7 +65,7 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-11 | LOW | No real Debian/Fedora adapters | DEFERRED to Phase 1 (§106) |
 | D-12 | LOW | 0B.8 hardening suite is not exhaustive | DEFERRED |
 | D-13 | LOW | `git add -A` in this repo can sweep in unrelated local artifacts | PROCESS |
-| D-14 | MEDIUM | `rebuild_projection` rejects every real job's event log, so the §36 operator escape hatch cannot rebuild anything | OPEN — found 2026-09-30 by 0B.10 C2's tests |
+| D-14 | MEDIUM | `rebuild_projection` rejects every real job's event log, so the §36 operator escape hatch cannot rebuild anything | **CLOSED** by 0B.10 — `JobEvent::JobCreated` carries the birth projection, so the log is authoritative for a never-transitioned job |
 
 ---
 
@@ -605,7 +605,7 @@ not the class.
 
 ---
 
-## D-14 — `rebuild_projection` rejects every real job (MEDIUM)
+## D-14 — `rebuild_projection` rejects every real job (MEDIUM) — **CLOSED 2026-09-30 (0B.10)**
 
 **Found 2026-09-30**, while writing 0B.10 C2's projection-replay test. It is not a
 C2 regression; C2's event variant is additive and every pre-existing test still
@@ -652,6 +652,35 @@ here would also have required a design decision this commit should not make.
 
 **It blocks §101 step 30** (C4), so it needs a decision before C4, the same way
 `RecordObligationOutcome` does.
+
+### Resolution
+
+The three options above were all ways of *not* making the log sufficient: seed
+from the projection row (the very row the escape hatch exists to verify), or
+narrow the contract to "replay after the first transition". Either leaves §102
+item 3 — "Job projections can be rebuilt from events" — false for a job that has
+never transitioned, and leaves `rebuild-projections` dependent on the row it is
+meant to check.
+
+The fix is a fourth option the entry did not list: make the log carry the
+projection's birth. `JobEvent::JobCreated(JobProjection)` is appended by
+`handle_create_job` as sequence 1, ahead of the `Domain` audit reference, and a
+replay starts from it.
+
+A projection is not a transition, so this is not modelled as one — it has no
+`from`/`to` and never advances the FSM. It is the record that a job came into
+being and what it looked like when it did.
+
+Seed selection also moved out of the two store backends into
+`JobEvent::seed_projection`, which is where the drift started: the mock and the
+SQLite implementation were separate copies of the same decision, and only one of
+them was ever exercised against a real job's log.
+
+`crates/ironmaint-runtime/tests/projection_rebuild.rs` closes the gap that let
+this ship. Every pre-existing rebuild test hand-assembled a log beginning with a
+`Transitioned`; those tests now drive the real `CreateJob` path against a real
+SQLite store, so a regression in what the runtime emits fails in CI rather than
+in production.
 
 ---
 

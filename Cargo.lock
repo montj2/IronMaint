@@ -1178,6 +1178,7 @@ dependencies = [
  "ironmaint-policy",
  "ironmaint-state",
  "ironmaint-store",
+ "ironmaint-store-sqlite",
  "ironmaint-workspace",
  "schemars 0.8.22",
  "serde",

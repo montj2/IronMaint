@@ -224,6 +224,17 @@ async fn interrupted_reconcile_is_idempotent_on_retry() {
     let svc = build_service(Arc::clone(&store));
     let job_id = create_job(&svc).await;
 
+    // Measured as a delta, not an absolute count. The count of
+    // events a fresh job carries has changed before (CreateJob now
+    // writes a `JobCreated` seed plus its `Domain` reference), and
+    // an absolute number would make this test a tripwire for a
+    // change that has nothing to do with what it claims to prove.
+    let before = store
+        .list_events_for_job(job_id, 1, None)
+        .await
+        .unwrap()
+        .len();
+
     // First reconcile is the initial "no-op" walk.
     let first = svc.reconcile(job_id).await.expect("first reconcile");
     // A re-reconcile against the same projection must be a
@@ -238,11 +249,10 @@ async fn interrupted_reconcile_is_idempotent_on_retry() {
         "second outcome: {second:?}"
     );
 
-    // Event log shows exactly one domain event (the CreateJob
-    // envelope) — reconcile is not a writer when it has no
-    // transition to apply.
-    let events = store.list_events_for_job(job_id, 1, None).await.unwrap();
-    assert_eq!(events.len(), 1, "no extra events on no-op reconcile");
+    // Neither reconcile wrote anything: reconcile is not a writer
+    // when it has no transition to apply.
+    let after = store.list_events_for_job(job_id, 1, None).await.unwrap();
+    assert_eq!(after.len(), before, "no extra events on no-op reconcile");
 }
 
 // ---------------------------------------------------------------------------

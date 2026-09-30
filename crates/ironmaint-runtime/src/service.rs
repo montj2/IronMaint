@@ -543,6 +543,7 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
 impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
     /// `CreateJob`: mint a fresh [`MaintenanceJob`] + [`JobProjection`],
     /// persist it at `version = 0`, and seed the event log with a
+    /// `JobEvent::JobCreated` carrying that projection, followed by a
     /// `JobEvent::Domain` referencing the initiating event id.
     async fn handle_create_job(
         &self,
@@ -569,9 +570,34 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             .await
             .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
 
-        // Seed the event log with a Domain event pointing at the
-        // orchestrator that initiated the job. This is the very
-        // first sequence number for this job.
+        // Seed the event log. Two events, in this order:
+        //
+        // 1. `JobCreated` carries the projection as it looked at
+        //    birth. It must be first: it is the seed a replay starts
+        //    from, and without it a log whose only other early event
+        //    is a bare `Domain` reference carries no projection at
+        //    all — which is what made `rebuild_projection` fail for
+        //    every job the runtime had ever created (D-14).
+        // 2. `Domain` points at the event id that initiated the job,
+        //    the audit reference 0A §30 asks for.
+        let sequence = self
+            .store
+            .next_sequence(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+
+        let created = EventEnvelope::new(
+            MaintenanceEventId::from_uuid(initiating_event.as_uuid()),
+            job_id,
+            sequence,
+            now,
+            JobEvent::JobCreated(projection.clone()),
+        );
+        self.store
+            .append_event(&created)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+
         let sequence = self
             .store
             .next_sequence(job_id)

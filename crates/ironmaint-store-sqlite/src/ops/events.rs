@@ -122,6 +122,7 @@ pub(crate) async fn next_sequence(pool: &SqlitePool, job_id: JobId) -> Result<u6
 
 fn serialise_event(event: &JobEvent) -> Result<(&'static str, String), StoreError> {
     match event {
+        JobEvent::JobCreated(p) => Ok(("job_created", encode_json(p)?)),
         JobEvent::Transitioned(t) => {
             let payload = encode_json(t)?;
             Ok(("transitioned", payload))
@@ -134,6 +135,10 @@ fn serialise_event(event: &JobEvent) -> Result<(&'static str, String), StoreErro
 
 fn deserialise_event(event_type: &str, payload: &str) -> Result<JobEvent, StoreError> {
     match event_type {
+        "job_created" => {
+            let p = map_json::<ironmaint_core::JobProjection>(payload.to_owned(), "JobProjection")?;
+            Ok(JobEvent::JobCreated(p))
+        }
         "transitioned" => {
             let t: StateTransitioned = map_json(payload.to_owned(), "StateTransitioned")?;
             Ok(JobEvent::Transitioned(t))

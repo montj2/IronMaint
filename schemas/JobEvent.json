@@ -4,6 +4,19 @@
   "description": "All events a job can emit.",
   "oneOf": [
     {
+      "description": "The job's first event, and the seed every projection replay starts from.\n\nIt carries the whole initial `JobProjection` rather than a reference, because nothing before it exists. Without this variant the log could not reconstruct a job that had never transitioned: the projection's contents lived only in the `put_projection` write, and a `Domain` event carries just an id. That made §102 item 3 — \"Job projections can be rebuilt from events\" — false for every real job, and left `ironmaintctl rebuild-projections` (§36's operator escape hatch) reporting every job as an error on a real database.\n\nA projection is not a transition, so this is not modelled as one: it has no `from`/`to` and never advances the FSM. It is the record that a job came into being, and what it looked like when it did.",
+      "type": "object",
+      "required": [
+        "job_created"
+      ],
+      "properties": {
+        "job_created": {
+          "$ref": "#/definitions/JobProjection"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
       "type": "object",
       "required": [
         "transitioned"

@@ -230,7 +230,8 @@ async fn record_check_evidence_persists_evidence_record() {
         .await
         .expect("record evidence");
 
-    assert_eq!(result.new_sequence, 3); // create=1, set_active=2, evidence=3
+    // create=1,2 (JobCreated + Domain), set_active=3, evidence=4
+    assert_eq!(result.new_sequence, 4);
     assert!(result.side_effects.is_empty());
 
     // Evidence list now contains the new evidence, bound to our
@@ -374,7 +375,8 @@ async fn run_check_invokes_executor_and_records_evidence() {
         .await
         .expect("run check");
 
-    assert_eq!(result.new_sequence, 2);
+    // create=1,2 (JobCreated + Domain), run_check=3
+    assert_eq!(result.new_sequence, 3);
     assert!(!result.side_effects.is_empty());
 
     // Evidence was recorded.

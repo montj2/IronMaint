@@ -119,8 +119,9 @@ async fn capture_candidate_inserts_and_advances_sequence() {
         .await
         .expect("capture");
 
-    // CreateJob emitted sequence 1; CaptureCandidate emits sequence 2.
-    assert_eq!(result.new_sequence, 2);
+    // CreateJob emitted sequences 1 and 2 (`JobCreated`, then the
+    // `Domain` audit reference); CaptureCandidate emits sequence 3.
+    assert_eq!(result.new_sequence, 3);
     assert!(
         result.side_effects[0].starts_with("source_candidate:"),
         "side effect must identify the captured candidate: {}",
@@ -175,10 +176,12 @@ async fn capture_candidate_is_idempotent_on_duplicate_fingerprint() {
     // the capture itself, then the activation that follows it (the
     // activation appends its own `JobEvent::Domain` envelope, which
     // is what lets `rebuild_projection` reconstruct which candidate
-    // was active). So CreateJob is 1, the first capture is 2 and 3,
-    // and the duplicate capture — which re-activates nothing — is 4.
-    assert_eq!(first.new_sequence, 2);
-    assert_eq!(second.new_sequence, 4);
+    // was active). CreateJob is 1 and 2 (a `JobCreated` carrying
+    // the seed projection, then the `Domain` reference), so the first
+    // capture is 3 and 4, and the duplicate capture — which
+    // re-activates nothing — is 5.
+    assert_eq!(first.new_sequence, 3);
+    assert_eq!(second.new_sequence, 5);
 
     // But there must still be exactly one row in the per-job list.
     let ids = store
@@ -219,9 +222,10 @@ async fn capture_candidate_appends_domain_event() {
         .expect("list events");
     assert_eq!(
         events.len(),
-        3,
-        "CreateJob + CaptureCandidate's two envelopes (the capture and \
-         the activation that follows it) = 3 events"
+        4,
+        "CreateJob's two envelopes (JobCreated, then the Domain \
+         reference) plus CaptureCandidate's two (the capture and the \
+         activation that follows it) = 4 events"
     );
 
     let last = events.last().expect("last event");

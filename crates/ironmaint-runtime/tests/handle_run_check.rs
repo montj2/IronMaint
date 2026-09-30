@@ -265,10 +265,11 @@ async fn pass_path_emits_tool_run_finished_with_pass_outcome() {
         .await
         .expect("run check");
 
-    // Sequence 1: projection seed; 2: SetActiveCandidate; 3: ToolRunFinished.
+    // Sequences 1 and 2: CreateJob's seed events (JobCreated, then the
+    // Domain reference); 3: SetActiveCandidate; 4: ToolRunFinished.
     // (MaterializeChecks writes via put_check/put_gate_definition and does
     // not bump the event ledger.)
-    assert_eq!(result.new_sequence, 3);
+    assert_eq!(result.new_sequence, 4);
 
     let evidences = store.list_evidence_for_job(job_id).await.expect("list");
     assert_eq!(evidences.len(), 1);

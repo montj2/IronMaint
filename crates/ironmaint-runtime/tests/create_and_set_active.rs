@@ -75,10 +75,12 @@ async fn create_job_persists_projection_at_version_zero() {
         .await
         .expect("create job");
 
-    // First write of a fresh projection lands at version 0 and
-    // sequence 1 (the seed Domain event).
+    // First write of a fresh projection lands at version 0. The
+    // log is seeded with two events — a `JobCreated` carrying the
+    // projection, then the `Domain` reference — so the command's
+    // sequence is 2.
     assert_eq!(result.new_version, 0);
-    assert_eq!(result.new_sequence, 1);
+    assert_eq!(result.new_sequence, 2);
     assert_eq!(result.side_effects.len(), 1);
     assert!(result.side_effects[0].starts_with("job:"));
 }
@@ -151,7 +153,8 @@ async fn set_active_candidate_attaches_fingerprint_to_projection() {
         .expect("set active");
 
     assert_eq!(set.new_version, 1);
-    assert_eq!(set.new_sequence, 2);
+    // Sequences 1 and 2 went to CreateJob's seed events.
+    assert_eq!(set.new_sequence, 3);
     assert!(set.side_effects.is_empty());
 
     // 4. Projection now has the candidate id set.

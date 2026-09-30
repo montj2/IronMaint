@@ -130,24 +130,10 @@ pub(crate) async fn rebuild(pool: &SqlitePool, job_id: JobId) -> Result<JobProje
     let Some(first) = events.first() else {
         return Err(StoreError::not_found(format!("no events for {job_id}")));
     };
-    let initial = match &first.event {
-        ironmaint_state::JobEvent::Transitioned(t) => t.projection_after.clone(),
-        ironmaint_state::JobEvent::Domain(_) => {
-            return Err(StoreError::corrupt(
-                "first event is a Domain reference; no projection to seed rebuild",
-            ));
-        }
-        ironmaint_state::JobEvent::ToolRunFinished(_) => {
-            return Err(StoreError::corrupt(
-                "first event is a ToolRunFinished; no projection to seed rebuild",
-            ));
-        }
-        ironmaint_state::JobEvent::ResumeRecorded(_) => {
-            return Err(StoreError::corrupt(
-                "first event is a ResumeRecorded; no projection to seed rebuild",
-            ));
-        }
-    };
+    let initial = first
+        .event
+        .seed_projection()
+        .map_err(|why| StoreError::corrupt(format!("{why}; no projection to seed rebuild")))?;
     let mut proj = initial;
     for env in events.iter().skip(1) {
         proj = ProjectionApply::apply(&proj, &env.event, env.occurred_at);
