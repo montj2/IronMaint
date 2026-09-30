@@ -172,6 +172,9 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 self.handle_enter_human_review(job_id, reason).await
             }
             RuntimeCommand::ResumeJob { job_id } => self.handle_resume_job(job_id).await,
+            RuntimeCommand::CreateReleaseCandidate { job_id } => {
+                self.handle_create_release_candidate(job_id).await
+            }
         }
     }
 
@@ -1019,6 +1022,121 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             side_effects: vec![format!(
                 "job:{job_id} resumed from {} to {resume_to}",
                 projection.state
+            )],
+        })
+    }
+
+    /// `CreateReleaseCandidate`: assemble the §42 snapshot for the
+    /// job's active candidate.
+    ///
+    /// The baseline's authorities are read off the candidate's own
+    /// obligations rather than re-derived from the adapter, because
+    /// the obligations are the record of which authorities this
+    /// candidate is actually held against — re-deriving would
+    /// produce a baseline describing a policy query nobody made.
+    ///
+    /// A job with no active candidate is refused rather than given
+    /// a release candidate bound to nothing: 0A §42 makes
+    /// `source` the field that gives the snapshot its meaning.
+    async fn handle_create_release_candidate(
+        &self,
+        job_id: JobId,
+    ) -> Result<CommandResult, RuntimeError> {
+        let projection = self
+            .store
+            .get_projection(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        let Some(candidate_id) = projection.active_candidate else {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidInput,
+                format!("job {job_id} has no active candidate to release"),
+            ));
+        };
+        let candidate = self
+            .store
+            .get_source_candidate(candidate_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        let fingerprint = candidate.fingerprint().clone();
+
+        // Gates: every definition minted for *this* candidate, in
+        // any order the store returns them. Filtered by
+        // fingerprint rather than by job so a superseded
+        // candidate's gates cannot leak into the snapshot — the
+        // same candidate-binding rule §30 puts on evidence.
+        let mut gate_ids = Vec::new();
+        for gate_id in self
+            .store
+            .list_gates_for_job(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?
+        {
+            let definition = self
+                .store
+                .get_gate_definition(gate_id)
+                .await
+                .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+            if definition.candidate == fingerprint {
+                gate_ids.push(gate_id);
+            }
+        }
+
+        let mut authorities: Vec<ironmaint_core::AuthorityId> = Vec::new();
+        let mut obligation_ids = Vec::new();
+        for obligation_id in self
+            .store
+            .list_obligations_for_job(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?
+        {
+            let obligation = match self.store.get_obligation(obligation_id).await {
+                Ok(o) => o,
+                // A dangling id is a store inconsistency, not a
+                // reason to refuse a release candidate over one
+                // unrelated obligation.
+                Err(_) => continue,
+            };
+            if obligation.candidate != fingerprint {
+                continue;
+            }
+            obligation_ids.push(obligation_id);
+            let authority = obligation.reference.authority;
+            if !authorities.contains(&authority) {
+                authorities.push(authority);
+            }
+        }
+
+        let baseline =
+            ironmaint_policy::PolicyBaseline::new(projection.job.package.distribution.clone())
+                .with_authorities(authorities);
+        let release = ironmaint_policy::ReleaseCandidate::new(
+            job_id,
+            fingerprint.clone(),
+            baseline,
+            self.clock.now_utc(),
+        );
+        let mut release = release;
+        for gate_id in gate_ids.iter().copied() {
+            release = release.with_gate(gate_id);
+        }
+        for obligation_id in obligation_ids.iter().copied() {
+            release = release.with_obligation(obligation_id);
+        }
+        let release_id = self
+            .store
+            .put_release_candidate(&release)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+
+        Ok(CommandResult {
+            new_version: 0,
+            new_sequence: 0,
+            side_effects: vec![format!(
+                "release_candidate:{release_id} assembled for {job_id} at {fingerprint} \
+                 ({} gate(s), {} obligation(s))",
+                release.gate_ids.len(),
+                release.obligation_ids.len()
             )],
         })
     }

@@ -183,4 +183,21 @@ pub enum RuntimeCommand {
     /// Only ever returns the job to where a human-side actor
     /// already chose to put it.
     ResumeJob { job_id: JobId },
+    /// Snapshot "everything required to release" for the job's
+    /// active candidate (0A §42, §101 step 26).
+    ///
+    /// The snapshot is bound to whatever candidate is active *now*
+    /// and lists the gate and obligation ids that candidate is
+    /// held against — so a later candidate capture does not
+    /// silently inherit it. Creating one says nothing about
+    /// releasability; 0A §42 is explicit that "Release candidate
+    /// creation itself does not mean releasable. The state engine
+    /// determines whether it may become `ReadyForApproval`."
+    ///
+    /// This is a read-model assembly, not a state change: it
+    /// advances no `JobState`, creates no
+    /// [`PrivilegedOperation`](ironmaint_policy::PrivilegedOperation),
+    /// and is not reachable over MCP — §101 step 29 asserts the
+    /// first two, and §102 item 25 forbids the rest.
+    CreateReleaseCandidate { job_id: JobId },
 }
