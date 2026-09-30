@@ -588,3 +588,60 @@ async fn fk_on_delete_restrict_for_events() {
 fn migrations_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations")
 }
+
+/// §101 step 26 reads a job's release candidate back, and the only
+/// way to find it from a `JobId` is `list_release_candidates_for_job`
+/// — so the SQLite path for it is load-bearing and needs a test on
+/// the real backend rather than only on `MockStore`.
+///
+/// The ordering assertion is the other half: the mock sorts by
+/// `(created_at, id)` and SQLite by `rowid`, and a caller that shows
+/// a person a list of snapshots must see the same order from both or
+/// the mock has taught it nothing. Three snapshots in the same
+/// millisecond is exactly the case where those two orderings can
+/// disagree, so the timestamps are deliberately identical.
+#[tokio::test]
+async fn release_candidates_list_by_job_in_creation_order() {
+    let s = SqliteStore::open_in_memory().await.unwrap();
+    let jid = job_id();
+    let other = job_id();
+    create_projection(&s, jid).await;
+    create_projection(&s, other).await;
+
+    let at = datetime!(2026-01-03 00:00:00 UTC);
+    let build = |job: JobId, tree: char| {
+        let mut release = ironmaint_policy::ReleaseCandidate::new(
+            job,
+            CandidateFingerprint::from_hex(tree.to_string().repeat(64)).unwrap(),
+            ironmaint_policy::PolicyBaseline::new(package().distribution),
+            at,
+        );
+        release = release.with_gate(ironmaint_core::GateId::new());
+        release
+    };
+
+    let first = build(jid, 'a');
+    let second = build(jid, 'b');
+    let elsewhere = build(other, 'c');
+    for release in [&first, &second, &elsewhere] {
+        s.put_release_candidate(release).await.unwrap();
+    }
+
+    assert_eq!(
+        s.list_release_candidates_for_job(jid).await.unwrap(),
+        vec![first.clone(), second],
+        "both of the job's snapshots, in the order they were written"
+    );
+    assert_eq!(
+        s.list_release_candidates_for_job(other).await.unwrap(),
+        vec![elsewhere],
+        "and only that job's"
+    );
+    assert!(
+        s.list_release_candidates_for_job(JobId::new())
+            .await
+            .unwrap()
+            .is_empty(),
+        "an unrelated job has none, rather than an error"
+    );
+}

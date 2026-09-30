@@ -231,6 +231,13 @@ impl CandidateStore for SqliteStore {
         ops::candidates::get_release(&self.pool, id).await
     }
 
+    async fn list_release_candidates_for_job(
+        &self,
+        job_id: ironmaint_core::JobId,
+    ) -> Result<Vec<ironmaint_policy::ReleaseCandidate>, StoreError> {
+        ops::candidates::list_release_for_job(&self.pool, job_id).await
+    }
+
     async fn list_source_candidates_for_job(
         &self,
         job_id: ironmaint_core::JobId,

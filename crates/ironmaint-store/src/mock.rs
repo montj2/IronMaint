@@ -238,6 +238,26 @@ impl CandidateStore for MockStore {
             .ok_or_else(|| StoreError::not_found(format!("release candidate {id}")))
     }
 
+    async fn list_release_candidates_for_job(
+        &self,
+        job_id: JobId,
+    ) -> Result<Vec<ReleaseCandidate>, StoreError> {
+        // Creation order, to match the SQLite backend's `ORDER BY
+        // rowid`: a caller that assembles a list of snapshots and
+        // shows it to a person needs the same order from both
+        // backends or the mock will have taught it nothing.
+        let mut out: Vec<ReleaseCandidate> = self
+            .read()
+            .releases
+            .values()
+            .filter(|r| r.job_id == job_id)
+            .cloned()
+            .collect();
+        out.sort_by_key(|r| r.created_at);
+        out.sort_by_key(|r| r.id);
+        Ok(out)
+    }
+
     async fn list_source_candidates_for_job(
         &self,
         job_id: JobId,

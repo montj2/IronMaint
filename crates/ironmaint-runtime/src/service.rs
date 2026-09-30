@@ -56,6 +56,8 @@ pub enum QueryResult {
     NextActions(JobNextActions),
     CheckOutcome(CheckOutcome),
     Operation(PrivilegedOperation),
+    /// The §42 snapshot for a job's active candidate.
+    ReleaseCandidate(ironmaint_policy::ReleaseCandidate),
 }
 
 pub struct RuntimeService<S: IronMaintStore + ?Sized, E: Executor + ?Sized> {
@@ -231,7 +233,47 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                         })?;
                 Ok(QueryResult::Operation(operation))
             }
+            RuntimeQuery::GetReleaseCandidate { job_id } => {
+                self.get_release_candidate_for_job(job_id).await
+            }
         }
+    }
+
+    /// The snapshot assembled for the job's active candidate.
+    ///
+    /// Two errors rather than an empty result, because "there is no
+    /// active candidate" and "the active candidate has no snapshot
+    /// yet" are different facts with different next moves — one is
+    /// mid-workflow, the other is at the exit with the assembly
+    /// outstanding. `Option` would flatten them.
+    async fn get_release_candidate_for_job(
+        &self,
+        job_id: JobId,
+    ) -> Result<QueryResult, RuntimeError> {
+        let Some(fingerprint) = self.active_fingerprint(job_id).await? else {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidInput,
+                format!("job {job_id} has no active candidate, so no release candidate"),
+            ));
+        };
+        let snapshots = self
+            .store
+            .list_release_candidates_for_job(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        snapshots
+            .into_iter()
+            .find(|r| r.source == fingerprint)
+            .map(QueryResult::ReleaseCandidate)
+            .ok_or_else(|| {
+                RuntimeError::new(
+                    RuntimeErrorKind::InvalidInput,
+                    format!(
+                        "job {job_id} has no release candidate for its active candidate \
+                         {fingerprint}; run RuntimeCommand::CreateReleaseCandidate first"
+                    ),
+                )
+            })
     }
 
     /// The active candidate's fingerprint, read through the
@@ -1074,6 +1116,40 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             .await
             .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
         let fingerprint = candidate.fingerprint().clone();
+
+        // Idempotent on (job, fingerprint). A snapshot's entire
+        // content is derived from the gates and obligations *of that
+        // fingerprint* — both of which are fixed the moment the
+        // candidate is captured, because re-running a check writes
+        // evidence and a verdict, never a new gate or obligation.
+        // So the second call has nothing to add, and without this
+        // check it would mint a second, byte-identical snapshot
+        // under a fresh id — and then a caller with only a `JobId`
+        // would have two correct answers and no way to choose.
+        //
+        // Returning the existing one also keeps the command honest
+        // for the agent that calls it twice because it did not see
+        // the first call land.
+        for existing in self
+            .store
+            .list_release_candidates_for_job(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?
+        {
+            if existing.source == fingerprint {
+                let id = existing.id;
+                let gates = existing.gate_ids.len();
+                let obligations = existing.obligation_ids.len();
+                return Ok(CommandResult {
+                    new_version: 0,
+                    new_sequence: 0,
+                    side_effects: vec![format!(
+                        "release_candidate:{id} already assembled for {job_id} at \
+                         {fingerprint} ({gates} gate(s), {obligations} obligation(s))"
+                    )],
+                });
+            }
+        }
 
         // Gates: every definition minted for *this* candidate, in
         // any order the store returns them. Filtered by

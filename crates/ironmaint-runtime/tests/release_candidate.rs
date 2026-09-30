@@ -51,7 +51,8 @@ use ironmaint_policy::{
     PolicyReference,
 };
 use ironmaint_runtime::{
-    AdapterRegistry, FixedClock, OrchestratorRef, RuntimeCommand, RuntimeErrorKind, RuntimeService,
+    AdapterRegistry, FixedClock, OrchestratorRef, QueryResult, RuntimeCommand, RuntimeErrorKind,
+    RuntimeQuery, RuntimeService,
 };
 use ironmaint_store::mock::MockStore;
 use ironmaint_store::{
@@ -450,5 +451,144 @@ async fn creating_one_advances_nothing_and_authorizes_nothing() {
     assert!(
         operations.is_empty(),
         "assembling a release candidate must not propose a privileged side effect; got {operations:?}"
+    );
+}
+
+/// The tenth instance of the pattern this phase keeps finding, and
+/// the first one about a *write* rather than a missing one.
+///
+/// `CreateReleaseCandidate` minted a fresh `ReleaseCandidateId` on
+/// every call, so two calls for one job produced two snapshots with
+/// identical content and no way to tell which one a release is. It
+/// is a record of what was validated, and a record that can be
+/// written twice is not a record.
+///
+/// Idempotent on (job, fingerprint), which is sound because a
+/// snapshot's content is derived entirely from the gates and
+/// obligations *of that fingerprint*, and both are fixed at capture:
+/// re-running a check writes evidence and a verdict, never a new gate
+/// or obligation.
+#[tokio::test]
+async fn assembling_the_snapshot_twice_reuses_it() {
+    let store = Arc::new(MockStore::new());
+    let svc = build_service(Arc::clone(&store));
+    let job_id = create_job(&svc).await;
+    capture(&svc, job_id, "1.0.0").await;
+
+    let (first, first_side) = create_release_candidate(&svc, &store, job_id).await;
+    let (second, second_side) = create_release_candidate(&svc, &store, job_id).await;
+    assert_eq!(
+        first, second,
+        "a second assembly for the same candidate must return the snapshot that \
+         already exists, not a byte-identical twin under a new id"
+    );
+    assert_eq!(
+        store
+            .list_release_candidates_for_job(job_id)
+            .await
+            .expect("list snapshots"),
+        vec![first.clone()],
+        "exactly one snapshot exists for the job"
+    );
+    assert!(
+        first_side[0].contains("assembled") && second_side[0].contains("already assembled"),
+        "and the second call says so rather than reporting a fresh \
+         assembly: {first_side:?} then {second_side:?}"
+    );
+
+    // A new candidate is a different fingerprint and therefore a
+    // different subject, so it gets its own snapshot — the
+    // idempotency is not a blanket "one per job".
+    capture(&svc, job_id, "1.0.1").await;
+    let (third, _) = create_release_candidate(&svc, &store, job_id).await;
+    assert_ne!(
+        first.id, third.id,
+        "a superseded candidate's snapshot must not be handed back for its successor"
+    );
+    assert_eq!(
+        store
+            .list_release_candidates_for_job(job_id)
+            .await
+            .expect("list snapshots")
+            .len(),
+        2,
+        "both subjects keep a snapshot, and a re-assembly of either adds \
+         nothing"
+    );
+}
+
+/// §101 step 26 needs the snapshot *readable* by a caller holding
+/// only a `JobId` — the id is minted by the command, so a caller that
+/// arrived first cannot know it. Both failure modes are reported
+/// distinctly, because they have different next moves.
+#[tokio::test]
+async fn the_snapshot_is_readable_by_job_and_its_absence_is_named() {
+    let store = Arc::new(MockStore::new());
+    let svc = build_service(Arc::clone(&store));
+    let job_id = create_job(&svc).await;
+
+    let before_capture = svc
+        .handle_query(RuntimeQuery::GetReleaseCandidate { job_id })
+        .await
+        .expect_err("no active candidate, so no snapshot");
+    assert_eq!(
+        before_capture.kind,
+        RuntimeErrorKind::InvalidInput,
+        "and the failure is typed, not a store error"
+    );
+    assert!(
+        before_capture.message.contains("no active candidate"),
+        "the message says which of the two reasons it is: {:?}",
+        before_capture.message
+    );
+
+    capture(&svc, job_id, "1.0.0").await;
+
+    // Active candidate, no snapshot yet: a *different* fact from the
+    // one above, and the one a caller at the exit checkpoint hits.
+    let not_yet = svc
+        .handle_query(RuntimeQuery::GetReleaseCandidate { job_id })
+        .await
+        .expect_err("no snapshot has been assembled");
+    assert!(
+        not_yet
+            .message
+            .contains("has no release candidate for its active candidate"),
+        "got {:?}",
+        not_yet.message
+    );
+    assert!(
+        not_yet.message.contains(&job_id.to_string()),
+        "the message names the candidate it would be for, so a caller can \
+         tell which subject is outstanding: {:?}",
+        not_yet.message
+    );
+
+    let (expected, _) = create_release_candidate(&svc, &store, job_id).await;
+    let QueryResult::ReleaseCandidate(release) = svc
+        .handle_query(RuntimeQuery::GetReleaseCandidate { job_id })
+        .await
+        .expect("the snapshot is readable once it exists")
+    else {
+        panic!("GetReleaseCandidate returned the wrong variant");
+    };
+    assert_eq!(
+        release, expected,
+        "the query finds the one the command wrote"
+    );
+
+    // And the same query about a different job says so rather than
+    // returning this one: the selection is by job, not by "whichever
+    // snapshot was written last".
+    let other_job = create_job(&svc).await;
+    let other = svc
+        .handle_query(RuntimeQuery::GetReleaseCandidate { job_id: other_job })
+        .await
+        .expect_err("the other job has no active candidate");
+    assert!(
+        other.message.contains(&other_job.to_string()),
+        "the error names the job asked about, not the one that has a \
+         snapshot: {:?}",
+        other.message
     );
 }

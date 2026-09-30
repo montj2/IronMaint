@@ -40,6 +40,25 @@ pub trait CandidateStore: Send + Sync {
         id: ReleaseCandidateId,
     ) -> impl std::future::Future<Output = Result<ReleaseCandidate, StoreError>> + Send;
 
+    /// Every `ReleaseCandidate` for a job, in creation order.
+    ///
+    /// Not a convenience over [`CandidateStore::get_release_candidate`]:
+    /// a snapshot is addressed by id, and a caller that has only a
+    /// `JobId` — the runtime, when asked for a job's release
+    /// candidate — has no id to ask with. `ReleaseCandidate` carries
+    /// its own `job_id` and `source` fingerprint, so the selection
+    /// belongs to the caller and the store's job is only to hand
+    /// back the candidates.
+    ///
+    /// A job normally has at most one of these per candidate, but
+    /// "normally" is a fact about the workflow rather than a
+    /// constraint the store enforces, so this returns all of them
+    /// and lets the caller decide which one it meant.
+    fn list_release_candidates_for_job(
+        &self,
+        job_id: JobId,
+    ) -> impl std::future::Future<Output = Result<Vec<ReleaseCandidate>, StoreError>> + Send;
+
     /// List `SourceCandidate` ids for a job, in capture order.
     fn list_source_candidates_for_job(
         &self,
@@ -105,6 +124,13 @@ impl<T: CandidateStore + ?Sized> CandidateStore for Arc<T> {
         job_id: JobId,
     ) -> Result<Vec<CandidateId>, StoreError> {
         (**self).list_source_candidates_for_job(job_id).await
+    }
+
+    async fn list_release_candidates_for_job(
+        &self,
+        job_id: JobId,
+    ) -> Result<Vec<ReleaseCandidate>, StoreError> {
+        (**self).list_release_candidates_for_job(job_id).await
     }
 
     async fn find_source_by_fingerprint(
