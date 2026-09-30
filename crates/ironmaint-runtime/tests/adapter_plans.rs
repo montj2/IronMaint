@@ -637,50 +637,120 @@ async fn an_empty_registry_captures_without_panicking() {
 }
 
 // -----------------------------------------------------------------------------
-// 6. Ineligible state.
+// 6. Where the repair loop stops.
 // -----------------------------------------------------------------------------
 
-#[tokio::test]
-async fn a_job_past_candidate_assembly_captures_without_activating() {
-    let store = Arc::new(MockStore::new());
-    let svc = build_service(store.clone(), registry_with(TestAdapter::default()));
-    let job_id = create_job(&svc).await;
-
-    // Move the job forward through the store rather than the engine:
-    // this test is about what capture does in that state, not about
-    // how the job got there.
+/// Park the job in `state` without going through the engine: this
+/// is about what capture does in that state, not about how the job
+/// got there.
+async fn park(store: &MockStore, job_id: JobId, state: JobState) {
     let mut projection = store.get_projection(job_id).await.expect("projection");
-    projection.state = JobState::SourceRevision;
+    projection.state = state;
     store
         .put_projection(&projection, projection.version)
         .await
         .expect("put projection");
+}
+
+/// §61's loop is "inspect the failure, capture a new candidate,
+/// rerun the required checks", and the failures it repairs happen
+/// in `BuildValidation` and `PackageQaValidation`. A guard that
+/// confined activation to the four pre-build states made the loop
+/// unreachable — which is how §101 steps 15 and 20 were found to
+/// be unrepresentable.
+#[tokio::test]
+async fn a_repairable_state_still_activates_the_new_candidate() {
+    for state in [
+        JobState::SourceRevision,
+        JobState::BuildValidation,
+        JobState::PackageQaValidation,
+        JobState::FinalValidation,
+    ] {
+        let store = Arc::new(MockStore::new());
+        let svc = build_service(store.clone(), registry_with(TestAdapter::default()));
+        let job_id = create_job(&svc).await;
+        park(&store, job_id, state).await;
+
+        capture(&svc, job_id, "1.0.0").await;
+
+        let after = store.get_projection(job_id).await.expect("projection");
+        assert!(
+            after.active_candidate.is_some(),
+            "a job in {state} is mid-repair and a new candidate is how it is \
+             repaired; capture must activate it"
+        );
+        assert_eq!(after.state, state, "capture must not move the job");
+    }
+}
+
+/// The line is `ReadyForApproval`, where the source and the
+/// evidence behind it are what a human is about to decide on.
+/// Swapping either there would change the subject of the review
+/// without recording that it changed.
+#[tokio::test]
+async fn a_decided_job_captures_without_activating() {
+    for state in [
+        JobState::ReadyForApproval,
+        JobState::Approved,
+        JobState::PublicationPending,
+        JobState::Published,
+        JobState::Cancelled,
+    ] {
+        let store = Arc::new(MockStore::new());
+        let svc = build_service(store.clone(), registry_with(TestAdapter::default()));
+        let job_id = create_job(&svc).await;
+        park(&store, job_id, state).await;
+
+        let notes = capture(&svc, job_id, "1.0.0").await;
+
+        let after = store.get_projection(job_id).await.expect("projection");
+        assert_eq!(
+            after.active_candidate, None,
+            "a job in {state} is decided; capture must not swap the source under \
+             the reviewer"
+        );
+        assert_eq!(after.state, state, "capture must not move the job");
+        assert!(
+            notes.iter().any(|n| n.contains("did not activate it")),
+            "the refusal must be visible, not silent; got {notes:?}"
+        );
+        // The candidate is still durable — a capture that is refused for
+        // activation is not a capture that is refused outright.
+        assert_eq!(
+            store
+                .list_source_candidates_for_job(job_id)
+                .await
+                .expect("list")
+                .len(),
+            1
+        );
+    }
+}
+
+/// A job awaiting human intervention is not one an agent may
+/// quietly re-point at new source, and `allowed` must not offer it
+/// the checks to do so with. §21: return to the recorded state
+/// first.
+#[tokio::test]
+async fn an_exceptional_job_captures_without_activating() {
+    let store = Arc::new(MockStore::new());
+    let svc = build_service(store.clone(), registry_with(TestAdapter::default()));
+    let job_id = create_job(&svc).await;
+    park(&store, job_id, JobState::HumanReviewRequired).await;
 
     let notes = capture(&svc, job_id, "1.0.0").await;
 
-    let after = store.get_projection(job_id).await.expect("projection");
-    assert_eq!(
-        after.active_candidate, None,
-        "activation past CandidateAssembly is a state-machine question; \
-         the runtime must not answer it by fiat"
-    );
     assert!(
-        after.state == JobState::SourceRevision,
-        "capture must not move the job"
+        notes.iter().any(|n| n.contains("resume the job first")),
+        "the note must name the remedy, not just the refusal; got {notes:?}"
     );
-    assert!(
-        notes.iter().any(|n| n.contains("did not activate it")),
-        "the refusal must be visible, not silent; got {notes:?}"
-    );
-    // The candidate is still durable — a capture that is refused for
-    // activation is not a capture that is refused outright.
     assert_eq!(
         store
-            .list_source_candidates_for_job(job_id)
+            .get_projection(job_id)
             .await
-            .expect("list")
-            .len(),
-        1
+            .expect("projection")
+            .active_candidate,
+        None
     );
 }
 

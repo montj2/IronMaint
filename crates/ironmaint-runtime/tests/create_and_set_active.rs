@@ -193,8 +193,13 @@ async fn set_active_candidate_rejects_unknown_fingerprint() {
     assert_eq!(err.kind, RuntimeErrorKind::InvalidInput);
 }
 
+/// The candidate-capture window used to close at
+/// `CandidateAssembly`, which made §61's repair loop — and §101's
+/// steps 15 and 20 — unreachable. What still closes the window is
+/// `ReadyForApproval`: past it, the source and the evidence behind
+/// it are what a human is about to decide on.
 #[tokio::test]
-async fn set_active_candidate_rejects_after_build() {
+async fn set_active_candidate_rejects_once_the_job_is_decided() {
     let store = Arc::new(MockStore::new());
     let svc = RuntimeService::new(
         store.clone(),
@@ -214,9 +219,10 @@ async fn set_active_candidate_rejects_after_build() {
 
     let (_candidate_id, fingerprint) = seed_candidate(&store, job_id).await;
 
-    // Force the projection past the candidate-capture window.
+    // Force the projection to the point where the decision is being
+    // made.
     let mut projection = store.get_projection(job_id).await.expect("get");
-    projection.state = JobState::SourceRevision;
+    projection.state = JobState::ReadyForApproval;
     let v = projection.version;
     store.put_projection(&projection, v).await.expect("put");
 

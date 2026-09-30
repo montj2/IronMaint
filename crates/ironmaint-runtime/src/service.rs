@@ -408,6 +408,21 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         // Gating this on `GatePending` (as it used to) meant a job
         // at `EventDetected` advertised no runnable check at all,
         // even though capture had just materialised four.
+        // …but only while the job is still repairable. At
+        // `ReadyForApproval` the evidence is what a human is about
+        // to decide on, and re-running a check would overwrite it;
+        // in an exceptional state the job is waiting on a person,
+        // and `allowed` already names the one move that is theirs.
+        let state = self
+            .store
+            .get_projection(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?
+            .state;
+        if !state.is_repairable() {
+            return Ok(());
+        }
+
         let check_ids = self
             .store
             .list_checks_for_job(job_id)
@@ -1609,23 +1624,16 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 Ok(notes)
             }
             Err(e) if e.kind == RuntimeErrorKind::InvalidInput => {
-                // Report why, and — when the reason is an
-                // exceptional state — what would unblock it. The
-                // underlying message names the state but not the
-                // remedy, and an agent that captures a patched
-                // candidate against a job awaiting review would
-                // otherwise have no way to tell "my capture was
-                // inert" from "I am expected to resume first".
-                let remedy = if current.state.is_exceptional() {
-                    format!(
-                        " — job is in {}; resume it before a candidate can be activated",
-                        current.state
-                    )
-                } else {
-                    String::new()
-                };
+                // Report why. `handle_set_active_candidate` owns
+                // the reason, including the remedy where one
+                // exists ("resume the job first"), so an agent
+                // that captures a patched candidate against a job
+                // awaiting review can tell "my capture was inert"
+                // from "I am expected to resume first". Appending
+                // a second explanation here would say it twice
+                // with different wording.
                 Ok(vec![format!(
-                    "captured fingerprint {fingerprint} but did not activate it: {}{remedy}",
+                    "captured fingerprint {fingerprint} but did not activate it: {}",
                     e.message
                 )])
             }
@@ -1768,21 +1776,46 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             .await
             .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
 
-        // Candidate capture is only valid in the four pre-build
-        // states. Once we reach `SourceRevision` the candidate is
-        // already committed.
-        let allowed_states = [
-            JobState::EventDetected,
-            JobState::Intake,
-            JobState::SourceReview,
-            JobState::CandidateAssembly,
-        ];
-        if !allowed_states.contains(&current.state) {
+        // A candidate may be (re-)activated at any point before
+        // the job is *decided*. §61's repair loop is "inspect
+        // the failure; capture a new candidate; rerun the
+        // required checks", and §101 walks that loop three
+        // times — the last from `FinalValidation`, after the
+        // mandatory policy obligation has failed. An earlier
+        // guard allowed only the four pre-build states, which
+        // made the repair loop unreachable: the build and QA
+        // failures it repairs happen in `BuildValidation` and
+        // `PackageQaValidation`, and §41's walk moves the job
+        // there on its own.
+        //
+        // What must not happen is swapping the source out from
+        // under a reviewer, so the line is `ReadyForApproval` —
+        // the state that exists so a human looks at *this*
+        // candidate. Before that, re-activation is safe because
+        // of §30's binding: the new candidate has no gate
+        // results of its own, so nothing the old one proved
+        // carries across to authorise it.
+        if current.state.is_decided() {
             return Err(RuntimeError::new(
                 RuntimeErrorKind::InvalidInput,
                 format!(
-                    "cannot set active candidate in state {:?}; expected one of {:?}",
-                    current.state, allowed_states
+                    "cannot set active candidate in state {:?}; the job is past \
+                     ReadyForApproval, so the source under review is committed",
+                    current.state
+                ),
+            ));
+        }
+
+        // Refused for a different reason: a job awaiting human
+        // intervention is not one an agent may quietly re-point
+        // at new source. `EnterHumanReview` already tells the
+        // caller to resume first.
+        if current.state.is_exceptional() {
+            return Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidInput,
+                format!(
+                    "cannot set active candidate in state {:?}; resume the job first",
+                    current.state
                 ),
             ));
         }
