@@ -136,8 +136,14 @@ async fn reconcile_returns_noop_when_no_active_candidate() {
     assert!(matches!(outcome, ReconcileOutcome::NoOp { .. }));
 }
 
+/// §41: reconciliation "may continue through multiple trivially
+/// satisfied stages until reaching a state requiring [agent
+/// action]". With only rule 1 satisfied, the walk advances once
+/// and then reports the rule it could not satisfy next — which is
+/// the shape of every outcome except the two that stop on a state
+/// (`NoOp`) or an actor (`NeedsActorDecision`).
 #[tokio::test]
-async fn reconcile_advances_when_gate_satisfies_rule() {
+async fn reconcile_advances_and_reports_where_it_stopped() {
     let store: Arc<MockStore> = Arc::new(MockStore::new());
     let svc = build_service(store.clone());
     let job_id = seed_projection(&store, JobState::EventDetected, 0).await;
@@ -148,13 +154,13 @@ async fn reconcile_advances_when_gate_satisfies_rule() {
     assert!(
         matches!(
             outcome,
-            ReconcileOutcome::Advanced {
-                from: JobState::EventDetected,
-                to: JobState::Intake,
+            ReconcileOutcome::Blocked {
+                current: JobState::Intake,
+                target: JobState::SourceReview,
                 ..
             }
         ),
-        "expected Advanced to Intake, got {outcome:?}"
+        "expected the walk to advance to Intake and stop on rule 2, got {outcome:?}"
     );
     assert_state(&store, job_id, JobState::Intake).await;
 }
@@ -174,18 +180,34 @@ async fn reconcile_returns_blocked_when_gate_missing() {
     assert_state(&store, job_id, JobState::EventDetected).await;
 }
 
+/// One call, two rules. An implementation that advanced a single
+/// rule per call would leave the job at `Intake` here and report a
+/// second `reconcile` being needed — which is the defect this test
+/// exists to pin: the walk's own `for` loop was silenced with
+/// `#[allow(clippy::never_loop)]` and returned on its first pass.
 #[tokio::test]
-async fn reconcile_walks_chain_to_intake_when_gates_seeded() {
+async fn one_reconcile_walks_every_satisfied_rule() {
     let store: Arc<MockStore> = Arc::new(MockStore::new());
     let svc = build_service(store.clone());
     let job_id = seed_projection(&store, JobState::EventDetected, 0).await;
     let fp = attach_candidate(&store, job_id).await;
     seed_passing_gate(&store, job_id, &fp, GateStage::SourcePreparation).await;
+    seed_passing_gate(&store, job_id, &fp, GateStage::SourceAnalysis).await;
 
-    // One reconcile call should advance exactly one rule.
     let outcome = svc.reconcile(job_id).await.expect("reconcile");
-    assert!(matches!(outcome, ReconcileOutcome::Advanced { .. }));
-    assert_state(&store, job_id, JobState::Intake).await;
+    assert!(
+        matches!(
+            outcome,
+            ReconcileOutcome::Blocked {
+                current: JobState::SourceReview,
+                target: JobState::CandidateAssembly,
+                ..
+            }
+        ),
+        "rules 1 and 2 are satisfied, so the walk should have applied both \
+         before reporting rule 3; got {outcome:?}"
+    );
+    assert_state(&store, job_id, JobState::SourceReview).await;
 }
 
 #[tokio::test]

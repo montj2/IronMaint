@@ -1151,10 +1151,17 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
     /// - exceptional state (`HumanReviewRequired`/`InfrastructureBlocked`) — `Exceptional`
     /// - actor-required transition — `NeedsActorDecision`
     /// - concurrent-modification contention — `ConcurrentModification`
-    /// - bounded loop overflow — `NoOp` (defensive; never expected)
+    /// - bounded loop overflow — the last transition it applied
+    ///   (defensive; the rule table is acyclic, so unreachable)
     pub async fn reconcile(&self, job_id: JobId) -> Result<ReconcileOutcome, RuntimeError> {
-        #[allow(clippy::never_loop)]
-        for _ in 0..15u32 {
+        // The walk is bounded by the rule count: every rule moves
+        // a job forward along §20's path, so the loop terminates
+        // well inside this bound, and `rules + 1` iterations
+        // guarantees the last iteration is the one that *reports*
+        // where the walk stopped rather than being consumed by a
+        // transition.
+        let mut last_advance: Option<ReconcileOutcome> = None;
+        for _ in 0..=ironmaint_state::TRANSITION_RULES.len() {
             let projection = self
                 .store
                 .get_projection(job_id)
@@ -1283,11 +1290,20 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                     .await
                 {
                     Ok(t) => {
-                        return Ok(ReconcileOutcome::Advanced {
+                        // §41: "Reconciliation may continue through
+                        // multiple trivially satisfied stages until
+                        // reaching a state requiring [agent
+                        // action]." So keep walking, re-reading the
+                        // projection each time — it moved. If the
+                        // walk ends without a stop reason of its
+                        // own (the bound below), the last
+                        // transition is what gets reported.
+                        last_advance = Some(ReconcileOutcome::Advanced {
                             from: t.from,
                             to: t.to,
                             rule_index: idx,
                         });
+                        continue;
                     }
                     Err(e) if e.kind == RuntimeErrorKind::ConcurrentModification => {
                         return Ok(ReconcileOutcome::ConcurrentModification);
@@ -1311,18 +1327,15 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                     blockers: format_blocker_list(&blockers),
                 });
             }
-            // No rule applied for `current` — loop terminates.
+            // No rule applied for `current` — the walk has stopped.
             return Ok(ReconcileOutcome::NoOp { current });
         }
-        // Defensive: shouldn't hit 15 iterations in practice.
-        let projection = self
-            .store
-            .get_projection(job_id)
-            .await
-            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, format!("{e}")))?;
-        Ok(ReconcileOutcome::NoOp {
-            current: projection.state,
-        })
+        // Bound reached without a stop reason. Unreachable while the
+        // rule table is acyclic; reported as the last real transition
+        // rather than as a no-op, because the projection *did* move.
+        Ok(last_advance.unwrap_or(ReconcileOutcome::NoOp {
+            current: JobState::EventDetected,
+        }))
     }
 
     /// `CaptureCandidate`: persist a freshly minted `SourceCandidate`
