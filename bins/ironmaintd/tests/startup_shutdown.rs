@@ -555,3 +555,201 @@ async fn sigterm_drains_and_exits_zero() {
         "a graceful drain must exit 0: {status:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The adapter registry (§67), over the wire
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
+    // The D-03 test, at the level the agent actually meets it.
+    // Before 0B.10 C1, `candidate.capture` persisted a row and
+    // stopped: nothing set the active candidate, so `reconcile`
+    // reported `NoOp` forever and an agent could capture candidates
+    // until it ran out of context without the job moving.
+    //
+    // Now capture activates the candidate and asks the registered
+    // `debian-stub` adapter what the candidate requires. The gates
+    // it derives name `debian.*` tools, which are not executable in
+    // 0B — but `next_actions` naming them, rather than silence, is
+    // the whole difference this test pins.
+    let d = Daemon::start().await;
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no job_id in {created}"))
+        .to_string();
+
+    let captured = d
+        .call(
+            "candidate.capture",
+            json!({
+                "job_id": job_id,
+                "package": {
+                    "distribution": {"family": "debian", "release": "sid"},
+                    "source_name": "ironmaint-daemon-fixture",
+                    "binary_names": [],
+                },
+                "repository_url": "https://example.invalid/ironmaint-daemon-fixture.git",
+            }),
+        )
+        .await;
+    let fingerprint = captured["fingerprint"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no fingerprint in {captured}"))
+        .to_string();
+    assert!(!fingerprint.is_empty(), "{captured}");
+
+    // The capture narrates what it did, so an agent can tell an
+    // inert capture from a working one.
+    let notes: Vec<&str> = captured["notes"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no notes array in {captured}"))
+        .iter()
+        .filter_map(Value::as_str)
+        .collect();
+    assert!(
+        notes.iter().any(|n| n.contains("activated fingerprint")),
+        "capture must report the activation: {notes:?}"
+    );
+    assert!(
+        notes.iter().any(|n| n.contains("materialized 4 check(s)")),
+        "the debian stub plans one build and three QA checks; all four \
+         must reach the store: {notes:?}"
+    );
+    assert!(
+        notes.iter().any(|n| n.contains("derived 2 obligation(s)")),
+        "the debian policy plan carries two templates: {notes:?}"
+    );
+
+    // 1. The job now knows which candidate it is evaluating.
+    let fetched = d.call("job.get", json!({"job_id": job_id})).await;
+    assert!(
+        fetched["projection"]["active_candidate"].is_string(),
+        "capture must activate the candidate, or nothing downstream can \
+         be candidate-scoped: {fetched}"
+    );
+
+    // 2. Every derived gate is actionable, by check id — which is
+    //    the only form `check.run` accepts. The agent is still at
+    //    `EventDetected`, and it must be able to run the build
+    //    check there: §101 does exactly that, four candidates deep,
+    //    before the job advances a single state.
+    //
+    //    The `blockers` array is empty at this state, and that is
+    //    correct rather than a gap: the state machine has no
+    //    *pending gate* until the job reaches `SourceIntegrity`, so
+    //    there is nothing for `GatePending` to say yet. Runnability
+    //    is a fact about the store; pendingness is a fact about the
+    //    state machine, and only the latter waits for `reconcile`.
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let allowed = next["actions"]["allowed"]
+        .as_array()
+        .unwrap_or_else(|| panic!("no allowed array in {next}"));
+    let run_checks: Vec<&str> = allowed
+        .iter()
+        .filter_map(|a| a.get("run_check")?.get("check_id")?.as_str())
+        .collect();
+    assert_eq!(
+        run_checks.len(),
+        4,
+        "the debian stub plans one build and three QA checks, so exactly \
+         four must be offered: {next}"
+    );
+    assert!(
+        run_checks.iter().all(|id| !id.is_empty()),
+        "each offered check must carry the id check.run needs: {next}"
+    );
+
+    // 3. Running one of them is refused cleanly, not silently, and
+    //    names the tool that is missing. `debian.build.sbuild` is a
+    //    real planned key with no registered tool behind it in 0B,
+    //    and the agent should be told that rather than left to
+    //    wonder why its capture did not move the job.
+    //    `d.call` panics on an error response, which is the right
+    //    default but the wrong tool here: the refusal *is* the
+    //    assertion. Go in at the JSON-RPC level.
+    let body: Value = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {"job_id": job_id, "check_id": run_checks[0]},
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await
+        .json()
+        .await
+        .expect("json");
+    assert_eq!(
+        body["error"],
+        Value::Null,
+        "an unknown tool is a tool error, not a protocol error: {body}"
+    );
+    assert_eq!(body["result"]["isError"], true, "{body}");
+    let message = body["result"]["structuredContent"]["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains("debian.build.sbuild"),
+        "an unrunnable 0B tool must be reported by name, so the agent \
+         knows which gate it is blocked on rather than guessing: {message}"
+    );
+}
+
+#[tokio::test]
+async fn a_family_the_daemon_has_no_adapter_for_still_captures() {
+    // The registry is keyed by family, and a miss must be a
+    // diagnostic, not a failure: refusing the capture would make a
+    // candidate for an unknown distribution unrepresentable.
+    let d = Daemon::start().await;
+    let created = d
+        .call(
+            "job.create",
+            json!({
+                "orchestrator": {"kind": "ironclaw"},
+                "package": {
+                    "distribution": {"family": "arch", "release": "rolling"},
+                    "source_name": "ironmaint-daemon-fixture",
+                    "binary_names": [],
+                },
+            }),
+        )
+        .await;
+    let job_id = created["job_id"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no job_id in {created}"))
+        .to_string();
+
+    let captured = d
+        .call(
+            "candidate.capture",
+            json!({
+                "job_id": job_id,
+                "package": {
+                    "distribution": {"family": "arch", "release": "rolling"},
+                    "source_name": "ironmaint-daemon-fixture",
+                    "binary_names": [],
+                },
+                "repository_url": "https://example.invalid/ironmaint-daemon-fixture.git",
+            }),
+        )
+        .await;
+    assert!(
+        captured["fingerprint"].is_string(),
+        "an unregistered family must still capture: {captured}"
+    );
+
+    // Activation does not depend on the adapter, so the job is
+    // still evaluable — it simply has no derived gates.
+    let fetched = d.call("job.get", json!({"job_id": job_id})).await;
+    assert!(
+        fetched["projection"]["active_candidate"].is_string(),
+        "activation is a fact about the job, not about the adapter: {fetched}"
+    );
+}

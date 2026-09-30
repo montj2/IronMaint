@@ -46,7 +46,7 @@ use std::sync::Arc;
 use ironmaint_artifacts::{ArtifactRoot, ArtifactStore};
 use ironmaint_executor::{ProcessEnvironment, ProcessExecutor, ToolRegistry};
 use ironmaint_mcp::{IronMaintMcpServer, McpRuntime, TokenValidator, default_config, router};
-use ironmaint_runtime::{RuntimeService, SystemClock};
+use ironmaint_runtime::{AdapterRegistry, RuntimeService, SystemClock};
 use ironmaint_store_sqlite::{SqliteStore, SqliteStoreConfig};
 use ironmaint_synthetic_tools::register_synthetic_tools;
 use ironmaint_workspace::WorkspaceManager;
@@ -247,13 +247,41 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
         Arc::clone(&store),
     ));
 
+    // --- adapter registry (§67) ---
+    //
+    // One process serves every distribution it has an adapter for.
+    // The registry is keyed by each adapter's own declared family,
+    // so this is where the two stubs enter the system; the runtime
+    // never learns what "debian" means, only which adapter claims
+    // it.
+    //
+    // What these stubs plan is real (§45 check planning, §48 policy
+    // derivation) but not yet *runnable*: they name `debian.*` and
+    // `fedora.*` tool keys, and the only tools registered in 0B are
+    // the `synthetic.*` fixtures. A captured candidate therefore
+    // activates, materialises its gates and derives its obligations
+    // — and `check.run` on one of those gates reports the tool as
+    // unknown, which is the honest answer. That visibility is the
+    // point: the alternative was a job that silently never left
+    // `EventDetected` (doc/DEBT.md D-03).
+    let mut adapters = AdapterRegistry::empty();
+    adapters.register(Arc::new(debian_stub::DebianStubAdapter::new()));
+    adapters.register(Arc::new(fedora_stub::FedoraStubAdapter::new()));
+    tracing::info!(
+        families = ?adapters.families(),
+        "adapter registry loaded"
+    );
+
     // --- runtime service ---
-    let service = Arc::new(RuntimeService::new(
-        Arc::clone(&store),
-        Arc::new(SystemClock),
-        executor,
-        registry,
-    ));
+    let service = Arc::new(
+        RuntimeService::new(
+            Arc::clone(&store),
+            Arc::new(SystemClock),
+            executor,
+            registry,
+        )
+        .with_adapters(adapters),
+    );
 
     let runtime = McpRuntime::new(service).with_workspace(workspace);
 
@@ -283,11 +311,14 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
         artifacts_root = %config.artifacts_root.display(),
         "configuration"
     );
-    // §67's remaining steps, stated rather than omitted.
+    // §67's remaining step, stated rather than omitted. No
+    // `PrivilegedOperation` is ever created in 0B (§4.10, §26,
+    // §99), so there is nothing in flight to recover; the scan
+    // belongs to the privileged service, which does not exist yet.
     tracing::info!(
-        "recover interrupted operations: deferred to 0B.10 (no operations are in flight)"
+        "recover interrupted operations: no privileged service in 0B, \
+         so no operation can be in flight"
     );
-    tracing::info!("adapter registry: deferred to Phase 1 (synthetic tools only)");
 
     // --- serve until signalled (§68) ---
     //

@@ -1311,6 +1311,9 @@ name = "ironmaintd"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "debian-stub",
+ "fedora-stub",
+ "ironmaint-adapter-api",
  "ironmaint-artifacts",
  "ironmaint-executor",
  "ironmaint-mcp",

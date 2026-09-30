@@ -24,6 +24,9 @@ path = "src/main.rs"
 
 [dependencies]
 axum = { workspace = true }
+debian-stub = { path = "../../adapters/debian-stub" }
+fedora-stub = { path = "../../adapters/fedora-stub" }
+ironmaint-adapter-api = { path = "../../crates/ironmaint-adapter-api" }
 ironmaint-artifacts = { path = "../../crates/ironmaint-artifacts" }
 ironmaint-executor = { path = "../../crates/ironmaint-executor" }
 ironmaint-mcp = { path = "../../crates/ironmaint-mcp" }

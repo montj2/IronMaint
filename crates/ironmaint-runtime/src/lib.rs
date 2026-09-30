@@ -29,6 +29,7 @@
     )
 )]
 
+pub mod adapters;
 pub mod check;
 pub mod clock;
 pub mod command;
@@ -41,6 +42,7 @@ pub mod query;
 pub mod reconcile;
 pub mod service;
 
+pub use adapters::AdapterRegistry;
 pub use check::{
     MaterialisedCheck, evaluate_gate, gate_stage_for, persist_materialised, plan_to_materialised,
 };

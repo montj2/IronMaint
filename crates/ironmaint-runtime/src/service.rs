@@ -30,6 +30,7 @@ use ironmaint_store::CheckDefinition;
 use ironmaint_store::IronMaintStore;
 use ironmaint_store::envelope::EventEnvelope;
 
+use crate::adapters::AdapterRegistry;
 use crate::clock::Clock;
 use crate::command::RuntimeCommand;
 use crate::error::{RuntimeError, RuntimeErrorKind};
@@ -62,6 +63,7 @@ pub struct RuntimeService<S: IronMaintStore + ?Sized, E: Executor + ?Sized> {
     clock: Arc<dyn Clock>,
     executor: Arc<E>,
     registry: Arc<ToolRegistry>,
+    adapters: AdapterRegistry,
 }
 
 impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> std::fmt::Debug for RuntimeService<S, E> {
@@ -83,7 +85,32 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             clock,
             executor,
             registry,
+            adapters: AdapterRegistry::empty(),
         }
+    }
+
+    /// Attach a distribution adapter registry, the PHASE-0B.md
+    /// §67 "load adapter registry" startup step.
+    ///
+    /// A builder rather than a fifth [`new`] argument: the
+    /// registry is optional (a runtime with no adapters still
+    /// captures candidates, it just derives no checks), and 28
+    /// existing construction sites — every one of them a test —
+    /// should not have to spell out `AdapterRegistry::empty()`.
+    ///
+    /// Consuming and returning `Self` lets the daemon chain
+    /// `.with_adapters(...)` onto the `Arc::new(...)` it already
+    /// builds, without a second mutable binding.
+    #[must_use]
+    pub fn with_adapters(mut self, adapters: AdapterRegistry) -> Self {
+        self.adapters = adapters;
+        self
+    }
+
+    /// The adapter registry this runtime derives plans from.
+    #[must_use]
+    pub fn adapters(&self) -> &AdapterRegistry {
+        &self.adapters
     }
 
     pub async fn handle_command(&self, cmd: RuntimeCommand) -> Result<CommandResult, RuntimeError> {
@@ -211,14 +238,17 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         job_id: JobId,
         actions: &mut JobNextActions,
     ) -> Result<(), RuntimeError> {
-        let pending = actions
-            .blockers
-            .iter()
-            .any(|b| matches!(b, ActionBlocker::GatePending { .. }));
-        if !pending {
-            return Ok(());
-        }
-
+        // Which checks an agent may run is a fact about the store,
+        // not about what the state machine currently wants. A
+        // materialised check is runnable the moment it is bound to
+        // the active candidate, and §101 depends on that: it runs a
+        // build, reads the failure, patches, captures a new
+        // candidate, and runs again — all before the job advances a
+        // single state.
+        //
+        // Gating this on `GatePending` (as it used to) meant a job
+        // at `EventDetected` advertised no runnable check at all,
+        // even though capture had just materialised four.
         let check_ids = self
             .store
             .list_checks_for_job(job_id)
@@ -232,11 +262,37 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             return Ok(());
         }
 
+        // Only the active candidate's checks are runnable:
+        // `handle_run_check` rejects a stale fingerprint (§30
+        // evidence freshness), and advertising an action the
+        // runtime will refuse is worse than advertising nothing.
+        let active = self
+            .store
+            .get_projection(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?
+            .active_candidate;
+        let active = match active {
+            Some(id) => self
+                .store
+                .get_source_candidate(id)
+                .await
+                .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?
+                .fingerprint()
+                .clone(),
+            // No active candidate: nothing is runnable yet, and the
+            // `CaptureCandidate` action is already on the list.
+            None => return Ok(()),
+        };
+
         let mut first_key: Option<String> = None;
         for check_id in check_ids {
             let Ok(check) = self.store.get_check(check_id).await else {
                 continue;
             };
+            if check.candidate != active {
+                continue;
+            }
             let key = check.capability.as_str().to_string();
             if first_key.is_none() {
                 first_key = Some(key);
@@ -853,12 +909,292 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
 
         let side_effect = format!("source_candidate:{candidate_id} captured for job {job_id}");
+        let mut side_effects = vec![side_effect];
+        side_effects.extend(self.derive_candidate_plans(job_id, &candidate).await?);
 
         Ok(CommandResult {
             new_version: 0,
             new_sequence: sequence,
-            side_effects: vec![side_effect],
+            side_effects,
         })
+    }
+
+    /// Derive the durable contracts a captured candidate needs, in
+    /// the one place a candidate comes into existence.
+    ///
+    /// Capture is the *only* production path that reaches
+    /// `SetActiveCandidate`, `MaterializeChecks`, and
+    /// `put_obligation`. Before this existed all three were
+    /// reachable from tests alone, so an orchestrator driving the
+    /// tool surface could capture candidates forever and never
+    /// leave `EventDetected` (D-03 in `doc/DEBT.md`).
+    ///
+    /// Three steps, each independently idempotent:
+    ///
+    /// 1. **Activate** the candidate, so `job.get` and
+    ///    `reconcile` know what they are evaluating.
+    /// 2. **Materialise checks** from the adapter's
+    ///    `build_plan` / `qa_plan`, minting one `GateDefinition`
+    ///    per planned check.
+    /// 3. **Derive obligations** from the adapter's
+    ///    `PolicyPlan`, one `Obligation` per template.
+    ///
+    /// Idempotence matters because `CaptureCandidate` is
+    /// itself idempotent on fingerprint: re-capturing an existing
+    /// candidate must not mint a second `GateDefinition` for the
+    /// same stage (`GateDefinition::new` auto-mints its id, so
+    /// there is no natural uniqueness key to fall back on) or a
+    /// duplicate set of obligations.
+    ///
+    /// Returns human-readable notes for the command's
+    /// `side_effects`. Deriving nothing is a *success* with a
+    /// note, not an error: a family with no registered adapter is
+    /// a legitimate state in 0B, and failing the capture would
+    /// make the candidate unrepresentable.
+    async fn derive_candidate_plans(
+        &self,
+        job_id: JobId,
+        candidate: &SourceCandidate,
+    ) -> Result<Vec<String>, RuntimeError> {
+        let fingerprint = candidate.fingerprint().clone();
+
+        // Activation first, and unconditionally. Whether a
+        // candidate is *the* candidate is a fact about the job,
+        // not a function of whether an adapter exists for its
+        // distribution: `reconcile` and `job.get` both need it
+        // either way. Deriving is the adapter-dependent half.
+        let mut notes = self.activate_candidate(job_id, &fingerprint).await?;
+
+        let family = &candidate.package().package.distribution.family;
+        let Some(adapter) = self.adapters.get(family) else {
+            notes.push(format!(
+                "no adapter registered for family `{family}`; \
+                 no checks or obligations derived for fingerprint {fingerprint}"
+            ));
+            return Ok(notes);
+        };
+
+        // Checks. `list_checks_for_job` is per job, so filter to
+        // this candidate: a repaired job legitimately holds checks
+        // for several fingerprints, and only the active one's gates
+        // may be materialised.
+        let check_ids = self
+            .store
+            .list_checks_for_job(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        let mut already_planned = false;
+        for check_id in check_ids {
+            match self.store.get_check(check_id).await {
+                Ok(check) if check.candidate == fingerprint => {
+                    already_planned = true;
+                    break;
+                }
+                Ok(_) => {}
+                // A check row we cannot read is a store
+                // inconsistency, not a reason to duplicate the
+                // plan. Skip it and let the unique constraint
+                // speak if it matters.
+                Err(_) => {}
+            }
+        }
+
+        if already_planned {
+            notes.push(format!(
+                "checks already materialised for fingerprint {fingerprint}; left unchanged"
+            ));
+        } else {
+            let planned = self.plan_checks(adapter.as_ref(), candidate)?;
+            // Only narrate a real materialisation.
+            // `handle_materialize_checks` reports the count
+            // itself, and an adapter that plans nothing is not
+            // news.
+            if !planned.is_empty() {
+                notes.extend(
+                    self.handle_materialize_checks(job_id, fingerprint.clone(), planned)
+                        .await?
+                        .side_effects,
+                );
+            }
+        }
+
+        // Obligations. Same shape: derive from the adapter's
+        // PolicyPlan, once per candidate.
+        let obligation_ids = self
+            .store
+            .list_obligations_for_job(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+        let mut obligations_exist = false;
+        for obligation_id in obligation_ids {
+            match self.store.get_obligation(obligation_id).await {
+                Ok(obligation) if obligation.candidate == fingerprint => {
+                    obligations_exist = true;
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => {}
+            }
+        }
+
+        if obligations_exist {
+            notes.push(format!(
+                "obligations already derived for fingerprint {fingerprint}; left unchanged"
+            ));
+        } else {
+            let obligations = self.plan_obligations(adapter.as_ref(), candidate, &fingerprint)?;
+            let count = obligations.len();
+            for obligation in &obligations {
+                self.store
+                    .put_obligation(obligation, job_id)
+                    .await
+                    .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+            }
+            if count > 0 {
+                notes.push(format!(
+                    "derived {count} obligation(s) for fingerprint {fingerprint}"
+                ));
+            }
+        }
+
+        Ok(notes)
+    }
+
+    /// Attach `fingerprint` to the job as its active candidate,
+    /// unless it already is.
+    ///
+    /// The ineligible-state case is reported, not raised. A
+    /// candidate captured after the job has advanced past
+    /// `CandidateAssembly` is real — that is the repair loop — but
+    /// re-entry is a state-machine question (0A §21) that the
+    /// runtime does not answer by fiat. Recording the fact in
+    /// `side_effects` keeps it visible without this function
+    /// claiming authority it does not have.
+    async fn activate_candidate(
+        &self,
+        job_id: JobId,
+        fingerprint: &CandidateFingerprint,
+    ) -> Result<Vec<String>, RuntimeError> {
+        let current = self
+            .store
+            .get_projection(job_id)
+            .await
+            .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+
+        // `active_candidate` is a `CandidateId`, but the command
+        // carries a fingerprint. Resolve one to the other through
+        // the store rather than comparing unlike types: a
+        // re-capture is identified by its fingerprint, and the
+        // fingerprint is the immutable identity of the source
+        // revision.
+        let already_active = match self.store.find_source_by_fingerprint(fingerprint).await {
+            Ok(Some(candidate_id)) => current.active_candidate.as_ref() == Some(&candidate_id),
+            Ok(None) => false,
+            Err(e) => {
+                return Err(RuntimeError::new(RuntimeErrorKind::Store, e.to_string()));
+            }
+        };
+        if already_active {
+            return Ok(vec![format!(
+                "fingerprint {fingerprint} was already the active candidate"
+            )]);
+        }
+
+        match self
+            .handle_set_active_candidate(job_id, fingerprint.clone())
+            .await
+        {
+            Ok(result) => {
+                let mut notes = result.side_effects;
+                notes.push(format!("activated fingerprint {fingerprint}"));
+                Ok(notes)
+            }
+            Err(e) if e.kind == RuntimeErrorKind::InvalidInput => Ok(vec![format!(
+                "captured fingerprint {fingerprint} but did not activate it: {}",
+                e.message
+            )]),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Ask `adapter` for the build and QA checks this candidate
+    /// requires, flattened into the tuples
+    /// [`handle_materialize_checks`] consumes.
+    ///
+    /// Both phases are optional on the capability: an adapter may
+    /// plan builds but not QA. The `AdapterDescriptor` advertises
+    /// which, but `build()` returning `None` is the authoritative
+    /// signal and is what the trait doc requires, so that is what
+    /// is honoured here.
+    fn plan_checks(
+        &self,
+        adapter: &dyn ironmaint_adapter_api::DistributionAdapter,
+        candidate: &SourceCandidate,
+    ) -> Result<Vec<(ToolCapabilityKey, ironmaint_evidence::EvidenceKind, bool)>, RuntimeError>
+    {
+        let Some(build) = adapter.build() else {
+            return Ok(Vec::new());
+        };
+        let ctx = ironmaint_adapter_api::contexts::CandidateContext {
+            package: candidate.package(),
+            candidate,
+        };
+        let build_plan = build.build_plan(&ctx).map_err(adapter_error)?;
+        let qa_plan = build.qa_plan(&ctx).map_err(adapter_error)?;
+        Ok(build_plan
+            .checks
+            .into_iter()
+            .chain(qa_plan.checks)
+            .map(|p| (p.key, p.evidence_kind, p.mandatory))
+            .collect())
+    }
+
+    /// Ask `adapter`'s policy capability for the obligations this
+    /// candidate carries, bound to `fingerprint` and starting at
+    /// `NotEvaluated`.
+    ///
+    /// The runtime holds no `PolicyBaseline` store, so
+    /// `requested_baseline` is `None` and the adapter derives its
+    /// own from the candidate's distribution. That matches what
+    /// the conformance suite passes and is the honest answer for
+    /// 0B: a baseline that no policy document produced should not
+    /// be fabricated here.
+    fn plan_obligations(
+        &self,
+        adapter: &dyn ironmaint_adapter_api::DistributionAdapter,
+        candidate: &SourceCandidate,
+        fingerprint: &CandidateFingerprint,
+    ) -> Result<Vec<ironmaint_policy::Obligation>, RuntimeError> {
+        let Some(policy) = adapter.policy() else {
+            return Ok(Vec::new());
+        };
+        let ctx = ironmaint_adapter_api::contexts::PolicyContext {
+            package: candidate.package(),
+            candidate,
+            requested_baseline: None,
+        };
+        let plan = policy.derive_obligation_plan(&ctx).map_err(adapter_error)?;
+        plan.obligation_templates
+            .into_iter()
+            .map(|template| {
+                ironmaint_policy::Obligation::new(
+                    fingerprint.clone(),
+                    template.reference,
+                    template.strength,
+                    template.applicability,
+                    template.requirement,
+                )
+                .map_err(|reason| {
+                    RuntimeError::new(
+                        RuntimeErrorKind::InvalidInput,
+                        format!(
+                            "adapter {} produced an unusable obligation: {reason}",
+                            adapter.descriptor().implementation_name
+                        ),
+                    )
+                })
+            })
+            .collect()
     }
 
     /// `MaterializeChecks`: convert adapter `PlannedCheck`s into
@@ -1426,25 +1762,71 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
     }
 }
 
+/// Map an [`ironmaint_adapter_api::AdapterError`] onto the
+/// runtime's error vocabulary.
+///
+/// The adapter's own kind is always preserved in the message.
+/// Two kinds get a dedicated runtime kind because callers already
+/// branch on them: `Unsupported` means the capability does not
+/// exist (and must not be confused with "failed"), and the
+/// malformed-package kinds mean the *input* was bad. Everything
+/// else — a policy backend that could not be reached, an external
+/// system that failed — is `Other` carrying the adapter's kind,
+/// because none of them is a store, workspace, or executor fault
+/// and none of them is the caller's fault either.
+fn adapter_error(e: ironmaint_adapter_api::AdapterError) -> RuntimeError {
+    use ironmaint_adapter_api::AdapterErrorKind as K;
+    let kind = match e.kind {
+        K::Unsupported => RuntimeErrorKind::Unsupported,
+        K::InvalidPackage
+        | K::InvalidVersion
+        | K::InvalidConfiguration
+        | K::MissingRequiredMetadata => RuntimeErrorKind::InvalidInput,
+        K::PolicyUnavailable
+        | K::HumanReviewRequired
+        | K::ExternalTransient
+        | K::ExternalPermanent
+        | K::InternalAdapterFailure => RuntimeErrorKind::Other(e.kind.name().to_string()),
+        // `AdapterErrorKind` is `#[non_exhaustive]`. A kind added
+        // after this match is reported as `Other` carrying its own
+        // name rather than folded into a neighbouring arm —
+        // mislabelling a new failure mode is worse than an
+        // imprecise one.
+        _ => RuntimeErrorKind::Other(e.kind.name().to_string()),
+    };
+    RuntimeError::new(
+        kind,
+        format!("adapter error [{}]: {}", e.kind.name(), e.message),
+    )
+}
+
 /// True if the job state can record evidence from a runtime
-/// check. Pre-capture states (EventDetected..CandidateAssembly)
-/// have no active candidate fingerprint and cannot materialise
-/// checks; the handler rejects them.
+/// check.
+///
+/// Every state that is neither terminal nor exceptional qualifies.
+/// Terminal states have nothing left to verify, and the two
+/// exceptional states are waiting on a human or on infrastructure
+/// — running a check would not resolve either.
+///
+/// **This used to exclude `EventDetected`..`CandidateAssembly`**, on
+/// the grounds that "pre-capture states have no active candidate
+/// fingerprint and cannot materialise checks". As of 0B.10 C1 that
+/// reasoning is obsolete: `CaptureCandidate` now activates the
+/// candidate and materialises its gates in the same call, so those
+/// states routinely hold an active candidate with checks already
+/// bound to it. Requiring the job to advance first would invert the
+/// dependency — the job cannot advance without gate results, and
+/// gate results cannot be produced without running checks.
+///
+/// The conditions that actually matter are enforced separately and
+/// still are: `handle_run_check` rejects a job with no active
+/// candidate, and rejects a check whose fingerprint is not the
+/// active one (§30 evidence freshness).
 fn post_capture_state(state: ironmaint_core::JobState) -> bool {
     use ironmaint_core::JobState as S;
-    matches!(
+    !matches!(
         state,
-        S::SourceRevision
-            | S::SourceIntegrity
-            | S::BuildValidation
-            | S::PackageQaValidation
-            | S::FunctionalValidation
-            | S::UpgradeValidation
-            | S::ReleaseReview
-            | S::FinalValidation
-            | S::ReadyForApproval
-            | S::Approved
-            | S::PublicationPending
+        S::Published | S::Cancelled | S::HumanReviewRequired | S::InfrastructureBlocked
     )
 }
 

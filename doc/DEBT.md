@@ -54,7 +54,7 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 |---|---|---|---|
 | D-01 | HIGH | `ironmaint-store` and `ironmaint-store-sqlite` inherit no lint set — the no-panic and no-unsafe policies are unenforced in the persistence layer | OPEN |
 | D-02 | HIGH | The spec-designated `SKILL.md` is stale and documents a wire format the server rejects | OPEN |
-| D-03 | HIGH | A job cannot advance past `EventDetected`; 5 of 9 runtime commands and 1 of 5 queries have no MCP entry point, and `next_actions` overloads `allowed` as both "moves you can make" and "this needs a human" | DECIDED — wire split + enforcement test at top of 0B.10; tool-surface fix is Phase 1's first acceptance criterion |
+| D-03 | HIGH | A job cannot advance past `EventDetected`; 5 of 9 runtime commands and 1 of 5 queries have no MCP entry point, and `next_actions` overloads `allowed` as both "moves you can make" and "this needs a human" | **PARTLY CLOSED** by 0B.10 C1 — the three missing production links (activate, materialise, derive) now have one caller each. The `allowed` wire split + enforcement test remain open |
 | D-04 | MEDIUM | `dead_code = "warn"` carries a promise ("promoted once 0A.6 lands") that was never kept | OPEN |
 | D-05 | MEDIUM | 4 of 6 `#[allow(dead_code)]` sites are vestigial, two with false justifications | OPEN |
 | D-06 | MEDIUM | `mcp-registration.yaml` field names never round-tripped through a real `ironclaw extension install` | OPEN (no binary available) |
@@ -318,6 +318,51 @@ an active candidate, `EventDetected → Intake` requires a `SourcePreparation` g
 that only an adapter's `PlannedCheck` can materialise. So §95's exit checkpoint
 ("drive to `ReadyForApproval`") is unreachable through the tool surface, while
 §102 reports the surrounding claims as met.
+
+### RESOLVED IN PART (0B.10 C1): one production caller for all three links
+
+All three orphaned stores methods had the *same* shape — a fully-implemented
+handler with no production caller — so C1 fixed them together rather than one at a
+time. `RuntimeService` gained an `AdapterRegistry` (`adapters.rs`, keyed by each
+adapter's own declared `AdapterDescriptor::family`), attached with a
+`.with_adapters(…)` builder so no existing construction site changed. The daemon
+registers `debian-stub` and `fedora-stub` at startup, replacing the
+`adapter registry: deferred to Phase 1` log line.
+
+`handle_capture_candidate` now drives, in one call:
+
+| Link | Store method | Caller before C1 | Caller after |
+|---|---|---|---|
+| activate candidate | `set_active_source_candidate` | none | capture |
+| materialise checks | `put_gate_definition`, `put_check` | none | capture, via the adapter's `build_plan` / `qa_plan` |
+| derive obligations | `put_obligation` | none | capture, via the adapter's `PolicyPlan` |
+
+**What is still not true, and why that is now visible rather than hidden.** The
+adapters plan `debian.*` / `fedora.*` tool keys; the only registered tools in 0B
+are the `synthetic.*` fixtures. So a captured `debian` job activates and gets four
+materialised gates, and `check.run` on one reports
+`no tool registered for capability debian.build.sbuild`. That is a strictly
+better failure than the old one — before, the job sat at `EventDetected` forever
+and `next_actions` said only "capture_candidate", which looks identical to an agent
+that is doing everything right.
+
+Two further guards had to move with it, and both had a *false* stated rationale
+that the fix exposes:
+
+- **`post_capture_state`** refused `check.run` in `EventDetected`..
+  `CandidateAssembly` on the grounds that "pre-capture states have no active
+  candidate fingerprint and cannot materialise checks". C1 makes those states
+  routinely hold both. The guard is now "not terminal, not exceptional"; the two
+  conditions that actually matter (an active candidate exists, and the check's
+  fingerprint is the active one) were already enforced separately.
+- **`attach_pending_checks`** offered `RunCheck` only once the state machine had
+  emitted a `GatePending` blocker, which cannot happen before the job reaches
+  `SourceIntegrity`. Runnability is a fact about the store; pendingness is a fact
+  about the state machine. Mixing them meant a job at `EventDetected` advertised
+  no runnable check despite having just materialised four.
+
+`candidate.capture` now returns its side effects as `notes` on `CaptureOutput`, so
+an agent can tell an inert capture from a working one without a second round trip.
 
 The test file `crates/ironmaint-mcp/tests/check_and_operation.rs:131-134` states
 the design contract explicitly: *"0B.9 does not add a `check.materialize` tool —

@@ -248,7 +248,7 @@ async fn dispatch_capture<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
     // records the audit envelope in the job's event log without
     // writing a second row. `candidate_capture_is_idempotent`
     // pins that.
-    runtime
+    let result = runtime
         .service
         .handle_command(RuntimeCommand::CaptureCandidate {
             job_id: input.job_id,
@@ -257,7 +257,14 @@ async fn dispatch_capture<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         .await
         .map_err(|e| McpError::Runtime(e.message))?;
 
-    let out = crate::tools::candidate::CaptureOutput { fingerprint };
+    // The side effects are returned rather than logged: they are the
+    // only place an agent can learn that the candidate was not
+    // activated, or that no adapter claims its family, or that the
+    // adapter it did find plans no gates. See `CaptureOutput::notes`.
+    let out = crate::tools::candidate::CaptureOutput {
+        fingerprint,
+        notes: result.side_effects,
+    };
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 

@@ -195,20 +195,28 @@ extension is installed and advertises `job.create`.
 
 ### What the smoke test does *not* prove
 
-It does not drive a job to `ReadyForApproval`, and no agent can. See
-`doc/PHASE-0B-COMPLETION.md` §16.8: the runtime commands that advance a job
-past `EventDetected` — `SetActiveCandidate` and `MaterializeChecks` — are
-invoked by tests only. A real distribution adapter is what supplies them, and
-that is Phase 1 (§106). The nine tools below are all live and all do real work;
-what is missing is the adapter that seeds the checks the state machine walks.
+It does not drive a job to `ReadyForApproval`. `candidate.capture` activates
+the candidate and derives its gates and obligations (0B.10 C1), so a job no
+longer sits at `EventDetected` forever — but the gates it derives name
+`debian.*` / `fedora.*` tool keys, and the only tools registered in 0B are the
+`synthetic.*` fixtures. `check.run` on a derived gate therefore reports the
+tool as unknown. That is the honest state of 0B, and it is visible rather than
+silent: `job.next_actions` names the pending gate and the tool key it is
+waiting on.
 
-| Tool | State in 0B.9 |
+| Tool | State in 0B.10 |
 |---|---|
 | `job.create`, `job.get`, `job.next_actions`, `job.reconcile` | live |
-| `candidate.capture` | live — reads the real HEAD commit and tree OID |
-| `check.run` | live — runs the tool, records evidence, updates the gate |
+| `candidate.capture` | live — reads the real HEAD commit and tree OID, then activates the candidate and derives its gates and obligations from the registered adapter |
+| `check.run` | live — runs the tool, records evidence, updates the gate; reports `unknown tool` for a `debian.*`/`fedora.*` key until Phase 1 registers real ones |
 | `workspace.stat`, `workspace.apply_patch` | live — real revision, real `git apply` |
-| `operation.get` | live — reads the operation store |
+| `operation.get` | live — reads the operation store; always empty in 0B, since §4.10/§26/§99 forbid creating a privileged operation |
+
+The daemon logs which adapter families it loaded at startup:
+
+```text
+adapter registry loaded families=["debian", "fedora"]
+```
 
 ## Troubleshooting
 
