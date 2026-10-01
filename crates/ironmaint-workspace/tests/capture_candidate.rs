@@ -5,6 +5,8 @@
 
 mod common;
 
+use ironmaint_store::CandidateStore;
+
 #[tokio::test]
 async fn capture_returns_same_fingerprint_for_same_head() {
     if !common::git_available().await {
@@ -97,6 +99,92 @@ async fn capture_writes_maintenance_commit_with_required_metadata() {
     assert_eq!(
         log[0].subject, "IronMaint internal maintenance commit",
         "newest commit must be the §22 maintenance commit"
+    );
+}
+
+/// Re-capturing an unchanged tree resolves to the candidate that is
+/// already stored, and does not mint a second one.
+///
+/// This is the regression test for the eleventh instance of the
+/// pattern this phase keeps finding: the fingerprint is the
+/// candidate's identity (`migrations/0001` declares it UNIQUE, 0A
+/// §22 says a *source change* creates a new candidate), the
+/// workspace manager modelled that correctly, and the writer that
+/// reaches `put_source_candidate` did not look it up first. On
+/// `MockStore` the duplicate was silent — a second row under a fresh
+/// id — and on the SQLite backend the daemon actually runs it was a
+/// hard `UNIQUE constraint failed: source_candidates.fingerprint`
+/// surfaced to the agent mid-conversation.
+///
+/// The §101 acceptance scenario hits it on its second capture, which
+/// is why the test is here rather than only there: a mock-only suite
+/// would have reported the defect as a duplicate row that nothing
+/// downstream reads, and no test read it.
+#[tokio::test]
+async fn re_capturing_an_unchanged_tree_stores_one_candidate() {
+    if !common::git_available().await {
+        return;
+    }
+    let tmp = tempfile::tempdir().unwrap();
+    let handle_root = tmp.path().join("ws-root");
+    tokio::fs::create_dir_all(&handle_root).await.unwrap();
+
+    let (mgr, id, job, store) = common::fresh_workspace(&handle_root).await;
+
+    let first = mgr
+        .capture_candidate(
+            id,
+            job,
+            common::package(),
+            "https://example.invalid/foo.git",
+        )
+        .await
+        .unwrap();
+    let second = mgr
+        .capture_candidate(
+            id,
+            job,
+            common::package(),
+            "https://example.invalid/foo.git",
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        first.id(),
+        second.id(),
+        "the second capture must return the stored candidate, not one it built \
+         and never wrote"
+    );
+
+    let rows = store.list_source_candidates_for_job(job).await.unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "one source, one candidate: the fingerprint is the identity"
+    );
+    assert_eq!(
+        store
+            .find_source_by_fingerprint(first.fingerprint())
+            .await
+            .unwrap(),
+        Some(first.id()),
+        "and it is reachable by its fingerprint"
+    );
+
+    // The §22 maintenance commit is still written on the dedup
+    // path. Skipping it would be wrong in the other direction: the
+    // capture happened, and history is where an audit finds that.
+    use ironmaint_workspace::git::GitInvocation;
+    let log = GitInvocation::for_maintenance_commit(&handle_root.join(format!("{id}")))
+        .log(2)
+        .await
+        .unwrap();
+    assert_eq!(
+        log.len(),
+        2,
+        "one maintenance commit per capture, even when the capture \
+         resolves to an existing candidate"
     );
 }
 
