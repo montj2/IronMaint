@@ -41,9 +41,22 @@ unsafe_code = "forbid"
 # (Per PHASE-0A.md §65: no env reads inside domain logic.)
 # These are workspace-level guards applied to every member crate.
 unused_must_use = "deny"
-# Reachable code and unused imports are noise during skeleton bootstrap but
-# will be promoted to deny once 0A.6 lands.
-dead_code = "warn"
+# Unused code is a defect, not a warning. Promoted from "warn" on
+# 2026-10-01 (D-04), the same day D-08 removed the last two
+# `#[allow(dead_code)]` markers in the executor — the promotion is
+# only meaningful for a crate that no longer needs the exemption, so
+# that order is the one that lets the deny be teeth-checked rather
+# than assumed.
+#
+# The cost of promoting early is that `warn` at least tells you what
+# you are choosing to ignore. The cost of not promoting is that a
+# `warn` is scrolled past, and a field nobody reads sits there for
+# months behind an `#[allow]` that names a future commit which never
+# arrives. D-08 is the concrete case: `ProcessExecutor` held an
+# artifact store and a guard factory behind `#[allow(dead_code)]`, and
+# the reason it is MEDIUM is that the daemon logged the store as
+# verified while nothing was ever written to it.
+dead_code = "deny"
 
 [workspace.lints.clippy]
 # Panic policy (PHASE-0A.md §85): no unwrap/expect/panic/todo/unimplemented

@@ -12,7 +12,7 @@ use std::error::Error;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ironmaint_mcp::schema::{McpToolName, generate_all_schemas};
+use ironmaint_mcp::schema::generate_all_schemas;
 
 #[derive(Debug)]
 pub struct McpSchemaReport {
@@ -94,9 +94,4 @@ fn scan_committed(dir: &Path) -> Result<BTreeMap<String, String>, Box<dyn Error>
         out.insert(name, body);
     }
     Ok(out)
-}
-
-#[allow(dead_code)]
-fn _ensure_used() {
-    let _ = McpToolName::from;
 }

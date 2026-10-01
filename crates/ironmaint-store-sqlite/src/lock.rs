@@ -20,6 +20,23 @@ use fs2::FileExt;
 pub struct DaemonLock {
     /// Backing file. Kept open for the lock's lifetime; closing
     /// the file releases the OS-level flock.
+    ///
+    /// The allow is **load-bearing, not suppression**, and D-05 was
+    /// wrong to list this site as one to remove. Verified by
+    /// promoting `dead_code` to `deny` and reading what rustc says:
+    ///
+    /// ```text
+    /// error: field `file` is never read
+    /// note: `DaemonLock` has a derived impl for the trait `Debug`,
+    ///       but this is intentionally ignored during dead code analysis
+    /// ```
+    ///
+    /// So it is reported, the derived `Debug` does not rescue it, and
+    /// the field cannot be deleted: dropping it closes the file,
+    /// which releases the OS lock, which is the entire mechanism. A
+    /// field held for its `Drop` is a real pattern that the lint
+    /// cannot see, and the correct response is a reasoned allow
+    /// rather than a delete that silently stops locking.
     #[allow(dead_code)]
     file: std::fs::File,
 }

@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MismatchKind {
@@ -211,12 +211,4 @@ fn write_snapshots(generated: &BTreeMap<String, String>) -> Result<(), Box<dyn E
         std::fs::write(dir.join(name), content)?;
     }
     Ok(())
-}
-
-// Helper used by tests and main; not strictly required for the
-// subcommand but mirrors the architecture.rs public surface.
-#[allow(dead_code)]
-pub fn schemas_path() -> Result<PathBuf, Box<dyn Error>> {
-    let dir = schemas_dir()?;
-    Ok(Path::new(&dir).canonicalize()?)
 }

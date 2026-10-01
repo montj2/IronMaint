@@ -22,15 +22,15 @@ use std::sync::{Arc, Mutex};
 use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_core::{
     CandidateFingerprint, CheckId, DistributionFamily, DistributionRef, DistributionRelease,
-    GitHashAlgorithm, GitObjectId, JobId, JobState, MaintenanceEventId, PackageIdentity,
-    PackageName, PackageRevision, PackageVersion, RepositoryRef, SourceCandidate, VcsKind,
+    GitHashAlgorithm, GitObjectId, JobId, JobState, PackageIdentity, PackageName, PackageRevision,
+    PackageVersion, RepositoryRef, SourceCandidate, VcsKind,
 };
 use ironmaint_evidence::{Evidence, EvidenceKind, EvidenceStatus, GateStatus};
 use ironmaint_executor::{
     ExecutionClass, ExecutionLimits, ExecutionRequest, Executor, ExecutorError, ExecutorErrorKind,
     RetryClass, ToolDefinitionRecord, ToolRegistry,
 };
-use ironmaint_runtime::{Clock, FixedClock, RuntimeCommand, RuntimeQuery, RuntimeService};
+use ironmaint_runtime::{Clock, FixedClock, RuntimeCommand, RuntimeService};
 use ironmaint_state::{JobEvent, ToolOutcome};
 use ironmaint_store::mock::MockStore;
 use ironmaint_store::{
@@ -634,24 +634,4 @@ async fn bad_path_tool_at_registry_is_a_complete_error_path() {
     let evidences = store.list_evidence_for_job(job_id).await.expect("list");
     assert_eq!(evidences.len(), 1, "bad-path run must be persisted");
     assert_eq!(evidences[0].status, EvidenceStatus::InfrastructureError);
-}
-
-// `_query_projection` keeps `RuntimeQuery` imported for future
-// expansion of the suite (the existing `create_and_set_active`
-// tests already exercise it). Anchoring the import here makes a
-// downstream lint regression surface locally.
-#[allow(dead_code)]
-async fn _query_projection(svc: &RuntimeService<MockStore, ScriptedExecutor>, job_id: JobId) {
-    let _ = svc
-        .handle_query(RuntimeQuery::GetProjection { job_id })
-        .await
-        .expect("query");
-}
-
-// `_maintenance_event_id` keeps `MaintenanceEventId` and
-// `JobState` imports live so a downstream delete of the test
-// fails locally instead of in another crate.
-#[allow(dead_code)]
-fn _imports_anchor() -> (MaintenanceEventId, JobState) {
-    (MaintenanceEventId::new(), JobState::EventDetected)
 }

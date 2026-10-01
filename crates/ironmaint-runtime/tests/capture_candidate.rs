@@ -25,15 +25,12 @@
 use std::sync::Arc;
 
 use ironmaint_core::{
-    CandidateFingerprint, DistributionFamily, DistributionRef, DistributionRelease,
-    GitHashAlgorithm, GitObjectId, JobId, MaintenanceEventId, PackageIdentity, PackageName,
-    PackageRevision, PackageVersion, RepositoryRef, SourceCandidate, VcsKind,
+    DistributionFamily, DistributionRef, DistributionRelease, GitHashAlgorithm, GitObjectId, JobId,
+    PackageIdentity, PackageName, PackageRevision, PackageVersion, RepositoryRef, SourceCandidate,
+    VcsKind,
 };
-use ironmaint_evidence::Evidence;
 use ironmaint_executor::{NullExecutor, ToolRegistry};
-use ironmaint_runtime::{
-    Clock, FixedClock, OrchestratorRef, RuntimeCommand, RuntimeService, SystemClock,
-};
+use ironmaint_runtime::{Clock, FixedClock, OrchestratorRef, RuntimeCommand, RuntimeService};
 use ironmaint_state::JobEvent;
 use ironmaint_store::mock::MockStore;
 use ironmaint_store::{CandidateStore, EventStore, ProjectionStore};
@@ -331,27 +328,4 @@ async fn capture_candidate_allows_two_distinct_fingerprints_for_same_job() {
         2,
         "two distinct fingerprints must produce two candidate rows"
     );
-}
-
-// `_maintenance_event_id_anchor` keeps the `MaintenanceEventId` and
-// `Evidence` imports live so a downstream delete of the test
-// fails locally instead of in another crate.
-#[allow(dead_code)]
-fn _imports_anchor() -> (MaintenanceEventId, Evidence) {
-    (
-        MaintenanceEventId::new(),
-        Evidence::new(
-            CandidateFingerprint::from_hex("00".repeat(32)).unwrap(),
-            ironmaint_evidence::EvidenceKind::Build,
-            ironmaint_evidence::EvidenceStatus::Pass,
-            ironmaint_evidence::EvidenceProducer::new("anchor"),
-            ironmaint_evidence::EvidenceScope::Job(JobId::new()),
-            OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
-        ),
-    )
-}
-
-#[allow(dead_code)]
-fn _system_clock_anchor() -> Arc<dyn Clock> {
-    Arc::new(SystemClock)
 }

@@ -25,7 +25,7 @@ use ironmaint_evidence::{
 };
 use ironmaint_policy::{
     Applicability, ApprovalCategory, ApprovalRequirement, AuthorizationState, Obligation,
-    ObligationStatus, ObligationStrength, PolicyBaseline, PolicyReference, PrivilegedOperation,
+    ObligationStatus, ObligationStrength, PolicyReference, PrivilegedOperation,
     PrivilegedOperationKind,
 };
 use ironmaint_state::{
@@ -554,19 +554,29 @@ fn projection_apply_via_state_crate() {
     assert_eq!(next.version, 1);
 }
 
-// Keep `PolicyBaseline` import alive for future coverage of
-// ReleaseCandidateStore tests in commit 4.
-#[allow(dead_code)]
-fn _policy_baseline_anchor() -> PolicyBaseline {
-    PolicyBaseline::new(DistributionRef::new(
-        DistributionFamily::new("debian").unwrap(),
-        DistributionRelease::new("unstable").unwrap(),
-    ))
-}
-
-// Compile-time check that the `IronMaintStore` facade is satisfied by
-// `MockStore`. This catches accidental trait-drop regressions early.
-#[allow(dead_code)]
-fn _facade_satisfied(s: MockStore) -> impl IronMaintStore {
-    s
+/// Compile-time check that the `IronMaintStore` facade is satisfied by
+/// `MockStore`. This catches accidental trait-drop regressions early.
+///
+/// A real test rather than a `#[allow(dead_code)]`ed function. The
+/// previous form was a function nothing called, so the check ran only
+/// if the compiler bothered — and a lint exemption standing in for an
+/// assertion is exactly the failure mode D-05 is about. Note it is
+/// `impl IronMaintStore` and not `Box<dyn IronMaintStore>`: the
+/// facade bundles traits with generic methods, so it is deliberately
+/// not dyn-compatible and the `Box<dyn>` spelling does not compile.
+#[tokio::test]
+async fn mock_store_satisfies_the_facade() {
+    fn facade_satisfied(s: MockStore) -> impl IronMaintStore {
+        s
+    }
+    // Construction is the assertion: if a sub-trait bound is dropped
+    // from `IronMaintStore`, or `MockStore` stops implementing one,
+    // the return-type coercion below stops compiling.
+    let store = facade_satisfied(MockStore::new());
+    // A round-trip through the facade, so the test also proves the
+    // value is usable through a bundled method and not merely
+    // nameable. `next_sequence` is the cheapest: a fresh job reads
+    // `1` with no writes.
+    let job = JobId::new();
+    assert_eq!(store.next_sequence(job).await.unwrap(), 1);
 }

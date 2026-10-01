@@ -111,11 +111,6 @@ async fn create_job(svc: &RuntimeService<MockStore, NullExecutor>) -> JobId {
         .expect("job id in side_effects")
 }
 
-#[allow(dead_code)]
-fn fingerprint_zero() -> CandidateFingerprint {
-    CandidateFingerprint::from_hex("00".repeat(32)).unwrap()
-}
-
 /// Seed a `GateDefinition` for the given stage attached to the
 /// fingerprint, plus a passing `GateResult`. Returns nothing;
 /// used by tests that need to advance past a gated transition.
