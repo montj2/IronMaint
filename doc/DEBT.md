@@ -12,6 +12,12 @@ that are *not* in the phase report at all.
 **Rule of thumb:** if an item here is marked CLOSED, it was closed by a commit and a
 passing gate — not by a decision to stop looking.
 
+**Re-audited 2026-10-01** against 0B.10, which closed D-02, D-03, D-07 and D-14,
+partly closed D-09, and added D-15. Five items are closed, one is a recorded
+decision not to act (D-10), and one cannot be checked in this environment
+(D-15). The severity table below is unchanged; the register's shape is not — the
+highest-severity item is now D-01, which 0B.10 deliberately did not touch.
+
 ## How to read this
 
 Severity is about consequence, not effort.
@@ -54,18 +60,19 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 |---|---|---|---|
 | D-01 | HIGH | `ironmaint-store` and `ironmaint-store-sqlite` inherit no lint set — the no-panic and no-unsafe policies are unenforced in the persistence layer | OPEN |
 | D-02 | HIGH | The spec-designated `SKILL.md` is stale and documents a wire format the server rejects | **CLOSED** by 0B.10 C3 — `skills/` is canonical, the stale `integrations/` copy is deleted, and `PHASE-0B.md` §61 has been amended to point at the surviving file |
-| D-03 | HIGH | A job cannot advance past `EventDetected`; 5 of 9 runtime commands and 1 of 5 queries have no MCP entry point, and `next_actions` overloads `allowed` as both "moves you can make" and "this needs a human" | **PARTLY CLOSED** by 0B.10 C1 — the three missing production links (activate, materialise, derive) now have one caller each. The `allowed` wire split + enforcement test were closed by C3; the missing MCP entry points remain open |
+| D-03 | HIGH | A job cannot advance past `EventDetected`; 5 of 9 runtime commands and 1 of 5 queries have no MCP entry point, and `next_actions` overloads `allowed` as both "moves you can make" and "this needs a human" | **CLOSED** by 0B.10 (C1–C5) — the three missing production links have one caller each, the `allowed` wire split landed in C3, and C5's `mcp_acceptance_scenario.rs` walks §101 from `job.create` to `ReadyForApproval` through `dispatch()` with no `RuntimeService` handle. The census is re-derived at the bottom of the entry, because the right column is now "has a *tool*" and several rows moved to "driven internally by `candidate.capture`" |
 | D-04 | MEDIUM | `dead_code = "warn"` carries a promise ("promoted once 0A.6 lands") that was never kept | OPEN |
 | D-05 | MEDIUM | 4 of 6 `#[allow(dead_code)]` sites are vestigial, two with false justifications | OPEN |
 | D-06 | MEDIUM | `mcp-registration.yaml` field names never round-tripped through a real `ironclaw extension install` | OPEN (no binary available) |
-| D-07 | MEDIUM | Dead `for _ in 0..15u32` loop in `reconcile`, suppressed with `clippy::never_loop` | OPEN, needs a semantic decision |
+| D-07 | MEDIUM | Dead `for _ in 0..15u32` loop in `reconcile`, suppressed with `clippy::never_loop` | **CLOSED** by 0B.10 C4 (`cec87d7`) — the loop now advances through every satisfied rule, matching §41 and `ReconcileOutcome::Advanced`'s own doc comment. The suppression is gone, not re-suppressed |
 | D-08 | MEDIUM | `ProcessExecutor` holds `artifact_store` and `guard_factory` and never reads either; oversized tool output is silently discarded | OPEN |
-| D-09 | LOW | `CaptureResume` / `infrastructure_blocked` signal absent | DEFERRED to 0B.10 |
-| D-10 | LOW | No background reconcile loop in the daemon | DEFERRED to 0B.10 |
+| D-09 | LOW | `CaptureResume` / `infrastructure_blocked` signal absent | **PARTLY CLOSED** by 0B.10 C2 — the *exit* is complete (`ResumeRecord` is persisted as a `JobEvent::ResumeRecorded`, and `job.resume` consumes it for **both** exceptional states), but nothing *writes* an `InfrastructureBlocked` transition, so the state has a way out and no way in |
+| D-10 | LOW | No background reconcile loop in the daemon | **NOT TAKEN**, and the reason is now recorded rather than deferred again — §41 defines `reconcile` as a per-call function, and no spec text requires a loop |
 | D-11 | LOW | No real Debian/Fedora adapters | DEFERRED to Phase 1 (§106) |
 | D-12 | LOW | 0B.8 hardening suite is not exhaustive | DEFERRED |
 | D-13 | LOW | `git add -A` in this repo can sweep in unrelated local artifacts | PROCESS |
 | D-14 | MEDIUM | `rebuild_projection` rejects every real job's event log, so the §36 operator escape hatch cannot rebuild anything | **CLOSED** by 0B.10 — `JobEvent::JobCreated` carries the birth projection, so the log is authoritative for a never-transitioned job |
+| D-15 | LOW | §102 item 30 ("an actual IronClaw agent can complete the synthetic repair workflow") is **unverifiable in this environment** — not unmet, and not a code defect | **ENVIRONMENT-BLOCKED**, with repro steps at the bottom of the register. 33 of 34 DoD items are true; this is the one that cannot be checked here |
 
 ---
 
@@ -199,11 +206,13 @@ behaviour C2 and C3 introduced. It is 250 lines as of 0B.10 C3.
 
 ---
 
-## D-03 — a job cannot advance past `EventDetected` (HIGH, deferred)
+## D-03 — a job cannot advance past `EventDetected` (HIGH) — **CLOSED 2026-10-01 (0B.10)**
 
 Carried from `doc/PHASE-0B-COMPLETION.md` §16.8, where it was correctly classified
 HIGH and deferred to Phase 1 by decision. Re-verified here, and **widened**: the
-§16.8 census covered two commands; the full census is larger.
+§16.8 census covered two commands; the full census is larger. The text below is
+the state at `0acaedc`, left as written because the *closure* is only legible
+against it; see **CLOSED** at the foot of this entry for what changed.
 
 ### Full census at `0acaedc`
 
@@ -415,6 +424,93 @@ criterion is what makes that measurable rather than assumed.
 The dead loop at `service.rs:614` (D-07) is **not** implicated. `reconcile`
 returns `NoOp` on its first iteration, long before the loop bound could matter.
 
+### CLOSED (2026-10-01, 0B.10 C1–C5)
+
+Three of the four parts closed in one sub-phase; the fourth, the `allowed` wire
+overload, closed in C3 as its own commit because it changes the wire format.
+
+**The census, re-derived.** The question the original table asked — "does this
+command have a tool?" — could not tell a missing link from a correct refusal.
+§102 item 25 forbids MCP from *directly* writing state, gates, obligations,
+approvals, or evidence, so a command with no tool is not automatically a defect.
+The question worth asking is "is there a production path that issues it?", and
+that one is now answerable for every row.
+
+`RuntimeCommand` (9 variants at `0acaedc`, 12 now):
+
+| Variant | Before | After |
+|---|---|---|
+| `CreateJob` | `job.create` | unchanged |
+| `CaptureCandidate` | `candidate.capture` | unchanged |
+| `RunCheck` | `check.run` | unchanged |
+| `MaterializeChecks` | **no caller**, tests only | issued by `candidate.capture`, from the adapter's `build_plan` / `qa_plan` (C1) |
+| `SetActiveCandidate` | **no caller**, tests only | issued by `candidate.capture`; unconditional, because activation is a fact about the job and not a function of whether an adapter exists (C1) |
+| `RecordCheckEvidence` | **no caller**, tests only | issued by `check.run` |
+| `MarkObligationSatisfied` | **no caller and no test at all** — the register called it "the closest thing in the tree to a shipped stub" | replaced by `RecordObligationOutcome` (`8d91ad6`), which the daemon, the C4 driver and the C5 driver all write. **Deliberately off MCP** per §102 item 25 |
+| `RequestApproval` | no, by design — typed `Unsupported` | unchanged. A typed refusal is not a gap |
+| `Reconcile` | **unreferenced**; `job.reconcile` calls the public `reconcile()` method | still unreferenced by the tool, and still a four-line pass-through. Left alone: the variant is the *enum*'s spelling of an operation the runtime exposes as a method, and deleting it would be a cosmetic change to a public API |
+| `ResumeJob` | *did not exist* | `job.resume` (C2) |
+| `EnterHumanReview` | *did not exist* | **no tool, deliberately** — an agent must not be able to hand itself into an exceptional state (C2) |
+| `CreateReleaseCandidate` | *did not exist* | `release.candidate.create` (C5 prerequisite, `d98d780`) |
+
+`RuntimeQuery` (5 variants at `0acaedc`, 6 now): `GetJob`, `ListNextActions`,
+`GetCheckOutcome` and `GetOperation` are all reachable through `dispatch`.
+`GetProjection` is still test-only and still has no tool — it is the raw
+projection, which `job.get` already returns in a shape the wire can carry, and
+exposing it would be §102 item 24's "storage primitive" rather than a domain
+capability. `GetReleaseCandidate` joined it at the C5 prerequisite.
+
+**Two rows deliberately did not change, and that is the finding.** The commands
+with no tool split cleanly into two kinds. The four that *write* domain state
+(`MaterializeChecks`, `SetActiveCandidate`, `RecordCheckEvidence`, the
+obligation writer) got a production caller. `RequestApproval`, `Reconcile` and
+`GetProjection` did not, and **not** because they were missed — §102 item 25
+forbids an MCP tool from writing state, and item 24 forbids one from exposing a
+store primitive. The register's original question could not tell those apart, and
+that is why "5 of 9 commands have no MCP entry point" read as five defects when
+it was two defects and three correct refusals.
+
+The `allowed` overload: C3 split it. `allowed` is now strictly tool-performable
+and the human-action case moved to a separate field, and the enforcement is
+stronger than a test — `ironmaint_mcp::tool_for_action` is an exhaustive `match`
+with no wildcard arm, so adding an `AllowedAction` without deciding which tool
+performs it **fails to compile**. The never-emitted `Publish` variant is
+removed.
+
+**The proof that matters.** `crates/ironmaint-testkit/tests/mcp_acceptance_scenario.rs`
+(C5, `2656528`) walks the whole of §101 — thirty steps, four candidates, a failed
+build, a failed QA run, a failed mandatory obligation, three repair loops, a
+release-candidate snapshot, a restart — with **every** state change arriving as a
+`dispatch(McpToolName, json)`. It holds no `RuntimeService`, no `RuntimeQuery`,
+and no store handle for writes; it reads the store only for facts no tool
+exposes, and the module doc says which and why. That is the criterion this
+register wrote down as *"governing for Phase 1 (§106)"*, satisfied one sub-phase
+early and one sub-phase before Phase 1.
+
+**Two things the census did not record, both found by that walk**, and both the
+same shape as the ones above — a component that models something correctly and a
+production path that never produces the input:
+
+- `capture_candidate` re-captured an unchanged tree and reached
+  `put_source_candidate` without looking the fingerprint up. `migrations/0001`
+  declares `source_candidates.fingerprint` UNIQUE, so the second capture of the
+  same tree was a hard `UNIQUE constraint failed` on SQLite. `MockStore`
+  overwrites silently, so a mock-backed suite would have called this a harmless
+  duplicate row. Fixed in `crates/ironmaint-workspace/src/capture.rs` (`ec9e06c`).
+- `next_actions` reported blockers but not `requires_human` for an outstanding
+  obligation once the job was past `EventDetected`, so a fresh job's
+  `next_actions` returned nothing at all. Fixed in
+  `crates/ironmaint-runtime/src/service.rs` (`f009e2e`).
+
+**Risk carried into Phase 1, restated.** A captured `debian` job activates and
+materialises four gates, and `check.run` on one reports `no tool registered for
+capability debian.build.sbuild` — the adapters plan `debian.*` / `fedora.*` and
+the only registered tools in 0B are the `synthetic.*` fixtures. That remains a
+strictly better failure than the original: it is visible, typed, and reported in
+the capture's own `notes`, where before the job sat at `EventDetected` forever
+saying only "capture_candidate", which reads identically to an agent doing
+everything right.
+
 ---
 
 ## D-04 — `dead_code` was never promoted to `deny` (MEDIUM)
@@ -498,11 +594,16 @@ as coverage.
 
 **Closes when:** an `ironclaw` binary is available and the install round-trips.
 
+**Same root cause as D-15**, and they should be closed on the same machine in the
+same sitting: the repro steps are written out there, and the manifest's tool list
+has since grown to eleven (`job.resume` at C2, `release.candidate.create` at the
+C5 prerequisite), so the round-trip is worth more than it was on 2026-09-29.
+
 ---
 
-## D-07 — dead loop in `reconcile`, suppressed (MEDIUM)
+## D-07 — dead loop in `reconcile`, suppressed (MEDIUM) — **CLOSED 2026-10-01 (0B.10 C4)**
 
-`crates/ironmaint-runtime/src/service.rs:614`:
+`crates/ironmaint-runtime/src/service.rs:614` at `0acaedc`:
 
 ```rust
 #[allow(clippy::never_loop)]
@@ -519,6 +620,36 @@ intended, the loop needs a real exit condition. The current code is neither, and
 picking either reading changes observable behaviour.
 
 **Confirmed not to be the cause of D-03.**
+
+### The decision, and the evidence for it (0B.10 C4, `cec87d7`)
+
+The semantic question was answered by the spec, twice, and the register did not
+look:
+
+- **§41** — reconciliation "may continue through multiple trivially satisfied
+  stages", and the mandated call is `runtime.reconcile(job_id)`, once.
+- **`ReconcileOutcome::Advanced`'s own doc comment** already promised "the
+  projection advanced through **one or more** rules".
+
+So the intended reading was multi-transition, and the code contradicted its own
+type documentation. `reconcile` now walks every satisfied rule and stops where
+the next one is blocked; the `#[allow]` is **deleted**, not re-suppressed, and
+the clippy gate is what keeps it deleted.
+
+The cost of the old behaviour was not subtle. An agent calling `job.reconcile`
+at `EventDetected` with every gate passing was told to call it twelve times to
+cross §20's path, and nothing in the response explained why the walk stopped
+where it did. C5's driver hit this: step 18 asserted an unsatisfied mandatory
+obligation, and `reconcile` had already carried the job past it on the previous
+call, so the state was `SourceRevision` rather than the `EventDetected` the test
+expected.
+
+**The lesson is worth more than the fix.** The suppression was a design note
+written in the wrong place: someone read `clippy::never_loop`, silenced it, and
+the reasoning that should have settled the semantic question was never written
+down anywhere. It is the second time in this phase that a suppressed lint has
+been a design decision deferred to a future reader. **Grep for
+`#[allow(clippy::` and read the argument each time.**
 
 ---
 
@@ -550,21 +681,78 @@ production caller**.
 
 ---
 
-## D-09 — no `CaptureResume` / `infrastructure_blocked` (LOW, deferred)
+## D-09 — no `CaptureResume` / `infrastructure_blocked` (LOW) — **PARTLY CLOSED 2026-10-01 (0B.10 C2)**
 
 A tool that fails for infrastructure reasons (sandbox, worker, DB) has no way to
-express "resume this later" as opposed to "this package did not build". Scheduled
-for 0B.10, user-confirmed scope. See `doc/PHASE-0B-COMPLETION.md` §16.4.
+express "resume this later" as opposed to "this package did not build". Was
+scheduled for 0B.10. See `doc/PHASE-0B-COMPLETION.md` §16.4.
+
+### What C2 built, and what it did not
+
+The entry as originally written conflated two things that the code separates
+cleanly: a tool's ability to *signal* `InfrastructureBlocked`, and the
+machinery's ability to *leave* it. 0A §21 requires a recorded resume state for
+both exceptional states symmetrically, and C2 found that neither had a durable
+home — `ResumeRecord` existed and was serialisable, but was constructed only in
+tests, because `JobEvent` had three variants and none of them was one.
+
+C2 gave the record somewhere to live and an exit that consumes it:
+
+| Piece | Where |
+|---|---|
+| `JobEvent::ResumeRecorded(ResumeRecord)` — the §21 "recorded event containing the resume state" | `ironmaint-state/src/event.rs`; a pass-through in `apply.rs`, skipped by both `rebuild_projection` implementations |
+| SQLite serialisation for the new variant | `ironmaint-store-sqlite/src/ops/events.rs` |
+| `RuntimeCommand::EnterHumanReview` — writes the record **at the moment of entry**, from the pre-transition projection | `ironmaint-runtime` |
+| `RuntimeCommand::ResumeJob` — reads the last `ResumeRecorded` whose `from` matches the current state | `ironmaint-runtime` |
+| `job.resume` | `ironmaint-mcp` |
+
+Both exceptional states share the exit machinery, so `job.resume` works for
+`InfrastructureBlocked` the moment a producer exists. **That producer is the
+part still open**, and 0B.10 did not add one: the only writer of an exceptional
+transition in 0B is `EnterHumanReview`, and no tool can call it — deliberately,
+so an agent cannot hand *itself* into a state only a human should enter.
+
+So D-09 is now precisely: **the state has a way out and no way in.** The
+remaining half needs a decision about who may mark a job infrastructure-blocked
+and on what evidence, and that decision is a Phase 1 question — it is the first
+thing real adapters will hit, because real adapters do fail their sandboxes.
+
+`ResumeJob`'s refusal is worth stating, because the obvious "helpful" behaviour
+is the wrong one: with no record, it returns a typed `InvalidInput` naming the
+requirement. It does **not** scan the log and infer a target. The test
+`resume_without_a_record_is_refused_rather_than_inferred` strips the
+`ResumeRecorded` event from a real log and replays the rest, and every
+`Transitioned` event survives — so an implementation that inferred would pass
+every other test in the file. 0A §21's prohibition has no other guard against
+quietly regressing.
 
 ---
 
-## D-10 — the daemon runs no reconcile loop (LOW, deferred)
+## D-10 — the daemon runs no reconcile loop (LOW) — **NOT TAKEN, and the reason is now recorded**
 
 `reconcile` is reachable only when an agent calls `job.reconcile`. Nothing drives
-it proactively. Scheduled for 0B.10, user-confirmed scope. See §16.6.
+it proactively. See §16.6.
 
-Note the interaction with D-03: until a job can leave `EventDetected`, a
-background loop would have nothing to do anyway.
+This was scheduled for 0B.10 and 0B.10 did not build it, which would otherwise
+read as an oversight. It is a decision, and re-deferring it a fourth time would
+be worse than recording why.
+
+**§41 defines `reconcile` as a per-call function** — `runtime.reconcile(job_id)`,
+called by the caller, returning where it stopped. No spec text asks for a loop.
+§67's startup sequence has no reconcile step. And the argument for one was always
+weak: an agent is the orchestrator here, and a daemon that advanced jobs behind
+its back would put state changes in the audit log that no actor requested, which
+is precisely the property the rest of the design works to preserve.
+
+The original note ("a background loop would have nothing to do anyway, until a
+job can leave `EventDetected`") is now stale — D-03 is closed, so a loop would
+have something to do. It is kept here rather than deleted because the way it
+became stale is the useful part: a limitation written as a *consequence* of
+another defect outlives the defect and starts to look like a requirement.
+
+**Revisit when there is a first consumer**, and name it in Phase 1's plan. The
+honest candidate is a stalled job at `EventDetected` with all gates passing and
+no agent asking — an agent-initiated design has no way to notice that.
 
 ---
 
@@ -684,23 +872,128 @@ in production.
 
 ---
 
+## D-15 — §102 item 30 is unverifiable in this environment (LOW, environment)
+
+**This is not a code defect and there is no diff that closes it.** It is recorded
+because 0B.10's DoD status is "33 of 34", and an unqualified "33 of 34" invites
+the reader to assume the thirty-fourth was checked and failed.
+
+§102 item 30 — *"An actual IronClaw agent can complete the synthetic repair
+workflow"* — requires an `ironclaw` binary. Two independent blockers, both
+verified on 2026-10-01:
+
+```console
+$ which ironclaw
+ironclaw not found
+
+$ rustup toolchain list
+stable-aarch64-apple-darwin (default)          # 1.94.0
+nightly-2025-11-21-aarch64-apple-darwin
+1.85.0-aarch64-apple-darwin
+1.88.0-aarch64-apple-darwin (active)           # the workspace MSRV
+
+$ grep channel doc/vendor/ironclaw/rust-toolchain.toml
+channel = "1.98.0"
+```
+
+1. **No released binary on `$PATH`.** The documented path is
+   `ironclaw extension install doc/operator/mcp-registration.yaml`
+   (`doc/operator/ironclaw-setup.md` §2), which is a distribution artifact, not
+   something this repo builds.
+2. **The submodule pins a toolchain nobody here has.** `1.98.0` is not in the
+   list above, and raising the workspace to match is not an option:
+   `Cargo.toml:30` declares `rust-version = "1.88"` and every crate inherits it.
+   Note that nothing *enforces* 1.88 today — there is no CI workflow in the repo
+   — so this is a declared floor, not a gate. Worth knowing, and worth a real
+   gate later; it is not what blocks item 30.
+
+Building it is also beside the point. `CLAUDE.md` designates
+`doc/vendor/ironclaw/` a **reference** — "not built as part of this workspace" —
+and `AGENTS.md` treats a submodule build as its own unit of work. No sub-phase
+owns it, and 0B.10 listed it as explicitly out of scope.
+
+**What is *not* blocked, and is the reason this is LOW rather than a gap in the
+phase.** Every other DoD item that a live agent would exercise is exercised
+without one. The C5 driver is a conforming MCP client, holds no `RuntimeService`,
+and completes §101 end to end (`mcp_acceptance_scenario.rs`). §102 item 26
+("IronClaw can call the MCP server") is met in the strong sense: an
+authenticated MCP client calls all eleven tools and drives a job to
+`ReadyForApproval` over the same dispatcher. What item 30 adds on top is
+IronClaw's *own* agent loop and its extension manifest — which is D-06, still
+open for the same underlying reason.
+
+So the honest claim is: **the workflow is proven agent-drivable; the specific
+agent named by the spec has not been run against it.** A green §97 gate and a
+green C5 do not silently stand in for it, and this entry is what stops them from
+being read that way.
+
+### Repro steps for the machine that closes it
+
+```sh
+# 1. An `ironclaw` binary on $PATH.
+which ironclaw && ironclaw --version
+
+# 2. A daemon with the real tool surface.
+cargo build -p ironmaintd
+./target/debug/ironmaintd --bind 127.0.0.1:7341 \
+      --token-file /tmp/tok --state-dir /tmp/state &
+
+# 3. The extension, from the manifest the daemon actually serves.
+ironclaw extension install doc/operator/mcp-registration.yaml
+ironclaw extension activate ironmaint
+cp -r skills/ironmaint-maintainer ~/.ironclaw/installed_skills/
+ironclaw skill refresh
+
+# 4. The smoke test. It skips the extension checks with a notice when no binary
+#    is present, so "OK" alone does NOT mean item 30 passed — read the notice.
+IRONMAINT_TOKEN_FILE=/tmp/tok ./scripts/ironclaw-e2e.sh
+
+# 5. Item 30 itself: drive the §101 repair workflow through the IronClaw agent
+#    and confirm the job lands at ReadyForApproval with the candidate-bound
+#    evidence chain intact.
+```
+
+Step 5 has no script yet, and writing one is the natural first task on a machine
+that can run it. `scripts/ironclaw-e2e.sh` verifies the *server*; it does not
+verify the *agent's repair loop*. The gap between those two is exactly what item
+30 asks for.
+
+---
+
 ## Suggested ordering
 
-Not a plan — the user decides. In rough order of value-per-effort:
+Not a plan — the user decides. In rough order of value-per-effort. **Revised
+2026-10-01** against the register as it now stands: four items are closed and one
+was deliberately not done, so this list is shorter and its shape has changed.
 
 1. **D-01** — four sites, two files, closes a HIGH with a false safety claim. The
    test-artifact/lint-inheritance gap it exposes argues for a new
-   `xtask verify-lint-inheritance` guardrail so the class cannot recur.
+   `xtask verify-lint-inheritance` guardrail so the class cannot recur. **Now the
+   largest single item in the register**, and unrelated to everything 0B.10
+   touched: `AGENTS.md`'s "one feature or fix per branch" is the reason it did
+   not ride along.
 2. **D-05** — deletes three dead functions and two false comments; makes **D-04**'s
-   promotion honest.
-3. **D-02** — needs one architectural decision, then a deletion.
-4. **D-07** — needs one semantic decision, then a deletion.
-5. **D-04** + **D-08** — same two `ProcessExecutor` fields; land together or not at all.
-6. **D-03 wire split** — top of 0B.10, enforcement test first.
-7. **D-06** — blocked on an external binary; nothing to do until one exists.
-8. **D-09**, **D-10** — 0B.10.
-9. **D-11** — Phase 1, gated on the `ReadyForApproval`-through-the-tools criterion above.
-10. **D-12**, **D-13** — as scheduled.
+   promotion honest. Cheap, and it should land in the same PR as D-01's sweep,
+   since both are "the lint config promised something it did not do".
+3. **D-04** + **D-08** — same two `ProcessExecutor` fields; land together or not at all.
+4. **D-09** — the remaining half is a *producer* for `InfrastructureBlocked`, and
+   the decision of "who may mark a job blocked, on what evidence" is a Phase 1
+   question, not a 0B one. Write the decision down before writing the code.
+5. **D-11** — Phase 1, gated on the `ReadyForApproval`-through-the-tools criterion above.
+6. **D-06** and **D-15** — same root cause, same fix: an external binary. Nothing to
+   do until one exists; the repro steps are in D-15.
+7. **D-12**, **D-13** — as scheduled.
+
+**Closed since the previous revision, and therefore gone from this list:** D-02
+(C3 — `skills/` is canonical, the `integrations/` copy is deleted), D-03 (C1–C5),
+D-03's wire split (C3, as its own commit because it changes the wire format),
+D-07 (C4 — the semantic question was already answered by §41 and by
+`Advanced`'s own doc comment; the loop walked only the first rule), and D-14
+(0B.10 prerequisite).
+
+**Deliberately not done, so not a debt:** D-10. See its entry — §41 defines
+`reconcile` per-call and no spec text asks for a loop. Re-deferring it without a
+reason would have been the fourth deferral of a thing nobody had asked for.
 
 ## Decisions taken 2026-09-30
 
@@ -711,5 +1004,20 @@ Two calls the architect delegated, both now recorded above rather than left open
 | Should Phase 1's first adapter be required to drive a job through the tool surface? | **Yes** — "reaches `ReadyForApproval` driven only through the MCP tools, no runtime handle, no direct store access" is the governing acceptance criterion | Phase 1 (§106) |
 | Should `next_actions` keep advertising actions with no verb behind them? | **No** — `allowed` becomes strictly tool-performable, the human-action case moves to its own field, an enforcement test makes an unperformable `AllowedAction` a gate failure, and `Publish` is removed as never-emitted. Agent behaviour is unchanged. | Top of 0B.10 |
 
-Neither has been started. `AGENTS.md` requires an explicit go-ahead before a new
-sub-phase begins.
+Both have since landed. The first turned out to be satisfiable one sub-phase
+early: 0B.10 C5's `mcp_acceptance_scenario.rs` meets the criterion as written, so
+it is a **regression test for Phase 1's premise** rather than a Phase 1
+deliverable — if a Phase 1 adapter cannot be driven through the same surface, the
+change that broke it fails a test that already exists.
+
+## Decisions taken 2026-10-01
+
+Four more, taken while closing out 0B.10. Each is recorded at the point it applies
+rather than only here.
+
+| Question | Decision | Where it lands |
+|---|---|---|
+| Is `reconcile` one transition per call or many? | **Many**, until it blocks. §41 and `ReconcileOutcome::Advanced`'s own doc comment both said so; the code contradicted its own type documentation. | C4, `cec87d7` — D-07 |
+| Should a failed *mandatory* obligation divert the job to `HumanReviewRequired`? | **No — entering is explicit.** 0A §21 says orchestration "*may*" move a job there; automatic diversion would make §101's repair loop unreachable for the agent that is supposed to perform it. `EnterHumanReview` exists as a command and has **no** MCP tool, so an agent cannot hand itself into a state only a human should enter. | C2 |
+| Where should the §101 scenario's MCP driver live? | **`ironmaint-testkit/tests/`, not `crates/ironmaint-mcp`.** §98.6 forbids the MCP crate from depending on a store backend in *either* dependency kind, and "MCP must never bypass runtime" is a rule about the crate, not about whether the caller is a test. | C5 |
+| Do the privileged-operation producers belong in 0B? | **No — dropped, not deferred.** §4.10, §26 and §99 forbid them, so building them would produce code the acceptance scenario must never exercise. | 0B.10 scope |

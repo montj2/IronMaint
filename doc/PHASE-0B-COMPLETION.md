@@ -10,6 +10,18 @@ checkable against the repository.
 - **Scope:** sub-phases 0B.5 – 0B.8, nine commits
 - **Date:** 2026-09-28
 
+> **Extended through 0B.10 (2026-10-01).** §§1–18 are the report as written on
+> 2026-09-28, with dated amendments where a later sub-phase made a claim stale —
+> each marked in place, so the original reasoning stays legible. **§19** is
+> 0B.10's own section and **§20** is the §102 Definition-of-Done table, which is
+> the answer to "is Phase 0B complete": **33 of 34, with item 30
+> environment-blocked and its repro steps in `doc/DEBT.md` D-15.**
+>
+> The claims that changed most, in case you are reviewing against the original:
+> §5's tool list (9 → **11**), §11–12's test inventory (now 838 unit / 847
+> integration), §12's gate output, §15's schema count (9 → **11**), and §16.8 —
+> the report's one HIGH, **closed**.
+
 ---
 
 ## 1. Workspace changes
@@ -133,6 +145,13 @@ No `PHASE-0A-CONTRACT-CHANGE` document was filed because no 0A contract was
 altered.
 
 ## 5. MCP tools exposed
+
+> **Amended 2026-10-01 (0B.10).** The table below is the state at 0B.5–0B.8 and
+> is kept as written; the current surface is **eleven** tools, all executing
+> against real subsystems. `job.resume` was added at C2 and
+> `release.candidate.create` at the C5 prerequisite, and the four "partial" rows
+> were closed in 0B.9 — see §16.1, which is still accurate, and §19 below for the
+> current table.
 
 Nine tools, each with a snapshotted input/output JSON schema under
 `schemas/mcp/`. `verify-mcp-schemas` reports 9 committed / 9 generated, no
@@ -276,6 +295,12 @@ yet, so "rebuild everything" is a shell loop over known ids.
 
 **675 tests passing** with `--features integration`; **672** without.
 
+> **Amended 2026-10-01 (0B.10).** Now **847** with `--features integration`,
+> **838** without. The §101 drivers — `acceptance_scenario.rs` and
+> `mcp_acceptance_scenario.rs`, three tests each — are the largest single
+> addition, and they are the first tests in the workspace that assert on the
+> *workflow* rather than on one component of it.
+
 | Suite | Tests | What it pins |
 |---|---|---|
 | `ironmaint-runtime/tests/capture_candidate.rs` | 4 | fingerprint dedup, per-job index, event emission |
@@ -286,11 +311,17 @@ yet, so "rebuild everything" is a shell loop over known ids.
 | `ironmaint-runtime/tests/hardening.rs` | 8 | the eight restart/recovery modes above |
 | `ironmaint-mcp/tests/dispatcher.rs` | 5 | **§94 exit checkpoint** — tool round-trip, no direct store access |
 | `ironmaint-mcp/tests/auth.rs` | 4 | bearer token accept/reject, tool-name inventory |
-| `ironmaint-testkit/tests/synthetic_e2e.rs` | 3 | **§81 exit checkpoint** — `ReadyForApproval` walk, tool failure, concurrent modification |
+| `ironmaint-testkit/tests/synthetic_e2e.rs` | 3 | state-machine wiring on a `MockStore` with pre-seeded evidence — **not** an exit checkpoint; see the module doc, rewritten 0B.10 |
+| `ironmaint-testkit/tests/acceptance_scenario.rs` | 3 | **§101 / §102 item 28** — the deterministic no-LLM driver, real SQLite, no pre-seeded gates |
+| `ironmaint-testkit/tests/mcp_acceptance_scenario.rs` | 3 | **§101 / §102 item 29** — the same walk with no `RuntimeService` handle |
 | `ironmaint-workspace/tests/apply_patch.rs` | 2 | revision CAS, dirty-workspace refusal |
 | adapter conformance (`debian-stub`, `fedora-stub`) | 2 | same generic suite, both pass |
 
 ## 12. Test results
+
+> **Amended 2026-10-01 (0B.10).** The §97 set is green at `2656528` with
+> **838** unit and **847** with `--features integration`, and
+> `verify-mcp-schemas` at **11**. The run below is 0B.9's, kept as written.
 
 All §97 commands green at `bf11da7` (0B.9 C6):
 
@@ -306,7 +337,9 @@ cargo run -p xtask -- verify-mcp-schemas               → 9 committed / 9 gener
 cargo run -p xtask -- verify-migrations                → 25 objects, status clean
 ```
 
-Counts grew from the 0B.6 report's 672/675 to 756/759: +84 across 0B.9.
+Counts grew from the 0B.6 report's 672/675 to 756/759: +84 across 0B.9, and
+0B.10 added a further 88 — most of it the §101 drivers, which between them
+assert the scenario end to end rather than one component of it at a time.
 The largest blocks are `ironmaint-mcp/tests/transport.rs` (15, over a real
 socket), `bins/ironmaintd/tests/startup_shutdown.rs` (13, driving the real
 binary as a child process), and `bins/ironmaintd/tests/config.rs` (17).
@@ -318,6 +351,15 @@ each verifier is invoked as `cargo run -p xtask -- <subcommand>`.
 ## 13. Actual IronClaw E2E result
 
 **The script now runs; the IronClaw half still cannot execute here.**
+
+> **Amended 2026-10-01 (0B.10).** The output below is the 0B.9 run and is kept
+> as written. The script now checks for **eleven** tools — C2's `job.resume` and
+> the eleventh, `release.candidate.create`, both had to be added, and a
+> hardcoded tool count was the *fourth* place a stale nine survived a sub-phase
+> (after `schema.rs`, `auth.rs` and `transport.rs`). The `ironclaw` half is still
+> skipped with a notice, and the last paragraph's conclusion is now **wrong**:
+> see §16.8, which is closed. A live re-run of the script against the 0B.10
+> surface has not been done — §20's closing note says so.
 
 `scripts/ironclaw-e2e.sh` was rewritten in 0B.9. The previous version could
 not run at all — it was a checked-in script guarded by a "STATUS" note saying
@@ -388,6 +430,10 @@ Specifically enforced and holding on this branch:
 
 ## 15. Schema verification result
 
+> **Amended 2026-10-01 (0B.10): `schemas/mcp/` is 11, not 9.** `job.resume` and
+> `release.candidate.create` joined at C2 and the C5 prerequisite.
+> `schemas/` is unchanged at 7.
+
 ```text
 schemas/          7 snapshot(s)  — no drift
   Evidence.json            Obligation.json           PublicationPlan.json
@@ -408,20 +454,33 @@ UTC for timestamps, schema version on top-level durable records.
 Ordered by risk to Phase 1.
 
 > **This section is not the complete list.** `doc/DEBT.md` is the standing
-> technical-debt register, audited 2026-09-29 against `0acaedc`. It carries four
+> technical-debt register, audited 2026-09-29 against `0acaedc` and **re-audited
+> 2026-10-01** after 0B.10. It carries four
 > items this report does not (§16.x does not mention them), one of which is HIGH
 > and concerns a safety invariant this document's §18 implicitly claims:
 >
 > - **D-01** — `ironmaint-store` and `ironmaint-store-sqlite` inherit no lint
 >   set, so the no-panic / no-`unsafe` policy is unenforced in the persistence
->   layer, which contains 4 real violations.
-> - **D-02** — the `SKILL.md` path named by `PHASE-0B.md:2077` is a **stale
->   duplicate** documenting a `check.run` wire format the server no longer accepts.
+>   layer, which contains 4 real violations. **Still open, and now the register's
+>   only HIGH** — 0B.10 closed everything else it found and deliberately did not
+>   touch this (`AGENTS.md`: one fix per branch).
+> - ~~**D-02** — the `SKILL.md` path named by `PHASE-0B.md:2077` is a **stale
+>   duplicate** documenting a `check.run` wire format the server no longer
+>   accepts.~~ **CLOSED in 0B.10 C3** — `skills/` is canonical, the duplicate is
+>   deleted, and `PHASE-0B.md` §61 is amended to point at the surviving file.
 > - **D-04 / D-05** — `dead_code` was never promoted to `deny` as its own comment
->   promises, and 4 of 6 suppressions are vestigial.
-> - **D-03** below is **wider** than §16.8 records: `next_actions` also advertises
->   3 actions (`MarkObligationSatisfied`, `AuthorizeOperation`, `Publish`) that no
->   tool can perform.
+>   promises, and 4 of 6 suppressions are vestigial. Still open.
+> - ~~**D-03** below is **wider** than §16.8 records: `next_actions` also
+>   advertises 3 actions (`MarkObligationSatisfied`, `AuthorizeOperation`,
+>   `Publish`) that no tool can perform.~~ **CLOSED in 0B.10** — `allowed` is
+>   strictly tool-performable, the human-action case has its own field, `Publish`
+>   is removed, and an unperformable `AllowedAction` is now a *compile* error.
+>   The census, including the two commands that gained a production caller rather
+>   than a tool, is in `doc/DEBT.md` D-03.
+>
+> Also closed since: **D-07** (the suppressed `never_loop` — §17 Q6) and **D-14**
+> (`rebuild_projection` rejected every real job's log, which is §102 item 3 — see
+> row 3 of §20). **D-15** is new and is the §102 item 30 blocker.
 
 ### 16.1 ~~Four MCP tools are shape-only~~ — CLOSED in 0B.9
 
@@ -510,7 +569,23 @@ gates are never seeded. That is a *missing producer*, not a missing
 refusal, and it is deferred with the rest of the privileged-operation
 surface. See also §16.8.
 
-### 16.4 No `CaptureResume` / `infrastructure_blocked` signal (MEDIUM)
+### 16.4 No `CaptureResume` / `infrastructure_blocked` signal (MEDIUM) — **PARTLY CLOSED in 0B.10 C2**
+
+> **What changed (2026-10-01).** "Nothing can exit them" is no longer true. The
+> *exit* is complete for both exceptional states: `ResumeRecord` is a durable
+> `JobEvent::ResumeRecorded`, and `job.resume` consumes it. The *entry* is half
+> there — `EnterHumanReview` exists as a command, and no tool can call it, which
+> is deliberate.
+>
+> | Half | State |
+> |---|---|
+> | A recorded resume state, durable and replayable | **done** — `JobEvent::ResumeRecorded`, SQLite round-tripped |
+> | An exit that reads the record rather than inferring it | **done** — `job.resume`; with no record it returns a typed `InvalidInput` rather than scanning the log |
+> | A way to *signal* `InfrastructureBlocked` | **still absent** |
+>
+> So the state now has a way out and no way in. `doc/DEBT.md` D-09 carries the
+> detail; the remaining decision — who may mark a job blocked, and on what
+> evidence — is a Phase 1 question, because real adapters are what will hit it.
 
 `TransitionContext.resume_event` is always `None`;
 `infrastructure_blocked` is always `false`. `HumanReviewRequired` and
@@ -543,6 +618,21 @@ is watching.
 
 Deferred to 0B.10.
 
+> **NOT BUILT in 0B.10, and that is a decision (2026-10-01).** §41 defines
+> `reconcile` as a per-call function — `runtime.reconcile(job_id)`, called by the
+> caller, returning where it stopped. §67's startup sequence has no reconcile
+> step, and no spec text asks for a loop. The supporting argument is in
+> `doc/DEBT.md` D-10: an agent is the orchestrator here, and a daemon that
+> advanced jobs behind its back would put state changes in the audit log that no
+> actor requested.
+>
+> The last sentence above is now **stale and is the interesting part** — "a
+> background loop would have nothing to do anyway" was true while D-03 was open
+> and stopped being true the moment C1 landed. A limitation written as a
+> *consequence* of another defect outlives the defect and starts to read as a
+> requirement. Revisit when there is a first consumer, and name it in Phase 1's
+> plan.
+
 ### 16.7 The 0B.8 hardening suite is not exhaustive (LOW)
 
 `unmet_gate_requirements_block_transition` asserts the transition is
@@ -552,7 +642,28 @@ blocker list in that configuration. The invariant under test ("the projection
 is unchanged") is solid; the specific error kind is not pinned. Worth
 tightening if the error taxonomy is considered stable API.
 
-### 16.8 A job cannot advance past `EventDetected` (HIGH) — found in 0B.9, deferred to Phase 1
+### 16.8 A job cannot advance past `EventDetected` (HIGH) — found in 0B.9 — **CLOSED in 0B.10**
+
+> **Closed 2026-10-01.** The text below is the finding as recorded on 2026-09-29,
+> kept as written because the closure is only legible against it. Summary: C1
+> gave the three orphaned commands one production caller each (driven by
+> `candidate.capture`, via the adapter registry the daemon now loads at startup);
+> C3 split the `next_actions` wire; and C5 proved the whole of §101 runs through
+> `dispatch()` with **no `RuntimeService` handle** — the acceptance criterion this
+> entry itself set for Phase 1, satisfied one sub-phase early. `doc/DEBT.md` D-03
+> carries the re-derived census and the two further defects the driver found.
+>
+> **Nothing below is still true of the code.** The greps, the `no_op` loop, the
+> "the wall is two deep", and the three options (a)/(b)/(c) are all historical.
+> Option (a) was taken, and (b) turned out not to conflict with §94, which
+> enumerates tool *capabilities* rather than a count.
+
+> **Decision (architect, 2026-09-29): option (c) — leave it to the Phase 1
+> adapter.** 0B.10 is `CaptureResume`/`infrastructure_blocked` (§16.4), the
+> daemon reconcile loop (§16.6), and the privileged-operation producers.
+> §16.8 closes when the adapter that already has to exist for §106
+> materialises checks and activates a candidate. Options (a) and (b) are
+> not taken, so the nine-tool enumeration in §94 stands unchanged.
 
 > **Decision (architect, 2026-09-29): option (c) — leave it to the Phase 1
 > adapter.** 0B.10 is `CaptureResume`/`infrastructure_blocked` (§16.4), the
@@ -706,12 +817,20 @@ startup** and compares per request, so rotating the file does nothing
 until the daemon restarts. The comment overstates the revocation story.
 
 **6. ~~`Reconcile` advances one transition per call, and its loop is dead
-code.~~ STILL OPEN, and 0B.9 did not touch it.** The `for _ in 0..15u32`
-at `service.rs:615` remains, still `#[allow(clippy::never_loop)]`, still
-with `Advanced` returning on the first transition. 0B.9 deliberately left
-it: removing it changes `reconcile` from "loop until it stops" to "one
-step", and that is a semantic change, not a cleanup. The single-transition
-semantic needs confirming first.
+code.~~ ANSWERED 2026-10-01, in 0B.10 C4 (`cec87d7`).** The semantic question
+was settled by evidence already in the tree, which this entry had not looked at:
+**§41** says reconciliation "may continue through multiple trivially satisfied
+stages", and **`ReconcileOutcome::Advanced`'s own doc comment** already promised
+"the projection advanced through **one or more** rules". The code contradicted
+its own type documentation. `reconcile` now walks every satisfied rule and stops
+where the next is blocked, and the `#[allow(clippy::never_loop)]` is
+**deleted** rather than re-suppressed.
+
+Worth carrying forward: the suppression was a design decision deferred to a
+future reader, written in the wrong place. Someone read the lint and silenced it
+instead of reading it. This is the second time in this phase that a suppressed
+lint has been a design note in disguise — **grep `#[allow(clippy::` and read each
+argument.** `doc/DEBT.md` D-07 carries the full note.
 
 It is worth noting in the meantime that **the loop is not the reason
 §16.8 happens.** `reconcile` returns `NoOp` on its first iteration for a
@@ -727,6 +846,16 @@ is now ten: 0B.10 C2 added `job.resume`, because an agent that lands in
 `HumanReviewRequired` otherwise had no way out and §101 could not be
 driven end to end over MCP.)
 
+> **Update 2026-10-01 (0B.10 C5): the criterion is already met, and is now a
+> regression test.** `crates/ironmaint-testkit/tests/mcp_acceptance_scenario.rs`
+> drives §101 from `job.create` to `ReadyForApproval` with every step a
+> `dispatch()` call and no `RuntimeService` handle — the criterion above, exactly
+> as written. Phase 1's first adapter therefore inherits a test that fails the
+> moment it cannot be reached through the tool surface, which is a stronger
+> position than the one this question was asking for. (The count is now
+> **eleven**; `release.candidate.create` landed at the C5 prerequisite, for
+> §101 steps 26–27.)
+
 ---
 
 ## 18. North-star check (§105)
@@ -734,6 +863,21 @@ driven end to end over MCP.)
 > IronClaw can autonomously diagnose and repair a synthetic
 > package-maintenance failure, but it cannot directly alter IronMaint's
 > truth.
+
+> **Re-verified 2026-10-01 (0B.10). The qualifier below is now narrower, and
+> the gap it described is closed.** Read the amended verdict before the original:
+>
+> - *"demonstrated at the API level and **not** at the tool level"* — **no longer
+>   true.** §101 now runs end to end through `dispatch()` with no
+>   `RuntimeService` handle (`mcp_acceptance_scenario.rs`), which is the tool
+>   level the sentence is about.
+> - *"not by a live IronClaw agent (item 30)"* — **still true, and the only
+>   reason a qualifier remains.** No `ironclaw` binary exists in this
+>   environment; `doc/DEBT.md` D-15 carries the verified repro.
+>
+> So: the first half is demonstrated at the tool level, by a conforming MCP
+> client rather than by IronClaw specifically. The second half is unchanged, and
+> is the half the sentence is really about.
 
 **Accurate with one qualifier.** The first half is demonstrated: the §81
 driver and the §94 dispatcher test both complete the scenario, and every
@@ -754,6 +898,168 @@ the tool level, which is the level the sentence is actually about.
 > executor, or release semantics.
 
 **Accurate.** The orchestrator is referenced only by `OrchestratorRef` (an
-opaque id) and reaches the system exclusively through nine JSON tools. No
+opaque id) and reaches the system exclusively through eleven JSON tools. No
 core type names IronClaw; `verify-architecture` enforces that the dependency
 edge runs runtime → mcp, never mcp → runtime.
+
+**This second claim is the one 0B.10 turned from a claim into a test.** "Reaches
+the system exclusively through N JSON tools" is a statement about the *wire*, and
+the 0B.9 test suite could only assert it by holding a `RuntimeService` and
+noting that it didn't need it. `mcp_acceptance_scenario.rs` asserts it by
+construction: it completes the entire §101 workflow holding nothing else.
+
+---
+
+## 19. Sub-phase 0B.10 — making §101 real (2026-09-30 → 2026-10-01)
+
+0B.1–0B.9 built the parts. **0B.10 checked the list, and found that three of the
+thirty §101 steps were not merely untested but unrepresentable.** That is the
+finding worth carrying, and it is why this section leads with it rather than with
+the commit list.
+
+**What the 0B.9 completion report claimed, against what a walk of §101 needed:**
+
+| §102 item | Claimed at 0B.9 | Actually true |
+|---|---|---|
+| 28 — a deterministic no-LLM driver completes the workflow | met | the *only* driver pre-seeded twelve passing gates; it exercised no failure, no repair, and no evidence invalidation |
+| 29 — an MCP-client test completes the workflow | not met | no test in `crates/ironmaint-mcp/tests/` even mentions `ReadyForApproval`; all four hold a `RuntimeService` |
+| 31 — the final state is `ReadyForApproval` | met | true only for the pre-seeded path |
+
+Step 18 is the sharpest case. §101 requires a **mandatory policy obligation to
+fail** — and there was no production writer of any obligation status other than
+`Pass`. Not "untested": unrepresentable. `RecordObligationOutcome` is that writer
+(`8d91ad6`), and it is deliberately **off** MCP, because §102 item 25 forbids
+exactly this.
+
+The same shape then recurred eight more times — **twelve in all by 0B.10's
+end** — and it is the single most important thing this section has to say:
+
+> **A component modelled something correctly, and no production path produced the
+> input.** Not one of the twelve was a bug *inside* a component. Every one was a
+> missing seam between two things that were individually correct and
+> individually tested — and no amount of unit testing inside a component finds a
+> missing seam.
+
+### The method that found them
+
+D-14 (`rebuild_projection` rejected **100%** of real jobs) shipped in 0B.9
+because every pre-existing rebuild test hand-assembled the log it asserted on.
+The same shape was visible in `synthetic_e2e.rs`, which pre-seeded its gates.
+
+The method that found the rest: **drive the real command surface against a real
+store, and assert on what the store says afterwards.** The second half matters as
+much as the first — a mock-backed suite cannot see the production symptom, which
+is why `MockStore::put_source_candidate` silently minting a second row passed CI
+while SQLite raised `UNIQUE constraint failed: source_candidates.fingerprint` to
+an agent mid-conversation.
+
+### The commits
+
+| Commit | What |
+|---|---|
+| C1 | `AdapterRegistry` on `RuntimeService`; `candidate.capture` drives activate + materialise + derive; the daemon loads the registry at §67 startup |
+| C2 | `ResumeRecord` given somewhere durable to live (`JobEvent::ResumeRecorded`), `EnterHumanReview` / `ResumeJob`, and the tenth tool `job.resume` |
+| C3 | the `next_actions` wire split; enforcement promoted to a compile error; `SKILL.md` made canonical and the stale duplicate deleted (D-02) |
+| — | `RecordObligationOutcome` (`8d91ad6`) and D-14 (`0b33c3d`), both C4 prerequisites, landed first and separately |
+| C4 | `reconcile` walks every satisfied rule (`cec87d7`); the repair window moves to `ReadyForApproval` (`e14caac`); `ScenarioAdapter` + `acceptance_scenario.rs` (`7aac374`) |
+| `8138f37`, `d98d780` | `CreateReleaseCandidate` and the eleventh tool `release.candidate.create`, for §101 steps 26–27 |
+| `ec9e06c` | eleventh instance — re-capturing an unchanged tree must not mint a second candidate |
+| `f009e2e` | twelfth instance — `next_actions` must report an outstanding obligation at every state, not only where a `GatePending` blocker happened to fire |
+| C5 | `mcp_acceptance_scenario.rs` — §101 through `dispatch()`, no `RuntimeService` handle (`2656528`) |
+
+### Three things the plan did not predict
+
+1. **Where the driver could live.** §98.6 forbids `ironmaint-mcp` from depending
+   on a store backend in **either** dependency kind. The rule is about the
+   crate, not about whether the caller is a test, so it was not weakened; the
+   driver went to `ironmaint-testkit/tests/`, which §98 already blesses.
+2. **A tenth tool was spec-compatible after all.** `crates/ironmaint-mcp/src/schema.rs`
+   had a test asserting exactly nine tools, commented that a tenth "should be a
+   deliberate edit to this assertion, not a surprise." It was — and the guard's
+   *premise* was wrong. §94 lists **capabilities**, not a count. The guard was
+   corrected in place, not removed.
+3. **A failed mandatory obligation must not divert the job.** 0A §21 says
+   orchestration "*may*" move a job to an exceptional state. Automatic diversion
+   would have made §101's own repair loop unreachable for the agent that is
+   supposed to perform it, so entering is explicit and has **no** tool.
+
+### What 0B.10 deliberately did not do
+
+- **Privileged-operation producers** — §4.10, §26 and §99 forbid them. Not
+  deferred: building them would produce code the acceptance scenario must never
+  exercise.
+- **A daemon reconcile loop** — §41 defines `reconcile` per-call. See §16.6 and
+  `doc/DEBT.md` D-10.
+- **Building `ironclaw`** — toolchain mismatch and, more to the point,
+  `CLAUDE.md` designates the submodule a reference. See §20 and D-15.
+- **D-01 / D-04 / D-05 / D-08** — real, and unrelated. `AGENTS.md`: one feature
+  or fix per branch. D-01 is the register's only remaining HIGH and wants its
+  own clean review.
+
+---
+
+## 20. §102 Definition of Done — status at `2656528`
+
+**33 of 34 are true. One cannot be checked in this environment.**
+
+This table is the answer to "is Phase 0B complete", and it is written so that the
+one that is not can be told apart from the one that was never attempted.
+
+| # | §102 item | Status | Evidence |
+|---|---|---|---|
+| 1 | durable SQLite persistence | **met** | `ironmaint-store-sqlite`; `verify-migrations` → 25 objects, clean |
+| 2 | domain events are append-only | **met** | no update or delete path to `job_events`; `hardening.rs` |
+| 3 | projections can be rebuilt from events | **met** — was **broken for every real job** until 0B.10 | D-14 / `0b33c3d`; `projection_rebuild.rs` drives the real `CreateJob` path |
+| 4 | jobs survive daemon restart | **met** | §101 steps 4–5, over real SQLite in both drivers |
+| 5 | candidates survive daemon restart | **met** | §101 step 5 |
+| 6 | evidence survives daemon restart | **met** | `hardening.rs` |
+| 7 | artifacts are content-addressed and integrity checked | **met** | `ArtifactStore`; corruption tests |
+| 8 | workspaces are isolated | **met** | `WorkspaceManager`; per-job roots |
+| 9 | workspace mutations use optimistic revision checks | **met** | `apply_patch_rejects_stale_revision` |
+| 10 | path traversal is blocked | **met** | `resolve_strict_no_follow` |
+| 11 | dirty workspaces cannot generate authoritative evidence | **met** | `WorkspaceState.dirty` guard; §43 note asserted at every capture in the C5 driver |
+| 12 | candidates can be captured from workspaces | **met** | `capture_candidate`; §101 step 3 |
+| 13 | checks execute only through registered capability definitions | **met** | `ToolRegistry`; no arbitrary-executable path |
+| 14 | the agent cannot provide arbitrary executables or shell commands | **met** | `check.run` takes a `check_id`, never a command line |
+| 15 | process failures are distinct from infrastructure failures | **met** | `GateResult::Fail` vs `InfrastructureFailed`, kept distinct by the type system |
+| 16 | check operations are persisted | **met** | `OperationStore`; `interrupted` recovery |
+| 17 | interrupted executions recover as `Interrupted`, not fabricated `Fail` | **met** | `interrupted_reconcile_is_idempotent_on_retry` |
+| 18 | evidence is generated by trusted normalizers | **met** | the §92 synthetic tool set |
+| 19 | evidence remains candidate-bound | **met** | §30 fingerprint binding on every `EvidenceRecord` |
+| 20 | old evidence cannot authorize new candidates | **met** | asserted twice in the C5 driver: a fresh candidate's gate returns `NotFound`, and `old_evidence_cannot_authorize_a_new_candidate` |
+| 21 | runtime can deterministically calculate next actions | **met** | `project_next_actions` is pure; C3 made `allowed` mean one thing |
+| 22 | runtime can deterministically reconcile state | **met** | one call walks every satisfied rule until blocked (D-07) |
+| 23 | MCP is authenticated | **met** | bearer check is axum middleware *outside* rmcp; §94 exit checkpoint |
+| 24 | MCP tools expose domain capabilities, not storage primitives | **met** | no tool names a table, a row, or a store method |
+| 25 | MCP cannot directly set state, gates, obligations, approvals, or evidence | **met** | no tool has a status-writing parameter. `RecordObligationOutcome` is a command, **not** a tool — deliberately |
+| 26 | IronClaw can call the MCP server | **met** | a conforming MCP client authenticates, calls all eleven tools, and drives a job to `ReadyForApproval`. The *extension manifest* round-trip is D-06, still open |
+| 27 | an IronClaw skill describes the maintenance interaction model | **met** | `skills/ironmaint-maintainer/SKILL.md`, canonical since C3 (D-02) |
+| 28 | a deterministic no-LLM driver completes the synthetic workflow | **met** | `acceptance_scenario.rs` — all 30 §101 steps, no pre-seeded gates |
+| 29 | an MCP-client integration test completes the synthetic workflow | **met** | `mcp_acceptance_scenario.rs` — the same walk, `dispatch()` only |
+| **30** | **an actual IronClaw agent can complete the synthetic repair workflow** | **NOT VERIFIABLE HERE** | **environment-blocked**, not unmet. No `ironclaw` binary; the submodule pins Rust 1.98.0 against our 1.88 MSRV. Full repro in `doc/DEBT.md` D-15 |
+| 31 | the final state is `ReadyForApproval` | **met** | asserted by both drivers, over real SQLite, after a restart |
+| 32 | no real Debian or Fedora maintenance tool is required | **met** | the scenario adapter is a testkit fixture; the daemon's registry is the §92 set |
+| 33 | no release credential exists in the agent environment | **met** | no producer for approvals or privileged operations exists at all (§4.10) |
+| 34 | all 0A architecture invariants continue to pass | **met** | `verify-architecture` → no violations. Note that the §98.6 edge rule (`ironmaint-mcp` → `ironmaint-store-sqlite`, forbidden in **both** dependency kinds) pre-dated 0B.10 but had never been exercised by a test; 0B.10's C5 driver is what proved it, by having to live in `ironmaint-testkit` |
+
+### Reading row 30 honestly
+
+Row 30 is not "unmet" and it is not a code defect. Every other row that a live
+IronClaw agent would exercise **is** exercised without one: the C5 driver is a
+conforming MCP client that holds no runtime handle and completes §101 end to end.
+What row 30 adds is IronClaw's own agent loop and its extension manifest.
+
+So the accurate sentence is: **the workflow is proven agent-drivable; the
+specific agent named by the spec has not been run against it.** A green §97 gate
+and a green C5 do not silently stand in for it — which is what `doc/DEBT.md` D-15
+is for.
+
+### The one honest gap in this report
+
+A real end-to-end daemon run with `scripts/ironclaw-e2e.sh` — HTTP transport,
+real auth, real process — has **not** been re-run against the 0B.10 tool surface.
+The C5 claim is "no `RuntimeService` handle", which a test process can honour
+and a reviewer should still want confirmed over a socket. `scripts/ironclaw-e2e.sh`
+itself now checks for eleven tools, and its IronClaw half skips with a notice
+when no binary is present — so a green run of it proves the server, not the
+agent.
