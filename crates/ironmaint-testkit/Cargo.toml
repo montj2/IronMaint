@@ -32,6 +32,15 @@ ironmaint-artifacts = { path = "../ironmaint-artifacts" }
 # in `ironmaint-runtime`) by PHASE-0B.md §98: the test-support crate
 # is not a production dependency direction.
 ironmaint-store-sqlite = { path = "../ironmaint-store-sqlite" }
+# The §101 acceptance scenario's MCP half (DoD #29) drives the same
+# walk through `dispatch` and reads the store for the facts no tool
+# exposes. It cannot live in `ironmaint-mcp`: §98.6 forbids that
+# crate from depending on a store backend in *either* dependency
+# kind, and "MCP must never bypass runtime" is a rule about the
+# crate, not about whether the caller is a test. Allowed here for the
+# same reason as the row above.
+ironmaint-mcp = { path = "../ironmaint-mcp" }
+ironmaint-workspace = { path = "../ironmaint-workspace" }
 pretty_assertions = { workspace = true }
 serde = { workspace = true }
 tempfile = { workspace = true }
@@ -54,4 +63,9 @@ required-features = ["integration"]
 [[test]]
 name = "synthetic_e2e"
 path = "tests/synthetic_e2e.rs"
+required-features = ["integration"]
+
+[[test]]
+name = "mcp_acceptance_scenario"
+path = "tests/mcp_acceptance_scenario.rs"
 required-features = ["integration"]

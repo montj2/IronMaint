@@ -41,6 +41,7 @@
 //! `ProcessExecutor` exactly as the daemon reaches it.
 
 use std::path::Path;
+use std::sync::{Arc, Mutex};
 
 use ironmaint_adapter_api::{
     AdapterCapabilities, AdapterDescriptor, AdapterError, AdapterErrorKind, BuildCapability,
@@ -49,7 +50,9 @@ use ironmaint_adapter_api::{
     PolicyContext, PolicyPlan, QaPlan, ReleaseCapability, ToolCapabilityKey, VersioningCapability,
     verdict_from_evidence_status,
 };
-use ironmaint_core::{AuthorityId, DistributionFamily, PackageName, PackageVersion};
+use ironmaint_core::{
+    AuthorityId, CandidateFingerprint, DistributionFamily, PackageName, PackageVersion,
+};
 use ironmaint_evidence::{ChangeDomain, EvidenceKind, GateStage};
 use ironmaint_executor::{ExecutionClass, ExecutionLimits, ToolDefinitionRecord, ToolRegistry};
 use ironmaint_policy::{
@@ -226,6 +229,19 @@ pub struct ScenarioScript {
     /// can leave a mandatory obligation failing is to run the
     /// policy evaluator and have its evidence come back negative.
     pub policy_failures: Vec<String>,
+    /// Whether the three lists above are matched against the
+    /// package *version* or against the *ordinal of the capture*.
+    ///
+    /// See [`ScenarioScript::capture_ordinal`]. `false` — the
+    /// version — is what §101 describes and what a driver holding
+    /// the command surface can produce, because it builds the
+    /// `SourceCandidate` itself and names any version it likes.
+    pub by_capture_ordinal: bool,
+    /// First-seen order of the candidates this script has been
+    /// asked about, keyed by fingerprint.
+    ///
+    /// Empty for a version-keyed script, and never read.
+    capture_order: Arc<Mutex<Vec<CandidateFingerprint>>>,
 }
 
 impl ScenarioScript {
@@ -245,6 +261,8 @@ impl ScenarioScript {
             build_failures: vec!["1.0.0".to_string()],
             qa_failures: vec!["1.0.1".to_string()],
             policy_failures: Vec::new(),
+            by_capture_ordinal: false,
+            capture_order: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -265,6 +283,83 @@ impl ScenarioScript {
         Self {
             policy_failures: vec!["1.0.2".to_string()],
             ..Self::section_101()
+        }
+    }
+
+    /// §101 keyed by capture order rather than by version, for a
+    /// driver that holds **only** the MCP tool surface.
+    ///
+    /// ## Why a second key is needed at all
+    ///
+    /// `candidate.capture` names the version itself, and it names it
+    /// `0+ironmaint` every time: the workspace mints that sentinel
+    /// because a real upstream version is not resolvable in 0B
+    /// (`crates/ironmaint-workspace/src/capture.rs`). The tool
+    /// takes no version argument, so a tool-only driver cannot
+    /// produce the input a version-keyed plan varies on.
+    ///
+    /// That is the same shape as the four missing links 0B.10 C1
+    /// found — a component that is correct, and an input nothing
+    /// produces — except that here the missing thing is a value the
+    /// tool surface does not expose rather than a writer that does
+    /// not exist. The fix is deliberately *not* to widen
+    /// `CaptureInput`: a version is a claim about upstream, and
+    /// letting a caller assert one would put a caller-supplied
+    /// string into a `CandidateFingerprint`. So the script varies
+    /// on something the agent does control and the capture does
+    /// change: how many distinct sources this adapter has been
+    /// asked to plan for.
+    ///
+    /// ## What this gives up
+    ///
+    /// The claim is weaker. "The third candidate I am asked to plan
+    /// for gets the third treatment" is not "the source at version
+    /// 1.0.2 fails policy". A capture-ordinal key says the
+    /// *sequence* of the scenario and nothing about the source
+    /// being repaired — if the agent captured twice without
+    /// patching, this script would still hand out the third
+    /// treatment. [`ScenarioScript::section_101`] is keyed the way
+    /// §101 actually describes, and is the script to read if you
+    /// are asking what the scenario asserts.
+    #[must_use]
+    pub fn capture_ordinal() -> Self {
+        Self {
+            build_failures: vec!["0".to_string()],
+            qa_failures: vec!["1".to_string()],
+            policy_failures: vec!["2".to_string()],
+            by_capture_ordinal: true,
+            capture_order: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+
+    /// This candidate's key: its version, or its position in the
+    /// sequence of candidates this script has been asked about.
+    ///
+    /// Keyed on the fingerprint rather than on a counter so that
+    /// re-planning the same candidate — which
+    /// `derive_candidate_plans` does guard against, but a
+    /// correctness that should not be load-bearing — yields the
+    /// same key rather than the next one.
+    #[must_use]
+    pub fn key_for(&self, candidate: &ironmaint_core::SourceCandidate) -> String {
+        if !self.by_capture_ordinal {
+            return candidate.package().version.as_str().to_string();
+        }
+        let fingerprint = candidate.fingerprint();
+        // A poisoned lock means some other thread panicked while
+        // holding it. The value is a plain `Vec` this method is the
+        // only writer to, so recovering it is strictly better than
+        // propagating a panic into a test double.
+        let mut order = self
+            .capture_order
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match order.iter().position(|f| f == fingerprint) {
+            Some(at) => at.to_string(),
+            None => {
+                order.push(fingerprint.clone());
+                (order.len() - 1).to_string()
+            }
         }
     }
 }
@@ -329,19 +424,20 @@ impl ScenarioAdapter {
     }
 
     /// The §101 script for a driver holding only the MCP tool
-    /// surface — see [`ScenarioScript::section_101_policy_derived`]
-    /// for why the policy check has to fail alongside the
+    /// surface — see [`ScenarioScript::capture_ordinal`] for why
+    /// this one is keyed by capture order rather than by version,
+    /// and why the policy check has to fail alongside the
     /// obligation.
     ///
     /// # Errors
     ///
     /// Propagates [`ScenarioAdapter::new`].
-    pub fn section_101_policy_derived() -> Result<Self, AdapterError> {
+    pub fn section_101_capture_ordinal() -> Result<Self, AdapterError> {
         Self::new(
             DistributionFamily::new(SYNTHETIC_FAMILY).map_err(|e| {
                 AdapterError::new(AdapterErrorKind::InvalidConfiguration, e.to_string())
             })?,
-            ScenarioScript::section_101_policy_derived(),
+            ScenarioScript::capture_ordinal(),
         )
     }
 
@@ -352,20 +448,26 @@ impl ScenarioAdapter {
         &self.script
     }
 
-    /// The tool key a check of `kind` runs at `version`.
+    /// The tool key a check of `kind` runs for the script key
+    /// `key`.
+    ///
+    /// `key` is a package version or a capture ordinal depending on
+    /// [`ScenarioScript::by_capture_ordinal`] — resolve it with
+    /// [`ScenarioScript::key_for`] rather than passing a version,
+    /// or the two drivers' scripts will not mean the same thing.
     ///
     /// Exposed so the driver can assert "the build check for 1.0.0
     /// is the one that fails" without duplicating the rule.
     #[must_use]
-    pub fn tool_for(&self, kind: &EvidenceKind, version: &str) -> ToolCapabilityKey {
-        if kind == &EvidenceKind::Build && self.script.build_failures.iter().any(|v| v == version) {
+    pub fn tool_for(&self, kind: &EvidenceKind, key: &str) -> ToolCapabilityKey {
+        if kind == &EvidenceKind::Build && self.script.build_failures.iter().any(|v| v == key) {
             self.build_fail.clone()
         } else if kind == &EvidenceKind::PackageQa
-            && self.script.qa_failures.iter().any(|v| v == version)
+            && self.script.qa_failures.iter().any(|v| v == key)
         {
             self.qa_fail.clone()
         } else if kind == &EvidenceKind::PolicyEvaluation {
-            if self.script.policy_failures.iter().any(|v| v == version) {
+            if self.script.policy_failures.iter().any(|v| v == key) {
                 self.policy_fail.clone()
             } else {
                 self.policy_pass.clone()
@@ -378,12 +480,13 @@ impl ScenarioAdapter {
     }
 
     /// The twelve mandatory checks a §101 walk needs, planned for
-    /// `version`.
+    /// `candidate`.
     #[must_use]
-    pub fn plan_for(&self, version: &str) -> Vec<PlannedCheck> {
+    pub fn plan_for(&self, candidate: &ironmaint_core::SourceCandidate) -> Vec<PlannedCheck> {
+        let key = self.script.key_for(candidate);
         SCENARIO_STAGES
             .iter()
-            .map(|(kind, _)| PlannedCheck::new(self.tool_for(kind, version), kind.clone(), true))
+            .map(|(kind, _)| PlannedCheck::new(self.tool_for(kind, &key), kind.clone(), true))
             .collect()
     }
 }
@@ -445,7 +548,7 @@ impl DistributionAdapter for ScenarioAdapter {
 impl BuildCapability for ScenarioAdapter {
     fn build_plan(&self, ctx: &CandidateContext) -> Result<BuildPlan, AdapterError> {
         let mut plan = BuildPlan::new();
-        for check in self.plan_for(ctx.package.version.as_str()) {
+        for check in self.plan_for(ctx.candidate) {
             plan = plan.with_check(check);
         }
         Ok(plan)
@@ -474,9 +577,9 @@ impl PolicyCapability for ScenarioAdapter {
         // obligation recorded for C4 is visibly a different policy
         // statement from the one recorded for C3, rather than the
         // same row with a different status.
-        let version = ctx.package.version.as_str();
+        let key = self.script.key_for(ctx.candidate);
         let template = ObligationTemplate::new(
-            PolicyReference::new(AuthorityId::new()).with_section(version),
+            PolicyReference::new(AuthorityId::new()).with_section(&key),
             ObligationStrength::Mandatory,
             Applicability::Applicable,
             SCENARIO_OBLIGATION_REQUIREMENT,
@@ -618,6 +721,40 @@ mod tests {
         ScenarioAdapter::section_101().expect("the scenario's keys are well-formed")
     }
 
+    /// A candidate at `version` over the tree `n`.
+    ///
+    /// The tree varies because it has to: a candidate's fingerprint
+    /// covers the tree OID, so two candidates differing only in
+    /// version are different candidates but two candidates
+    /// differing in *nothing* are the same one — and a
+    /// fingerprint-keyed script would hand them the same ordinal.
+    fn candidate(version: &str, n: char) -> ironmaint_core::SourceCandidate {
+        use ironmaint_core::{
+            DistributionRef, DistributionRelease, GitHashAlgorithm, GitObjectId, JobId,
+            PackageIdentity, PackageRevision, RepositoryRef, SourceCandidate, VcsKind,
+        };
+        let family = DistributionFamily::new(SYNTHETIC_FAMILY).unwrap();
+        let release = DistributionRelease::new("unstable").unwrap();
+        let package = PackageIdentity::new(
+            DistributionRef::new(family, release),
+            PackageName::new("synthetic-pkg").unwrap(),
+        );
+        let repository = RepositoryRef::new(
+            VcsKind::Git,
+            url::Url::parse("https://example.invalid/synthetic-pkg.git").unwrap(),
+        )
+        .unwrap();
+        let object = |c: char| GitObjectId::new(GitHashAlgorithm::Sha1, c.to_string().repeat(40));
+        SourceCandidate::new(
+            JobId::new(),
+            PackageRevision::new(package, PackageVersion::new(version).unwrap()),
+            repository,
+            object('a').unwrap(),
+            object(n).unwrap(),
+            time::OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap(),
+        )
+    }
+
     #[test]
     fn the_plan_covers_every_required_gate_stage() {
         // The whole point of `SCENARIO_STAGES` is that the driver's
@@ -675,7 +812,7 @@ mod tests {
     fn every_planned_check_is_mandatory_and_has_a_tool() {
         let a = adapter();
         for version in ["1.0.0", "1.0.1", "1.0.2", "1.0.3"] {
-            let plan = a.plan_for(version);
+            let plan = a.plan_for(&candidate(version, 'b'));
             assert_eq!(plan.len(), SCENARIO_STAGES.len());
             for check in plan {
                 assert!(check.mandatory, "{version}: {} is not mandatory", check.key);
@@ -701,6 +838,76 @@ mod tests {
                 "{kind} should reach {stage}"
             );
         }
+    }
+
+    /// The capture-ordinal script has to hand out a *different*
+    /// treatment per capture, and has to keep handing out the same
+    /// one when the runtime asks twice about the same candidate —
+    /// `plan_for` is reached from both `build_plan` and the
+    /// driver's own assertions.
+    #[test]
+    fn the_capture_ordinal_script_varies_by_capture_not_by_version() {
+        let a =
+            ScenarioAdapter::section_101_capture_ordinal().expect("the scenario's keys are valid");
+        // Four candidates at the *same* version, which is exactly
+        // what `candidate.capture` produces: the workspace mints
+        // `0+ironmaint` every time and only the tree differs.
+        let cands: Vec<_> = ['b', 'c', 'd', 'e']
+            .iter()
+            .map(|n| candidate("0+ironmaint", *n))
+            .collect();
+
+        assert_eq!(
+            a.tool_for(&EvidenceKind::Build, &a.script().key_for(&cands[0]))
+                .as_str(),
+            SYNTHETIC_BUILD_FAIL,
+            "capture 0 fails its build"
+        );
+        assert_eq!(
+            a.tool_for(&EvidenceKind::Build, &a.script().key_for(&cands[1]))
+                .as_str(),
+            SYNTHETIC_BUILD_PASS,
+            "capture 1 builds; the version did not change, only the ordinal"
+        );
+        assert_eq!(
+            a.tool_for(&EvidenceKind::PackageQa, &a.script().key_for(&cands[1]))
+                .as_str(),
+            SYNTHETIC_QA_FAIL,
+            "capture 1 fails its QA"
+        );
+        assert_eq!(
+            a.tool_for(
+                &EvidenceKind::PolicyEvaluation,
+                &a.script().key_for(&cands[2])
+            )
+            .as_str(),
+            SYNTHETIC_POLICY_FAIL,
+            "capture 2 is the one whose policy evaluation fails, which is what              makes its mandatory obligation fail"
+        );
+        assert_eq!(
+            a.tool_for(
+                &EvidenceKind::PolicyEvaluation,
+                &a.script().key_for(&cands[3])
+            )
+            .as_str(),
+            SYNTHETIC_POLICY_PASS,
+            "capture 3 is clean"
+        );
+    }
+
+    #[test]
+    fn a_replanned_candidate_keeps_its_ordinal() {
+        let a =
+            ScenarioAdapter::section_101_capture_ordinal().expect("the scenario's keys are valid");
+        let first = candidate("1.0.0", 'b');
+        let second = candidate("1.0.0", 'c');
+        assert_eq!(a.script().key_for(&first), "0");
+        assert_eq!(a.script().key_for(&second), "1");
+        // Asking again about either must not consume a new ordinal,
+        // or the second `build_plan` for a candidate would plan it
+        // differently from the first.
+        assert_eq!(a.script().key_for(&first), "0");
+        assert_eq!(a.script().key_for(&second), "1");
     }
 
     #[test]
