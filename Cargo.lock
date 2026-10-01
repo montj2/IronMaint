@@ -1178,6 +1178,7 @@ dependencies = [
  "ironmaint-policy",
  "ironmaint-state",
  "ironmaint-store",
+ "ironmaint-store-sqlite",
  "ironmaint-workspace",
  "schemars 0.8.22",
  "serde",
@@ -1263,11 +1264,14 @@ dependencies = [
  "ironmaint-core",
  "ironmaint-evidence",
  "ironmaint-executor",
+ "ironmaint-mcp",
  "ironmaint-policy",
  "ironmaint-runtime",
  "ironmaint-state",
  "ironmaint-store",
+ "ironmaint-store-sqlite",
  "ironmaint-synthetic-tools",
+ "ironmaint-workspace",
  "pretty_assertions",
  "serde",
  "serde_json",
@@ -1299,11 +1303,14 @@ name = "ironmaintctl"
 version = "0.1.0"
 dependencies = [
  "ironmaint-core",
+ "ironmaint-executor",
+ "ironmaint-runtime",
  "ironmaint-store",
  "ironmaint-store-sqlite",
  "tempfile",
  "time",
  "tokio",
+ "url",
 ]
 
 [[package]]
@@ -1311,6 +1318,9 @@ name = "ironmaintd"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "debian-stub",
+ "fedora-stub",
+ "ironmaint-adapter-api",
  "ironmaint-artifacts",
  "ironmaint-executor",
  "ironmaint-mcp",

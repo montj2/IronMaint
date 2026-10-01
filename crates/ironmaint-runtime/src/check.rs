@@ -28,19 +28,31 @@ use ironmaint_store::{CheckDefinition, CheckStore, EvidenceStore, GateStore, Sto
 /// `Other(_)` does not correspond to a known gate stage — those
 /// checks are filtered out by `materialize_planned_checks`
 /// rather than silently mapped.
+///
+/// The mapping is total over the enumerated kinds: every
+/// [`GateStage`] a [`TransitionRule`](ironmaint_state::TransitionRule)
+/// can require is the image of some kind, so no rule can ask for
+/// evidence that no adapter is able to plan. `Other(_)` is the
+/// only way out of the mapping, and it lands on `None` rather
+/// than on a stage, so an adapter cannot smuggle a check into a
+/// gate by naming an unrecognised kind.
 #[must_use]
 pub fn gate_stage_for(kind: &EvidenceKind) -> Option<GateStage> {
     match kind {
+        EvidenceKind::SourcePreparation => Some(GateStage::SourcePreparation),
         EvidenceKind::SourceIntegrity => Some(GateStage::SourceAnalysis),
+        EvidenceKind::IssueCorrelation => Some(GateStage::IssueAnalysis),
+        EvidenceKind::Maintenance => Some(GateStage::Maintenance),
+        EvidenceKind::PolicyEvaluation => Some(GateStage::PolicyEvaluation),
         EvidenceKind::Build => Some(GateStage::BuildValidation),
         EvidenceKind::PackageQa => Some(GateStage::PackageQa),
         EvidenceKind::FunctionalTest => Some(GateStage::FunctionalValidation),
         EvidenceKind::UpgradeTest => Some(GateStage::UpgradeValidation),
-        EvidenceKind::Reproducibility => Some(GateStage::FinalValidation),
-        EvidenceKind::PolicyEvaluation => Some(GateStage::PolicyEvaluation),
-        EvidenceKind::LicenseReview => Some(GateStage::FinalValidation),
-        EvidenceKind::IssueCorrelation => Some(GateStage::IssueAnalysis),
+        EvidenceKind::ReleaseReview => Some(GateStage::ReleaseReview),
         EvidenceKind::ReleaseAssembly => Some(GateStage::CandidateAssembly),
+        EvidenceKind::Reproducibility | EvidenceKind::LicenseReview => {
+            Some(GateStage::FinalValidation)
+        }
         EvidenceKind::PublicationValidation => Some(GateStage::Publication),
         EvidenceKind::Other(_) => None,
     }

@@ -98,6 +98,28 @@ pub(crate) async fn get_release(
     map_json(payload, "ReleaseCandidate")
 }
 
+pub(crate) async fn list_release_for_job(
+    pool: &SqlitePool,
+    job_id: JobId,
+) -> Result<Vec<ReleaseCandidate>, StoreError> {
+    // `idx_release_candidates_job` has been in the schema since
+    // 0001 with no query behind it; this is that query. `rowid`
+    // rather than `created_at` for the order, because two snapshots
+    // taken in the same clock tick are still two snapshots and the
+    // one an agent saw first must stay first.
+    let rows: Vec<(String,)> = sqlx::query_as(
+        "SELECT payload_json FROM release_candidates
+         WHERE job_id = ?1 ORDER BY rowid",
+    )
+    .bind(job_id.to_string())
+    .fetch_all(pool)
+    .await
+    .map_err(map_sqlx_err)?;
+    rows.into_iter()
+        .map(|(payload,)| map_json(payload, "ReleaseCandidate"))
+        .collect()
+}
+
 pub(crate) async fn list_source_for_job(
     pool: &SqlitePool,
     job_id: JobId,

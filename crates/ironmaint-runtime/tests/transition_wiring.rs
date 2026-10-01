@@ -21,8 +21,10 @@ use ironmaint_core::{
 };
 use ironmaint_evidence::{EvidenceKind, GateDefinition, GateRequirement, GateStage};
 use ironmaint_executor::{NullExecutor, ToolRegistry};
-use ironmaint_policy::{Applicability, Obligation, ObligationStrength, PolicyReference};
-use ironmaint_runtime::{Clock, FixedClock, RuntimeErrorKind, RuntimeService};
+use ironmaint_policy::{
+    Applicability, Obligation, ObligationOutcome, ObligationStrength, PolicyReference,
+};
+use ironmaint_runtime::{Clock, FixedClock, RuntimeCommand, RuntimeErrorKind, RuntimeService};
 use ironmaint_state::JobEvent as StateJobEvent;
 use ironmaint_store::mock::MockStore;
 use ironmaint_store::{CandidateStore, EventStore, GateStore, ObligationStore, ProjectionStore};
@@ -42,10 +44,6 @@ fn package() -> PackageIdentity {
         ),
         PackageName::new("foo").unwrap(),
     )
-}
-
-fn fingerprint_zero() -> CandidateFingerprint {
-    CandidateFingerprint::from_hex("00".repeat(32)).unwrap()
 }
 
 fn build_service(store: Arc<MockStore>) -> RuntimeService<MockStore, NullExecutor> {
@@ -273,34 +271,236 @@ async fn projection_version(store: &Arc<MockStore>, job_id: JobId) -> u64 {
 #[tokio::test]
 async fn try_transition_blocks_on_missing_mandatory_obligation() {
     let store: Arc<MockStore> = Arc::new(MockStore::new());
-    let _svc = build_service(store.clone());
+    let svc = build_service(store.clone());
     let job_id = seed_projection(&store, JobState::EventDetected, 0).await;
-    let _fp = attach_candidate(&store, job_id).await;
+    let fp = attach_candidate(&store, job_id).await;
 
-    // Persist a mandatory obligation tied to a synthetic
-    // candidate fingerprint; assert it was recorded. We do not
-    // force a transition because the obligation machinery
-    // participates in `require_policy_completion` only at the
-    // FinalValidation → ReadyForApproval edge; the test instead
-    // verifies the obligation round-trips through the store,
-    // which is what `try_transition` consults.
-    let fp = fingerprint_zero();
     let obligation = Obligation::new(
-        fp,
+        fp.clone(),
         PolicyReference::new(AuthorityId::new()),
         ObligationStrength::Mandatory,
         Applicability::Applicable,
         "release-ready",
     )
     .expect("static literal fits");
-    let _ob_id = store
+    store
         .put_obligation(&obligation, job_id)
         .await
         .expect("put obligation");
 
-    let obligations = store
-        .list_obligations_for_job(job_id)
+    let at_final = walk_to_final_validation(&store, &svc, job_id, &fp).await;
+
+    // A `NotEvaluated` mandatory obligation blocks exactly like a
+    // failing one: rule 12 is `require_policy_completion: true`, so
+    // `check_obligations` runs and an unsatisfied obligation is a
+    // blocker regardless of why it is unsatisfied.
+    let err = svc
+        .try_transition(job_id, JobState::ReadyForApproval, at_final)
         .await
-        .expect("list obs");
-    assert_eq!(obligations.len(), 1, "exactly one obligation recorded");
+        .expect_err("must block on the unevaluated obligation");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("obligation"),
+        "expected an obligation blocker at FinalValidation → ReadyForApproval, got: {msg}"
+    );
+    let projection = store.get_projection(job_id).await.expect("projection");
+    assert_eq!(
+        projection.state,
+        JobState::FinalValidation,
+        "a blocked transition must not move the job"
+    );
+}
+
+/// The gap this pins. Before `RecordObligationOutcome` a mandatory
+/// obligation could only ever be `NotEvaluated` (derived) or `Pass`,
+/// so `check_obligations`' `FailedObligation` branch had no production
+/// way to be reached: a policy evaluation returning a negative verdict
+/// was *unrepresentable*, not merely unreachable. That is 0B §101
+/// step 18 — "Mandatory synthetic policy obligation fails" — and
+/// without it steps 19–24 (patch, capture C4, obligation passes)
+/// have nothing to repair.
+#[tokio::test]
+async fn a_failed_mandatory_obligation_blocks_ready_for_approval() {
+    let store: Arc<MockStore> = Arc::new(MockStore::new());
+    let svc = build_service(store.clone());
+    let job_id = seed_projection(&store, JobState::EventDetected, 0).await;
+    let fp = attach_candidate(&store, job_id).await;
+
+    let obligation = Obligation::new(
+        fp.clone(),
+        PolicyReference::new(AuthorityId::new()),
+        ObligationStrength::Mandatory,
+        Applicability::Applicable,
+        "reproducible-build",
+    )
+    .expect("static literal fits");
+    store
+        .put_obligation(&obligation, job_id)
+        .await
+        .expect("put obligation");
+
+    let at_final = walk_to_final_validation(&store, &svc, job_id, &fp).await;
+
+    svc.handle_command(RuntimeCommand::RecordObligationOutcome {
+        job_id,
+        obligation_ref: "reproducible-build".to_string(),
+        outcome: ObligationOutcome::Fail,
+    })
+    .await
+    .expect("record the failing verdict");
+
+    let err = svc
+        .try_transition(job_id, JobState::ReadyForApproval, at_final)
+        .await
+        .expect_err("a failed mandatory obligation must block");
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("obligation"),
+        "expected an obligation blocker, got: {msg}"
+    );
+
+    // §101 step 24: the same obligation passes and the job advances.
+    svc.handle_command(RuntimeCommand::RecordObligationOutcome {
+        job_id,
+        obligation_ref: "reproducible-build".to_string(),
+        outcome: ObligationOutcome::Pass,
+    })
+    .await
+    .expect("record the passing verdict");
+
+    let t = svc
+        .try_transition(job_id, JobState::ReadyForApproval, at_final)
+        .await
+        .expect("a satisfied obligation must let the job through");
+    assert_eq!(t.to, JobState::ReadyForApproval);
+}
+
+/// `RequiresReview` is the third status the engine branches on, and
+/// the one an approval-pending policy check returns. It must block
+/// identically to `Fail`, or an obligation that needs a human to weigh
+/// in would be treated as satisfied.
+#[tokio::test]
+async fn an_obligation_awaiting_review_blocks_ready_for_approval() {
+    let store: Arc<MockStore> = Arc::new(MockStore::new());
+    let svc = build_service(store.clone());
+    let job_id = seed_projection(&store, JobState::EventDetected, 0).await;
+    let fp = attach_candidate(&store, job_id).await;
+
+    let obligation = Obligation::new(
+        fp.clone(),
+        PolicyReference::new(AuthorityId::new()),
+        ObligationStrength::Mandatory,
+        Applicability::Applicable,
+        "ambiguous-maintainer-request",
+    )
+    .expect("static literal fits");
+    store
+        .put_obligation(&obligation, job_id)
+        .await
+        .expect("put obligation");
+
+    let at_final = walk_to_final_validation(&store, &svc, job_id, &fp).await;
+
+    svc.handle_command(RuntimeCommand::RecordObligationOutcome {
+        job_id,
+        obligation_ref: "ambiguous-maintainer-request".to_string(),
+        outcome: ObligationOutcome::RequiresReview,
+    })
+    .await
+    .expect("record the review verdict");
+
+    let err = svc
+        .try_transition(job_id, JobState::ReadyForApproval, at_final)
+        .await
+        .expect_err("RequiresReview must block, exactly as Fail does");
+    assert!(
+        format!("{err}").contains("obligation"),
+        "expected an obligation blocker, got: {err}"
+    );
+}
+
+/// A failing *recommended* obligation must not block. `check_obligations`
+/// skips non-mandatory strengths, and the reporting path skips them
+/// too — an agent told to fix a recommendation the state machine does
+/// not require is being sent after work that changes nothing.
+#[tokio::test]
+async fn a_failing_recommended_obligation_does_not_block() {
+    let store: Arc<MockStore> = Arc::new(MockStore::new());
+    let svc = build_service(store.clone());
+    let job_id = seed_projection(&store, JobState::EventDetected, 0).await;
+    let fp = attach_candidate(&store, job_id).await;
+
+    let obligation = Obligation::new(
+        fp.clone(),
+        PolicyReference::new(AuthorityId::new()),
+        ObligationStrength::Recommended,
+        Applicability::Applicable,
+        "prefer-newer-snapshot",
+    )
+    .expect("static literal fits");
+    store
+        .put_obligation(&obligation, job_id)
+        .await
+        .expect("put obligation");
+
+    let at_final = walk_to_final_validation(&store, &svc, job_id, &fp).await;
+
+    svc.handle_command(RuntimeCommand::RecordObligationOutcome {
+        job_id,
+        obligation_ref: "prefer-newer-snapshot".to_string(),
+        outcome: ObligationOutcome::Fail,
+    })
+    .await
+    .expect("record the failing verdict");
+
+    let t = svc
+        .try_transition(job_id, JobState::ReadyForApproval, at_final)
+        .await
+        .expect("a failing recommendation must not gate release");
+    assert_eq!(t.to, JobState::ReadyForApproval);
+}
+
+/// Walk the forward chain to `FinalValidation` with every gate
+/// passing, so the only thing left to block on is policy. Returns
+/// the projection version to pass as `expected_version`.
+async fn walk_to_final_validation(
+    store: &Arc<MockStore>,
+    svc: &RuntimeService<MockStore, NullExecutor>,
+    job_id: JobId,
+    fp: &CandidateFingerprint,
+) -> u64 {
+    let stages = [
+        (GateStage::SourcePreparation, JobState::Intake),
+        (GateStage::SourceAnalysis, JobState::SourceReview),
+        (GateStage::IssueAnalysis, JobState::CandidateAssembly),
+        (GateStage::Maintenance, JobState::SourceRevision),
+        (GateStage::PolicyEvaluation, JobState::SourceIntegrity),
+        (GateStage::BuildValidation, JobState::BuildValidation),
+        (GateStage::PackageQa, JobState::PackageQaValidation),
+        (
+            GateStage::FunctionalValidation,
+            JobState::FunctionalValidation,
+        ),
+        (GateStage::UpgradeValidation, JobState::UpgradeValidation),
+        (GateStage::ReleaseReview, JobState::ReleaseReview),
+    ];
+    let mut version = 0u64;
+    for (stage, target) in stages {
+        seed_passing_gate(store, job_id, fp, stage).await;
+        svc.try_transition(job_id, target, version)
+            .await
+            .unwrap_or_else(|e| panic!("transition to {target:?} failed: {e}"));
+        version = projection_version(store, job_id).await;
+    }
+    // ReleaseReview → FinalValidation gates on CandidateAssembly.
+    seed_passing_gate(store, job_id, fp, GateStage::CandidateAssembly).await;
+    svc.try_transition(job_id, JobState::FinalValidation, version)
+        .await
+        .expect("reach FinalValidation");
+
+    // Rule 12 (FinalValidation → ReadyForApproval) gates on its own
+    // FinalValidation stage, so seed that too. After this the only
+    // thing left to block is policy — which is the point.
+    seed_passing_gate(store, job_id, fp, GateStage::FinalValidation).await;
+    projection_version(store, job_id).await
 }

@@ -30,7 +30,7 @@ use ironmaint_core::{
 use ironmaint_executor::{NullExecutor, ToolRegistry};
 use ironmaint_policy::ApprovalCategory;
 use ironmaint_runtime::{
-    ActionBlocker, AllowedAction, Clock, FixedClock, QueryResult, ReconcileOutcome, RuntimeCommand,
+    ActionBlocker, Clock, FixedClock, HumanAction, QueryResult, ReconcileOutcome, RuntimeCommand,
     RuntimeErrorKind, RuntimeQuery, RuntimeService,
 };
 use ironmaint_store::mock::MockStore;
@@ -329,12 +329,16 @@ async fn reconcile_still_parks_at_ready_for_approval() {
 #[tokio::test]
 async fn next_actions_advertises_exactly_the_action_that_is_refused() {
     // This is the pairing that makes the workflow honest. If
-    // `next_actions` advertised something the runtime will not
-    // service, an agent following it would stall with no
-    // explanation. If it advertised *nothing*, the agent would
-    // not know an approval is the thing it needs — which is the
-    // exit checkpoint in SKILL.md. So: advertise the request, and
-    // answer it with the refusal that says a human is required.
+    // `next_actions` said nothing, the agent would not know an
+    // approval is the thing it needs — which is the exit checkpoint
+    // in SKILL.md. So: report the move, on the field that says "this
+    // is a person's to make", and answer a command for it with the
+    // refusal that says a human is required.
+    //
+    // The C3 split changed the field, not the pairing. `RequestApproval`
+    // used to be an `AllowedAction`, which claimed the caller "can take
+    // it right now" — and then refused. It is now a `HumanAction`, which
+    // says the opposite thing accurately.
     let store = Arc::new(MockStore::new());
     let svc = build_service(&store);
     let job_id = seed_at_ready_for_approval(&store).await;
@@ -348,9 +352,14 @@ async fn next_actions_advertises_exactly_the_action_that_is_refused() {
     };
 
     assert_eq!(
-        actions.allowed,
-        vec![AllowedAction::RequestApproval],
-        "ReadyForApproval advertises exactly the approval request"
+        actions.requires_human,
+        Some(HumanAction::ApproveRelease),
+        "ReadyForApproval parks on exactly the approval"
+    );
+    assert!(
+        actions.allowed.is_empty(),
+        "no move here is the agent's to take: {:?}",
+        actions.allowed
     );
     assert!(
         !actions

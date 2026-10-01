@@ -20,7 +20,9 @@ use ironmaint_policy::{
     Applicability, AuthorizationState, Obligation, ObligationStrength, PrivilegedOperation,
     PrivilegedOperationKind,
 };
-use ironmaint_state::{JobEvent, StateTransitioned, ToolOutcome, ToolRunFinished, Transition};
+use ironmaint_state::{
+    JobEvent, ResumeRecord, StateTransitioned, ToolOutcome, ToolRunFinished, Transition,
+};
 use ironmaint_store::mock::MockStore;
 use ironmaint_store::workspace::WorkspaceState;
 use ironmaint_store::{
@@ -187,6 +189,54 @@ async fn tool_run_finished_event_persists_and_rebuilds() {
 
     // rebuild_projection must equal the seed transition's
     // projection_after (tool run did not advance the FSM).
+    let rebuilt = s.rebuild_projection(jid).await.unwrap();
+    assert_eq!(rebuilt.state, transitioned.projection_after.state);
+    assert_eq!(rebuilt.version, transitioned.projection_after.version);
+}
+
+#[tokio::test]
+async fn resume_recorded_event_persists_and_rebuilds() {
+    // 0A §21: the resume state must be a *recorded event*, so it
+    // has to survive the SQLite round-trip with `from`/`to`/
+    // `recorded_at` intact — a resume that read back a lossy record
+    // would send the job somewhere the human never chose. It must
+    // also not advance the FSM, for the same reason
+    // `ToolRunFinished` does not: it records intent, not a state
+    // change.
+    let s = SqliteStore::open_in_memory().await.unwrap();
+    let jid = job_id();
+    create_projection(&s, jid).await;
+
+    let transitioned = transitioned_event_for(jid);
+    s.append_event(&ironmaint_store::EventEnvelope::new(
+        MaintenanceEventId::new(),
+        jid,
+        1,
+        datetime!(2026-01-02 00:00:00 UTC),
+        JobEvent::Transitioned(transitioned.clone()),
+    ))
+    .await
+    .unwrap();
+
+    let record = ResumeRecord::new(
+        ironmaint_core::JobState::HumanReviewRequired,
+        ironmaint_core::JobState::EventDetected,
+        datetime!(2026-01-02 00:00:01 UTC),
+    );
+    s.append_event(&ironmaint_store::EventEnvelope::new(
+        MaintenanceEventId::new(),
+        jid,
+        2,
+        datetime!(2026-01-02 00:00:01 UTC),
+        JobEvent::ResumeRecorded(record.clone()),
+    ))
+    .await
+    .unwrap();
+
+    let got = s.get_event(jid, 2).await.unwrap();
+    assert_eq!(got.event, JobEvent::ResumeRecorded(record.clone()));
+    assert_eq!(got.event, JobEvent::ResumeRecorded(record));
+
     let rebuilt = s.rebuild_projection(jid).await.unwrap();
     assert_eq!(rebuilt.state, transitioned.projection_after.state);
     assert_eq!(rebuilt.version, transitioned.projection_after.version);
@@ -537,4 +587,61 @@ async fn fk_on_delete_restrict_for_events() {
 /// the workspace root, two levels above this crate.
 fn migrations_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations")
+}
+
+/// §101 step 26 reads a job's release candidate back, and the only
+/// way to find it from a `JobId` is `list_release_candidates_for_job`
+/// — so the SQLite path for it is load-bearing and needs a test on
+/// the real backend rather than only on `MockStore`.
+///
+/// The ordering assertion is the other half: the mock sorts by
+/// `(created_at, id)` and SQLite by `rowid`, and a caller that shows
+/// a person a list of snapshots must see the same order from both or
+/// the mock has taught it nothing. Three snapshots in the same
+/// millisecond is exactly the case where those two orderings can
+/// disagree, so the timestamps are deliberately identical.
+#[tokio::test]
+async fn release_candidates_list_by_job_in_creation_order() {
+    let s = SqliteStore::open_in_memory().await.unwrap();
+    let jid = job_id();
+    let other = job_id();
+    create_projection(&s, jid).await;
+    create_projection(&s, other).await;
+
+    let at = datetime!(2026-01-03 00:00:00 UTC);
+    let build = |job: JobId, tree: char| {
+        let mut release = ironmaint_policy::ReleaseCandidate::new(
+            job,
+            CandidateFingerprint::from_hex(tree.to_string().repeat(64)).unwrap(),
+            ironmaint_policy::PolicyBaseline::new(package().distribution),
+            at,
+        );
+        release = release.with_gate(ironmaint_core::GateId::new());
+        release
+    };
+
+    let first = build(jid, 'a');
+    let second = build(jid, 'b');
+    let elsewhere = build(other, 'c');
+    for release in [&first, &second, &elsewhere] {
+        s.put_release_candidate(release).await.unwrap();
+    }
+
+    assert_eq!(
+        s.list_release_candidates_for_job(jid).await.unwrap(),
+        vec![first.clone(), second],
+        "both of the job's snapshots, in the order they were written"
+    );
+    assert_eq!(
+        s.list_release_candidates_for_job(other).await.unwrap(),
+        vec![elsewhere],
+        "and only that job's"
+    );
+    assert!(
+        s.list_release_candidates_for_job(JobId::new())
+            .await
+            .unwrap()
+            .is_empty(),
+        "an unrelated job has none, rather than an error"
+    );
 }

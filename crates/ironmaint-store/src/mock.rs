@@ -180,19 +180,10 @@ impl ProjectionStore for MockStore {
         let Some(first) = events.first() else {
             return Err(StoreError::not_found(format!("no events for {job_id}")));
         };
-        let initial = match &first.event {
-            ironmaint_state::JobEvent::Transitioned(t) => t.projection_after.clone(),
-            ironmaint_state::JobEvent::Domain(_) => {
-                return Err(StoreError::corrupt(
-                    "first event is a Domain reference; no projection to seed rebuild",
-                ));
-            }
-            ironmaint_state::JobEvent::ToolRunFinished(_) => {
-                return Err(StoreError::corrupt(
-                    "first event is a ToolRunFinished; no projection to seed rebuild",
-                ));
-            }
-        };
+        let initial = first
+            .event
+            .seed_projection()
+            .map_err(|why| StoreError::corrupt(format!("{why}; no projection to seed rebuild")))?;
         let mut proj = initial;
         for env in events.iter().skip(1) {
             proj = ProjectionApply::apply(&proj, &env.event, env.occurred_at);
@@ -245,6 +236,26 @@ impl CandidateStore for MockStore {
             .get(&id)
             .cloned()
             .ok_or_else(|| StoreError::not_found(format!("release candidate {id}")))
+    }
+
+    async fn list_release_candidates_for_job(
+        &self,
+        job_id: JobId,
+    ) -> Result<Vec<ReleaseCandidate>, StoreError> {
+        // Creation order, to match the SQLite backend's `ORDER BY
+        // rowid`: a caller that assembles a list of snapshots and
+        // shows it to a person needs the same order from both
+        // backends or the mock will have taught it nothing.
+        let mut out: Vec<ReleaseCandidate> = self
+            .read()
+            .releases
+            .values()
+            .filter(|r| r.job_id == job_id)
+            .cloned()
+            .collect();
+        out.sort_by_key(|r| r.created_at);
+        out.sort_by_key(|r| r.id);
+        Ok(out)
     }
 
     async fn list_source_candidates_for_job(

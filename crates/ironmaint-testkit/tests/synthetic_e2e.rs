@@ -1,14 +1,38 @@
-//! §81 fixture driver — happy-path workflow.
+//! State-machine wiring test — the 13-state happy path, on a
+//! `MockStore`, with the evidence decided in advance.
 //!
-//! Walks a synthetic Debian package through the full 13-state
-//! happy path from `EventDetected` to `ReadyForApproval` using
-//! only public `RuntimeCommand` / `RuntimeQuery` surfaces
-//! against a `MockStore`. Gates are pre-seeded with passing
-//! `GateResult`s so the test focuses on state-machine wiring
-//! rather than tool execution. Each transition is driven by
-//! `RuntimeCommand::Reconcile`, which the runtime walks through
-//! the static `TRANSITION_RULES` table until it hits a blocker
-//! or actor-required transition.
+//! **This is not the §81 fixture driver, and it did not claim to be
+//! until 2026-10-01.** The old module doc called it that, and
+//! §101 item 28 / §81 both want a driver that *runs a failing
+//! check, reads the evidence, patches, captures, and reruns*. This
+//! file pre-seeds twelve passing `GateResult`s, so it exercises
+//! neither failure, nor repair, nor evidence invalidation, nor a
+//! real tool. It walks a job across `TRANSITION_RULES` and checks
+//! that the table says what it says — which is worth having, and is
+//! a different thing.
+//!
+//! The exit checkpoints live in their own files:
+//!
+//! - `tests/acceptance_scenario.rs` — §101 / §102 item 28, the
+//!   deterministic no-LLM driver, over `RuntimeCommand` /
+//!   `RuntimeQuery` against real SQLite.
+//! - `tests/mcp_acceptance_scenario.rs` — §101 / §102 item 29, the
+//!   same walk with **no `RuntimeService` handle**, every step a
+//!   `dispatch()` call.
+//!
+//! What this file is actually good for is the thing the other two
+//! deliberately do not do: it holds a `RuntimeService` and a
+//! `MockStore` in the same scope, so it can assert on the store's
+//! shape directly. That makes it the cheapest place to check that
+//! `reconcile` and the projection agree, and it is why the
+//! `MockStore`-vs-SQLite divergences that 0B.10's drivers found
+//! (a silent second row under a duplicated fingerprint; a
+//! `rebuild_projection` that rejects every real log) were worth
+//! looking for here at all.
+//!
+//! Each transition is driven by `RuntimeCommand::Reconcile`, which
+//! walks the static `TRANSITION_RULES` table until it hits a
+//! blocker or an actor-required transition.
 
 #![cfg(feature = "integration")]
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -29,7 +53,7 @@ use ironmaint_executor::{
     ToolDefinitionRecord, ToolRegistry,
 };
 use ironmaint_runtime::{
-    AllowedAction, ReconcileOutcome, RuntimeCommand, RuntimeQuery, RuntimeService, SystemClock,
+    HumanAction, ReconcileOutcome, RuntimeCommand, RuntimeQuery, RuntimeService, SystemClock,
 };
 use ironmaint_state::JobEvent as StateJobEvent;
 use ironmaint_store::{EventStore, GateStore, ObligationStore, ProjectionStore, mock::MockStore};
@@ -264,7 +288,7 @@ async fn synthetic_debian_driver_reaches_ready_for_approval() {
         "fixture driver must reach ReadyForApproval; outcome was {last_outcome:?}"
     );
 
-    // Step 7: next_actions must surface RequestApproval.
+    // Step 7: next_actions must say the job is waiting on a person.
     let next = svc
         .handle_query(RuntimeQuery::ListNextActions { job_id })
         .await
@@ -273,12 +297,15 @@ async fn synthetic_debian_driver_reaches_ready_for_approval() {
         ironmaint_runtime::service::QueryResult::NextActions(a) => a,
         _ => unreachable!("expected NextActions"),
     };
+    assert_eq!(
+        actions.requires_human,
+        Some(HumanAction::ApproveRelease),
+        "next_actions at ReadyForApproval must park on the approval: {actions:?}"
+    );
     assert!(
-        actions
-            .allowed
-            .iter()
-            .any(|a| matches!(a, AllowedAction::RequestApproval)),
-        "next_actions at ReadyForApproval must include RequestApproval: {actions:?}"
+        actions.allowed.is_empty(),
+        "nothing at ReadyForApproval is the agent's to take: {:?}",
+        actions.allowed
     );
     assert_eq!(actions.job_id, job_id);
     let _ = Mutex::new(());

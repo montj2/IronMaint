@@ -17,6 +17,8 @@
 //! - `synthetic.qa.lintian`: exit 0, stdout `lintian: 0 warnings\n`.
 //! - `synthetic.build.fail`: exit 1, stdout `build failed: missing dep\n`.
 //! - `synthetic.qa.fail`: exit 1, stdout `lintian: E: syntax-error\n`.
+//! - `synthetic.policy.validate`: exit 0, stdout `policy: no violations\n`.
+//! - `synthetic.policy.fail`: exit 1, stdout `policy: E: source-not-maintained\n`.
 //! - `synthetic.build.truncate`: exit 0, stdout 256 KiB of `A`.
 //! - `synthetic.build.timeout`: sleeps 120s, then exit 0. The
 //!   executor's `tokio::time::timeout` is expected to kill it
@@ -65,6 +67,14 @@ fn main() -> ExitCode {
         }
         "synthetic.qa.fail" => {
             let _ = writeln!(stdout, "lintian: E: syntax-error");
+            ExitCode::from(1)
+        }
+        "synthetic.policy.validate" => {
+            let _ = writeln!(stdout, "policy: no violations");
+            ExitCode::from(0)
+        }
+        "synthetic.policy.fail" => {
+            let _ = writeln!(stdout, "policy: E: source-not-maintained");
             ExitCode::from(1)
         }
         "synthetic.build.truncate" => {

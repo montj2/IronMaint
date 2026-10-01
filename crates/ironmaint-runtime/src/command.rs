@@ -8,6 +8,7 @@ use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_core::{CandidateFingerprint, CheckId, JobId, PackageIdentity, SourceCandidate};
 use ironmaint_evidence::{EvidenceKind, EvidenceStatus};
 use ironmaint_executor::RetryClass;
+use ironmaint_policy::ObligationOutcome;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -62,9 +63,33 @@ pub enum RuntimeCommand {
         status: EvidenceStatus,
         producer: String,
     },
-    MarkObligationSatisfied {
+    /// Record the verdict of evaluating one obligation (§34).
+    ///
+    /// Replaces a narrower `MarkObligationSatisfied`, which could only
+    /// ever write `Pass`. That made a policy evaluation returning a
+    /// negative verdict **unrepresentable** in production: the engine
+    /// has branches for `Fail` and `RequiresReview` and blocked on
+    /// them, and nothing outside a test could ever put an obligation
+    /// into either. A state machine modelling something the system
+    /// cannot produce is the same defect 0B.10 C1 found three times
+    /// over, and a fourth time here.
+    ///
+    /// The `outcome` is an [`ObligationOutcome`], not a raw
+    /// `ObligationStatus`: `NotEvaluated` is an initial state rather
+    /// than a verdict, and `ExceptionApproved` needs an approval
+    /// record this command has no way to supply (0A §35).
+    ///
+    /// `obligation_ref` is matched against the obligation's
+    /// `requirement` text, exactly and case-sensitively.
+    ///
+    /// Deliberately **not** an MCP tool. §102 item 25: "MCP cannot
+    /// directly set state, gates, obligations, approvals, or
+    /// evidence." A policy verdict is the runtime's to record from an
+    /// evaluation, not a field an agent may write.
+    RecordObligationOutcome {
         job_id: JobId,
         obligation_ref: String,
+        outcome: ObligationOutcome,
     },
     RunCheck {
         /// Resolved check to execute. The runtime looks up the
@@ -120,4 +145,59 @@ pub enum RuntimeCommand {
     /// (§41). Returns a [`ReconcileOutcome`] describing where
     /// the walk stopped.
     Reconcile { job_id: JobId },
+    /// Move a job into `HumanReviewRequired` (0A §21).
+    ///
+    /// §21 says deterministic orchestration *may* do this from any
+    /// nonterminal state, so this is an explicit, deliberate act
+    /// rather than a side effect of anything. That is deliberate:
+    /// 0B §83 tells the agent to *stop* when the runtime reports
+    /// `HumanReviewRequired`, so a transition that fired on every
+    /// transient policy failure would strand a job the agent is
+    /// supposed to repair and re-run — which is precisely §101's
+    /// shape at step 18.
+    ///
+    /// Entering writes a [`ResumeRecord`](ironmaint_state::ResumeRecord)
+    /// naming the state to return to. 0A §21: "Returning ...
+    /// requires a recorded event containing the resume state. Do
+    /// not infer the previous state from history at runtime.
+    /// Record it explicitly." The record is written **here**, at the
+    /// moment of entry, from the pre-transition projection — which
+    /// is what makes it a record rather than a later inference.
+    EnterHumanReview {
+        job_id: JobId,
+        /// Why a human is needed. Carried into the event trail so
+        /// whoever later resumes the job knows what they were
+        /// being asked to look at.
+        reason: String,
+    },
+    /// Return a job to the state named by its recorded
+    /// [`ResumeRecord`](ironmaint_state::ResumeRecord).
+    ///
+    /// The target is read back from the event log, never derived
+    /// from the job's history: a job in an exceptional state whose
+    /// record is missing is refused with
+    /// [`RuntimeErrorKind::InvalidInput`](crate::error::RuntimeErrorKind::InvalidInput),
+    /// because the alternative — guessing the prior state — is what
+    /// 0A §21 forbids.
+    ///
+    /// Only ever returns the job to where a human-side actor
+    /// already chose to put it.
+    ResumeJob { job_id: JobId },
+    /// Snapshot "everything required to release" for the job's
+    /// active candidate (0A §42, §101 step 26).
+    ///
+    /// The snapshot is bound to whatever candidate is active *now*
+    /// and lists the gate and obligation ids that candidate is
+    /// held against — so a later candidate capture does not
+    /// silently inherit it. Creating one says nothing about
+    /// releasability; 0A §42 is explicit that "Release candidate
+    /// creation itself does not mean releasable. The state engine
+    /// determines whether it may become `ReadyForApproval`."
+    ///
+    /// This is a read-model assembly, not a state change: it
+    /// advances no `JobState`, creates no
+    /// [`PrivilegedOperation`](ironmaint_policy::PrivilegedOperation),
+    /// and is not reachable over MCP — §101 step 29 asserts the
+    /// first two, and §102 item 25 forbids the rest.
+    CreateReleaseCandidate { job_id: JobId },
 }

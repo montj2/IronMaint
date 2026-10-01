@@ -34,8 +34,13 @@
 pub mod conformance;
 pub mod executor_conformance;
 pub mod fixtures;
+pub mod scenario;
 
 pub use conformance::assert_distribution_adapter_conformance;
 pub use executor_conformance::{
     FixtureKeys, assert_executor_conformance, fixture_binary_path, register_fixture_tools,
+};
+pub use scenario::{
+    SCENARIO_OBLIGATION_REQUIREMENT, SCENARIO_STAGES, ScenarioAdapter, ScenarioScript,
+    ScenarioTools, register_scenario_tools,
 };

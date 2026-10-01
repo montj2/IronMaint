@@ -12,6 +12,17 @@
 //!   when a tool subprocess returns (PHASE-0B §15 last bullet,
 //!   §65 partial). Does NOT advance the FSM: tool runs are
 //!   observability signals, not state changes.
+//!
+//! 0B.10 added two more:
+//!
+//! - [`JobEvent::ResumeRecorded`] — the record 0A §21 requires
+//!   before a job may leave an exceptional state. Also does NOT
+//!   advance the FSM: it is written at the moment of *entering*
+//!   the exceptional state, and names the state to return to.
+//! - [`JobEvent::JobCreated`] — the job's first event, carrying the
+//!   initial projection. It is the seed a replay starts from, so
+//!   that "rebuild from events" is true for a job that has never
+//!   transitioned and not only for one that has.
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -19,7 +30,7 @@ use time::OffsetDateTime;
 
 use ironmaint_core::{DomainEventId, EvidenceId, JobProjection, SchemaVersion};
 
-use crate::transition::Transition;
+use crate::transition::{ResumeRecord, Transition};
 
 /// The event emitted by [`crate::TransitionEngine::apply`] on an
 /// allowed transition.
@@ -136,9 +147,55 @@ impl ToolRunFinished {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum JobEvent {
+    /// The job's first event, and the seed every projection replay
+    /// starts from.
+    ///
+    /// It carries the whole initial `JobProjection` rather than a
+    /// reference, because nothing before it exists. Without this
+    /// variant the log could not reconstruct a job that had never
+    /// transitioned: the projection's contents lived only in the
+    /// `put_projection` write, and a `Domain` event carries just an
+    /// id. That made §102 item 3 — "Job projections can be rebuilt
+    /// from events" — false for every real job, and left
+    /// `ironmaintctl rebuild-projections` (§36's operator escape
+    /// hatch) reporting every job as an error on a real database.
+    ///
+    /// A projection is not a transition, so this is not modelled as
+    /// one: it has no `from`/`to` and never advances the FSM. It is
+    /// the record that a job came into being, and what it looked
+    /// like when it did.
+    JobCreated(ironmaint_core::JobProjection),
     Transitioned(StateTransitioned),
     Domain(DomainEventId),
     ToolRunFinished(ToolRunFinished),
+    ResumeRecorded(ResumeRecord),
+}
+
+impl JobEvent {
+    /// The projection a replay should *start* from, if this event
+    /// carries one.
+    ///
+    /// Exactly two variants do: `JobCreated` (the normal first
+    /// event) and `Transitioned` (a log written before 0B.10, whose
+    /// seed was the post-transition projection). The other three are
+    /// records — a reference, an observability signal, a resume
+    /// target — and none of them describes a projection, which is
+    /// why a log beginning with one genuinely cannot be rebuilt.
+    ///
+    /// The `Err` is the reason, phrased for an operator reading
+    /// `ironmaintctl rebuild-projections` output. It lives here
+    /// rather than in each store because the two backends had
+    /// drifted into separate copies of this decision, and only one
+    /// of them was ever exercised.
+    pub fn seed_projection(&self) -> Result<ironmaint_core::JobProjection, String> {
+        match self {
+            Self::JobCreated(p) => Ok(p.clone()),
+            Self::Transitioned(t) => Ok(t.projection_after.clone()),
+            Self::Domain(_) => Err("first event is a Domain reference".to_string()),
+            Self::ToolRunFinished(_) => Err("first event is a ToolRunFinished".to_string()),
+            Self::ResumeRecorded(_) => Err("first event is a ResumeRecorded".to_string()),
+        }
+    }
 }
 
 #[cfg(test)]

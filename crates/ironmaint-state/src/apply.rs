@@ -32,6 +32,15 @@ pub trait ProjectionApply {
 impl ProjectionApply for JobProjection {
     fn apply(&self, event: &JobEvent, occurred_at: OffsetDateTime) -> JobProjection {
         match event {
+            // The seed. A replay starts *from* this, so applying it
+            // yields it — and if a log somehow carried a second one,
+            // taking the later one is right: the most recent record
+            // of what the job looked like when it came into being
+            // beats the first. `occurred_at` is the envelope's, which
+            // is when the event was written, not when the projection
+            // was stamped; the creation projection's own
+            // `updated_at` is the fact.
+            JobEvent::JobCreated(p) => p.clone(),
             JobEvent::Transitioned(t) => JobProjection {
                 job: self.job.clone(),
                 state: t.transition.to,
@@ -44,6 +53,13 @@ impl ProjectionApply for JobProjection {
             // advance the FSM (PHASE-0B.md §15 last bullet,
             // §65 partial).
             JobEvent::ToolRunFinished(_) => self.clone(),
+            // The resume record is written at the moment the job
+            // *enters* an exceptional state, so by the time it is
+            // replayed the state change it accompanies has already
+            // been carried by the preceding `Transitioned`. Like
+            // `ToolRunFinished` it is a record of intent, not a
+            // state change — replaying it must not move the job.
+            JobEvent::ResumeRecorded(_) => self.clone(),
         }
     }
 }

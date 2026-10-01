@@ -32,7 +32,7 @@ calling the IronMaint MCP server. The runtime is the only writer of
 
 ## Tool surface
 
-Every action goes through one of these nine MCP tools:
+Every action goes through one of these eleven MCP tools:
 
 | Tool | When |
 |---|---|
@@ -45,6 +45,8 @@ Every action goes through one of these nine MCP tools:
 | `workspace.apply_patch` | To apply a candidate patch to the workspace |
 | `workspace.stat` | To read the current `WorkspaceRevision` before patching |
 | `operation.get` | To inspect a privileged operation's status |
+| `job.resume` | Only when `next_actions` offers `resume_job` — returns the job to the state recorded when it was escalated |
+| `release.candidate.create` | At `ReadyForApproval`, to assemble the snapshot of what was validated. It publishes nothing |
 
 ## Workflow loop
 
@@ -53,10 +55,15 @@ loop:
     projection := job.get(job_id)
     if projection.state == ReadyForApproval:
         return SUCCESS
+    if projection.state == HumanReviewRequired or
+       projection.state == InfrastructureBlocked:
+        stop and narrate — a human is needed (see below)
     actions := job.next_actions(job_id)
     if actions.allowed contains capture_candidate:
         candidate.capture(job_id, package, repository_url)   # see below
         continue
+    if actions.allowed contains resume_job:
+        do not call it — see "Human review" below
     if actions.blockers is non-empty:
         drive the first blocker (see below)
         continue
@@ -69,12 +76,18 @@ loop:
         blocked | concurrent_modification  → stop, narrate to the user
 ```
 
-`next_actions` returns **two** lists and they mean different things.
-`allowed` names the moves the runtime will accept *now*; `blockers` names
+`next_actions` returns **three** fields, and they mean different things.
+`allowed` names the moves the runtime will accept *now* — every entry has a
+tool behind it, and calling anything else is not your move. `requires_human`
+names the one move that belongs to a person, or is absent. `blockers` names
 what is standing in the way of the rest. A fresh job returns
 `allowed: ["capture_candidate"]` with no blockers — so a loop that only
 inspects `blockers` sees nothing to do and stops on a job that has barely
 started.
+
+If `requires_human` is set, **stop.** Do not look for a tool that performs
+it. Two of its values (`approve_release`, `authorize_publication`) have no
+tool in 0B at all, and the phase forbids adding one.
 
 `job.reconcile` answers with one of these shapes:
 
@@ -92,6 +105,26 @@ variant:
 
 `reconcile` advances at most **one** transition per call. A job walks the
 chain only if you call it again.
+
+## Human review
+
+`HumanReviewRequired` means a person has to look at this job. **Stop and
+say so.** `next_actions` reports it as
+`requires_human: {review_escalation}`, and you do not clear it.
+
+You will also see `resume_job` in `allowed`, because the runtime only lists
+what a tool can actually perform and there *is* a tool. Having one is not
+permission. Resuming returns the job to the state that was recorded when
+someone escalated it, so the recorded state is a human's decision — calling
+it yourself would silently undo an escalation you have no basis to overrule.
+`job.resume` is offered so the path exists and is discoverable to an
+operator, not so an agent can take it.
+
+The runtime will tell you when this has happened. A failed mandatory
+obligation does **not** cause it: the runtime only escalates when
+orchestration explicitly asks it to. A policy obligation that has not
+passed yet is reported as a blocker, which is the state you can actually
+work on — patch, capture a new candidate, re-run.
 
 ## Driving blockers
 
@@ -118,7 +151,7 @@ Blockers are externally tagged too, so you match on the first key:
   - stop and narrate the failure to the user.
 - **`obligation_pending {reference}`** → consult the policy reference it
   names, then either satisfy it through the check the runtime points at or
-  stop and narrate. **There is no obligation tool.** The nine tools are the
+  stop and narrate. **There is no obligation tool.** The ten tools are the
   whole surface and reading an obligation's body is not one of them; the
   only thing available to you is the reference string. You never self-grant
   `ExceptionApproved`.
@@ -128,11 +161,12 @@ Blockers are externally tagged too, so you match on the first key:
 - **`terminal`** → the job is finished or cancelled. Stop.
 - **`state_machine_blocked {message}`** → the engine refused the transition
   and the message says why. Stop and narrate it verbatim.
-- **There is no `missing_approval` blocker.** At `ReadyForApproval` the
-  runtime reports `allowed: ["request_approval"]` and *no* blockers, so do
-  not wait for a blocker that will never arrive — that state is your exit
-  checkpoint, and a human maintainer is the only principal who can act on
-  it.
+- **`requires_human` is not a blocker and you cannot clear it.** At
+  `ReadyForApproval` the runtime reports `requires_human:
+  {approve_release}` with `allowed: []` and *no* blockers. Do not wait for a
+  blocker that will never arrive, and do not go looking for a tool that
+  performs the approval — that state is your exit checkpoint, and a human
+  maintainer is the only principal who can act on it.
 
 ## Hard rules
 
@@ -202,12 +236,12 @@ At that point:
 
 1. Stop the loop.
 2. Call `job.next_actions` once more. It will return
-   `allowed: ["request_approval"]` and no blockers.
+   `requires_human: {approve_release}`, an empty `allowed`, and no blockers.
 3. Narrate to the user: "IronMaint job `<job_id>` is at
    `ReadyForApproval`. The next step is a human approval; I cannot request
    or grant one."
 
-Do not try to act on `request_approval`. There is no tool for it, and the
+Do not try to act on `requires_human`. There is no tool for it, and the
 runtime command behind it is refused by design.
 
 ## Where the loop currently stops

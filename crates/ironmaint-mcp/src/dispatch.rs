@@ -25,7 +25,7 @@ use crate::schema::McpToolName;
 /// dispatcher is `Clone`-able and cheaply shared across
 /// concurrent HTTP handlers.
 ///
-/// The workspace manager is optional: five of the nine tools are
+/// The workspace manager is optional: most of the tools are
 /// pure runtime calls and need no working tree, and requiring one
 /// would make `McpRuntime::new` unusable for them. The three that
 /// do need a tree report a typed error when it is absent rather
@@ -116,11 +116,13 @@ pub async fn dispatch<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         "job.get" => dispatch_job_get(&runtime, input).await,
         "job.next_actions" => dispatch_next_actions(&runtime, input).await,
         "job.reconcile" => dispatch_reconcile(&runtime, input).await,
+        "job.resume" => dispatch_resume(&runtime, input).await,
         "candidate.capture" => dispatch_capture(&runtime, input).await,
         "check.run" => dispatch_check_run(&runtime, input).await,
         "workspace.apply_patch" => dispatch_apply_patch(&runtime, input).await,
         "workspace.stat" => dispatch_workspace_stat(&runtime, input).await,
         "operation.get" => dispatch_operation_get(&runtime, input).await,
+        "release.candidate.create" => dispatch_release_candidate_create(&runtime, input).await,
         unknown => Err(McpError::Other(format!("unknown tool: {unknown}"))),
     }
 }
@@ -216,6 +218,48 @@ async fn dispatch_reconcile<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 
+async fn dispatch_resume<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let input: crate::tools::actions::ResumeInput =
+        serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
+    runtime
+        .service
+        .handle_command(RuntimeCommand::ResumeJob {
+            job_id: input.job_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    // Read the resulting state back through the runtime's query
+    // path, for the same reason `check.run` does: the command
+    // reports what it changed, but the durable answer is a
+    // separate read, and parsing the side-effect string here
+    // would give this tool a second, subtly different account of
+    // where the job ended up.
+    let query = runtime
+        .service
+        .handle_query(RuntimeQuery::GetJob {
+            job_id: input.job_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    // `QueryResult::Projection` carries the projection as
+    // `serde_json::Value` (it is the MCP wire form), so recover
+    // the typed state from it rather than reaching into the
+    // object's fields.
+    let value = match query {
+        ironmaint_runtime::QueryResult::Projection(p) => p,
+        _ => return Err(McpError::Other("GetJob returned wrong variant".into())),
+    };
+    let projection: ironmaint_core::JobProjection =
+        serde_json::from_value(value).map_err(|e| McpError::Internal(e.to_string()))?;
+    let out = crate::tools::actions::ResumeOutput {
+        resumed_to: projection.state,
+    };
+    serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
+}
+
 async fn dispatch_capture<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
     runtime: &McpRuntime<S, E>,
     input: serde_json::Value,
@@ -248,7 +292,14 @@ async fn dispatch_capture<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
     // records the audit envelope in the job's event log without
     // writing a second row. `candidate_capture_is_idempotent`
     // pins that.
-    runtime
+    //
+    // The clone is for the workspace-activation step below, which
+    // needs the candidate after the command has taken it. A
+    // `SourceCandidate` is a handful of identifiers, so paying for
+    // it beats reading the row back out of the store to recover
+    // what we were just holding.
+    let to_activate = candidate.clone();
+    let result = runtime
         .service
         .handle_command(RuntimeCommand::CaptureCandidate {
             job_id: input.job_id,
@@ -257,7 +308,36 @@ async fn dispatch_capture<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         .await
         .map_err(|e| McpError::Runtime(e.message))?;
 
-    let out = crate::tools::candidate::CaptureOutput { fingerprint };
+    // §43 closes `candidate.capture` with "mark workspace clean",
+    // and until this line nothing did. `WorkspaceManager::activate_candidate`
+    // is the only writer that clears `dirty`, and the only caller it
+    // had was a workspace test — so over the tool surface a job could
+    // be patched exactly once. `apply_patch` refuses a dirty tree,
+    // §101 needs three patches, and the second one failed with
+    // "workspace is dirty" naming a cause the agent had no way to
+    // clear.
+    //
+    // This runs *after* the runtime's capture, not before: the
+    // workspace must not be marked clean for a candidate the runtime
+    // refused.
+    let mut notes = result.side_effects;
+    match workspace.activate_candidate(id, &to_activate).await {
+        Ok(new_revision) => notes.push(format!(
+            "workspace marked clean at revision {new_revision}; the next \
+             workspace.apply_patch is accepted"
+        )),
+        Err(e) => notes.push(format!(
+            "captured {fingerprint} but could not mark the workspace clean: \
+             {e}. The job is at the captured source; a further \
+             workspace.apply_patch will be refused until this succeeds."
+        )),
+    }
+
+    // The side effects are returned rather than logged: they are the
+    // only place an agent can learn that the candidate was not
+    // activated, or that no adapter claims its family, or that the
+    // adapter it did find plans no gates. See `CaptureOutput::notes`.
+    let out = crate::tools::candidate::CaptureOutput { fingerprint, notes };
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 
@@ -368,5 +448,60 @@ async fn dispatch_operation_get<S: IronMaintStore + ?Sized, E: Executor + ?Sized
         ));
     };
     let out = crate::tools::operation::GetOutput { operation: op };
+    serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
+}
+
+/// Assemble and return the §42 release-candidate snapshot for a
+/// job's active candidate.
+///
+/// ## Why this is a tool at all
+///
+/// §53's read-only surface already includes
+/// `ironmaint_candidate_get`, `ironmaint_gate_list` and
+/// `ironmaint_obligation_list`, and the snapshot is exactly the join
+/// of the gates and obligations bound to one candidate. Withholding
+/// the join while handing over its parts would be backwards, and
+/// §101 steps 26-27 — assemble a release candidate, assert it is
+/// bound to C4 — are not expressible over the tool surface without
+/// it.
+///
+/// It is emphatically not a publish. Nothing here advances a state,
+/// signs anything, or proposes a `PrivilegedOperation`; §42's
+/// snapshot is a record of what was validated, and §54's
+/// `ironmaint_publish` is still absent.
+///
+/// The command mints the id and the query reads the durable value
+/// back, for the reason `dispatch_operation_get` and `check.run`
+/// already give: the snapshot is the thing a caller will act on, so
+/// it should be what the store says rather than what a side-effect
+/// string paraphrases.
+async fn dispatch_release_candidate_create<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let input: crate::tools::release::CreateInput =
+        serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
+    runtime
+        .service
+        .handle_command(RuntimeCommand::CreateReleaseCandidate {
+            job_id: input.job_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    let query = runtime
+        .service
+        .handle_query(RuntimeQuery::GetReleaseCandidate {
+            job_id: input.job_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    let ironmaint_runtime::QueryResult::ReleaseCandidate(release) = query else {
+        return Err(McpError::Other(
+            "GetReleaseCandidate returned wrong variant".into(),
+        ));
+    };
+    let out = crate::tools::release::CreateOutput {
+        release_candidate: release,
+    };
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }

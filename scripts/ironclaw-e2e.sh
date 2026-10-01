@@ -84,20 +84,24 @@ INIT_STATUS="${INIT##*$'\n'}"
 [[ "$INIT_STATUS" == "200" ]] || die "initialize returned HTTP $INIT_STATUS: $INIT_BODY" 1
 [[ "$INIT_BODY" == *'"protocolVersion"'* ]] || die "initialize returned no protocolVersion: $INIT_BODY" 1
 
-# 3. The nine-tool surface (§94).
+# 3. The eleven-tool surface (§94).
 TOOLS="$(rpc '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')"
 TOOLS_BODY="${TOOLS%$'\n'*}"
 TOOLS_STATUS="${TOOLS##*$'\n'}"
 [[ "$TOOLS_STATUS" == "200" ]] || die "tools/list returned HTTP $TOOLS_STATUS: $TOOLS_BODY" 1
 
-for tool in job.create job.get job.next_actions job.reconcile \
+for tool in job.create job.get job.next_actions job.reconcile job.resume \
             candidate.capture check.run workspace.apply_patch \
-            workspace.stat operation.get; do
+            workspace.stat operation.get release.candidate.create; do
     [[ "$TOOLS_BODY" == *"\"$tool\""* ]] \
         || die "tools/list does not advertise $tool: $TOOLS_BODY" 1
 done
+# §94 enumerates tool capabilities, not a count, so the tenth tool
+# (`job.resume`, 0B.10 C2) and the eleventh (`release.candidate.create`,
+# 0B.10 C5) are spec-compatible. The count is still pinned so a tool
+# disappearing is caught here rather than at first use.
 TOOL_COUNT="$(printf '%s' "$TOOLS_BODY" | json result.tools | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-[[ "$TOOL_COUNT" == "9" ]] || die "expected 9 tools, got $TOOL_COUNT" 1
+[[ "$TOOL_COUNT" == "11" ]] || die "expected 11 tools, got $TOOL_COUNT" 1
 
 # 4. job.create -> job.get round-trip, over the wire.
 CREATED="$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"job.create","arguments":{"orchestrator":{"kind":"ironclaw"},"package":{"distribution":{"family":"debian","release":"sid"},"source_name":"ironclaw-e2e-probe","binary_names":[]}}}}' | sed '$d')"
@@ -130,5 +134,5 @@ fi
 
 echo "ironclaw-e2e: OK"
 echo "  server:  $IRONMAINT_URL (auth enforced: 401 without a token)"
-echo "  surface: 9 tools advertised"
+echo "  surface: $TOOL_COUNT tools advertised"
 echo "  job:     $JOB_ID created and read back"

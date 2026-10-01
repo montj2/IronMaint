@@ -50,7 +50,9 @@ pub use descriptor::{AdapterCapabilities, AdapterCapability, AdapterDescriptor};
 pub use error::{AdapterError, AdapterErrorKind};
 pub use issues::{IssueCapability, IssuePlan};
 pub use package_model::{ChangedPath, PackageModelCapability, PathRole};
-pub use policy_port::{ObligationTemplate, PolicyCapability, PolicyPlan};
+pub use policy_port::{
+    ObligationTemplate, PolicyCapability, PolicyPlan, verdict_from_evidence_status,
+};
 pub use release::{
     PlannedOperation, PublicationPlanTemplate, ReleaseCapability, ReleaseMetadataPlan,
 };

@@ -29,6 +29,7 @@
     )
 )]
 
+pub mod adapters;
 pub mod check;
 pub mod clock;
 pub mod command;
@@ -41,6 +42,7 @@ pub mod query;
 pub mod reconcile;
 pub mod service;
 
+pub use adapters::AdapterRegistry;
 pub use check::{
     MaterialisedCheck, evaluate_gate, gate_stage_for, persist_materialised, plan_to_materialised,
 };
@@ -48,7 +50,7 @@ pub use clock::{Clock, FixedClock, SystemClock};
 pub use command::RuntimeCommand;
 pub use config::RuntimeConfig;
 pub use error::{RuntimeError, RuntimeErrorKind};
-pub use next_actions::{ActionBlocker, AllowedAction, JobNextActions};
+pub use next_actions::{ActionBlocker, AllowedAction, HumanAction, JobNextActions};
 pub use orchestrator::{OrchestratorKind, OrchestratorRef};
 pub use query::RuntimeQuery;
 pub use reconcile::ReconcileOutcome;

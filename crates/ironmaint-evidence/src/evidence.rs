@@ -112,19 +112,41 @@ impl EvidenceProducer {
 /// General categories only — individual tools are not encoded into
 /// the enum. A tool like `lintian` or `rpmlint` is captured in the
 /// [`EvidenceProducer::name`], not in the kind.
+///
+/// ## Coverage of [`GateStage`](crate::GateStage)
+///
+/// Every non-`Other` kind names a fact about a candidate, and
+/// [`ironmaint_runtime`'s](https://docs.rs/ironmaint-runtime)
+/// `gate_stage_for` maps it to the one gate stage it can
+/// contribute to. A gate stage that no kind maps to is a stage no
+/// check can ever produce evidence for, and therefore a gate
+/// definition that [`ironmaint_runtime::check::gate_stage_for`]
+/// can never be asked to materialise.
+///
+/// Three such stages existed until 0B.10 — `SourcePreparation`,
+/// `Maintenance` and `ReleaseReview` — and each is required by a
+/// [`TransitionRule`](https://docs.rs/ironmaint-state). The
+/// transition walk to `ReadyForApproval` was therefore
+/// unreachable for any adapter, not merely unimplemented. The
+/// kinds above close that gap; `every_required_gate_stage_has_an_evidence_kind`
+/// in `crates/ironmaint-runtime/tests/materialize_checks.rs` is
+/// what keeps it closed.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum EvidenceKind {
+    SourcePreparation,
     SourceIntegrity,
+    IssueCorrelation,
+    Maintenance,
+    PolicyEvaluation,
     Build,
     PackageQa,
     FunctionalTest,
     UpgradeTest,
-    Reproducibility,
-    PolicyEvaluation,
-    LicenseReview,
-    IssueCorrelation,
+    ReleaseReview,
     ReleaseAssembly,
+    Reproducibility,
+    LicenseReview,
     PublicationValidation,
     /// Escape hatch for kinds the core vocabulary doesn't enumerate.
     Other(String),
@@ -140,16 +162,19 @@ impl EvidenceKind {
     #[must_use]
     pub fn name(&self) -> &str {
         match self {
+            Self::SourcePreparation => "source_preparation",
             Self::SourceIntegrity => "source_integrity",
+            Self::IssueCorrelation => "issue_correlation",
+            Self::Maintenance => "maintenance",
+            Self::PolicyEvaluation => "policy_evaluation",
             Self::Build => "build",
             Self::PackageQa => "package_qa",
             Self::FunctionalTest => "functional_test",
             Self::UpgradeTest => "upgrade_test",
-            Self::Reproducibility => "reproducibility",
-            Self::PolicyEvaluation => "policy_evaluation",
-            Self::LicenseReview => "license_review",
-            Self::IssueCorrelation => "issue_correlation",
+            Self::ReleaseReview => "release_review",
             Self::ReleaseAssembly => "release_assembly",
+            Self::Reproducibility => "reproducibility",
+            Self::LicenseReview => "license_review",
             Self::PublicationValidation => "publication_validation",
             Self::Other(s) => s,
         }

@@ -9,7 +9,9 @@
 //!   3. A duplicate `CaptureCandidate` with the same fingerprint is
 //!      idempotent — no new row, no new sequence bump.
 //!   4. The handler appends a `JobEvent::Domain` audit event whose
-//!      side-effect text identifies the captured candidate.
+//!      side-effect text identifies the captured candidate. As of
+//!      0B.10 C1 it appends *two*: capture, then the activation
+//!      that capture now drives (see `adapter_plans.rs`).
 //!   5. A candidate whose `job_id` doesn't match the command's
 //!      `job_id` is rejected as `InvalidInput` (preserves the
 //!      `(job_id, fingerprint)` index invariant).
@@ -117,8 +119,9 @@ async fn capture_candidate_inserts_and_advances_sequence() {
         .await
         .expect("capture");
 
-    // CreateJob emitted sequence 1; CaptureCandidate emits sequence 2.
-    assert_eq!(result.new_sequence, 2);
+    // CreateJob emitted sequences 1 and 2 (`JobCreated`, then the
+    // `Domain` audit reference); CaptureCandidate emits sequence 3.
+    assert_eq!(result.new_sequence, 3);
     assert!(
         result.side_effects[0].starts_with("source_candidate:"),
         "side effect must identify the captured candidate: {}",
@@ -169,10 +172,16 @@ async fn capture_candidate_is_idempotent_on_duplicate_fingerprint() {
         .await
         .expect("duplicate capture must not error");
 
-    // Sequence must advance by exactly 1 between CreateJob (1) and the
-    // two captures (2, 3) — duplicate must not be a no-op event.
-    assert_eq!(first.new_sequence, 2);
-    assert_eq!(second.new_sequence, 3);
+    // As of 0B.10 C1, capture writes *two* events the first time:
+    // the capture itself, then the activation that follows it (the
+    // activation appends its own `JobEvent::Domain` envelope, which
+    // is what lets `rebuild_projection` reconstruct which candidate
+    // was active). CreateJob is 1 and 2 (a `JobCreated` carrying
+    // the seed projection, then the `Domain` reference), so the first
+    // capture is 3 and 4, and the duplicate capture — which
+    // re-activates nothing — is 5.
+    assert_eq!(first.new_sequence, 3);
+    assert_eq!(second.new_sequence, 5);
 
     // But there must still be exactly one row in the per-job list.
     let ids = store
@@ -211,7 +220,13 @@ async fn capture_candidate_appends_domain_event() {
         .list_events_for_job(job_id, 1, None)
         .await
         .expect("list events");
-    assert_eq!(events.len(), 2, "CreateJob + CaptureCandidate = 2 events");
+    assert_eq!(
+        events.len(),
+        4,
+        "CreateJob's two envelopes (JobCreated, then the Domain \
+         reference) plus CaptureCandidate's two (the capture and the \
+         activation that follows it) = 4 events"
+    );
 
     let last = events.last().expect("last event");
     assert!(

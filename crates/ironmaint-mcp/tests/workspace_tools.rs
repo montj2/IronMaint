@@ -169,6 +169,18 @@ index 0000000..5b0e1f2
 +hello
 ";
 
+/// A second, different edit, so a capture that accepted it cannot be
+/// passing because the tree happened to be unchanged.
+const SECOND_PATCH: &str = "\
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+new file mode 100644
+index 0000000..1f0a3c7
+--- /dev/null
++++ b/CHANGELOG.md
+@@ -0,0 +1 @@
++synthetic package (1.0.1)
+";
+
 #[tokio::test]
 async fn stat_provisions_a_workspace_and_reports_the_stored_revision() {
     let h = harness();
@@ -222,6 +234,53 @@ async fn apply_patch_rejects_a_stale_revision_with_a_conflict() {
     assert_eq!(stat(&h, job_id).await, 1);
 }
 
+/// The regression test for §43's last pipeline step going
+/// unimplemented.
+///
+/// §43 closes `candidate.capture` with "mark workspace clean", and
+/// until the dispatch did that, `WorkspaceManager::activate_candidate`
+/// had exactly one caller — a workspace test. `apply_patch` refuses a
+/// dirty tree, so an agent could patch a job once and never again,
+/// with an error naming a cause it had no tool to clear. §101 needs
+/// three patches; the second one failed.
+///
+/// `apply_patch_is_refused_while_the_workspace_is_dirty` below pins
+/// the other half of the same rule — and it is *this* test that
+/// gives it a boundary: a capture in between is what clears the flag.
+#[tokio::test]
+async fn capture_marks_the_workspace_clean_so_the_next_patch_is_accepted() {
+    let h = harness();
+    let job_id = create_job(&h).await;
+
+    apply_patch(&h, job_id, 0, PATCH).await;
+    let first = capture(&h, job_id).await;
+
+    // Revision 1 after the first patch, plus one more for the
+    // activation the capture performs.
+    let after_capture = stat(&h, job_id).await;
+    assert!(
+        after_capture > 1,
+        "capture must record the activation as a distinct revision, got {after_capture}"
+    );
+
+    // The point of the test: a second patch, which the dirty flag
+    // used to refuse.
+    let out = apply_patch(&h, job_id, after_capture, SECOND_PATCH).await;
+    assert_eq!(
+        out.get("new_revision").and_then(serde_json::Value::as_u64),
+        Some(after_capture + 1),
+        "the second patch must be accepted and bump the revision: {out}"
+    );
+
+    // And the second capture is a genuinely different source, so
+    // the repair loop §101 describes can run more than one turn.
+    let second = capture(&h, job_id).await;
+    assert_ne!(
+        first, second,
+        "a second patch must produce a second candidate"
+    );
+}
+
 #[tokio::test]
 async fn apply_patch_is_refused_while_the_workspace_is_dirty() {
     let h = harness();
@@ -250,8 +309,10 @@ async fn capture_reflects_source_state() {
     // Capture the empty tree.
     let before = capture(&h, job_id).await;
 
-    // Change the tree, then capture again.
-    apply_patch(&h, job_id, 0, PATCH).await;
+    // Change the tree, then capture again. The revision is read
+    // rather than assumed: a capture now records its activation as a
+    // distinct revision, so it is no longer left where it found it.
+    apply_patch(&h, job_id, stat(&h, job_id).await, PATCH).await;
     let after = capture(&h, job_id).await;
 
     // This is the regression test for the 0B.6 stub, which
