@@ -18,6 +18,15 @@ decision not to act (D-10), and one cannot be checked in this environment
 (D-15). The severity table below is unchanged; the register's shape is not — the
 highest-severity item is now D-01, which 0B.10 deliberately did not touch.
 
+**Re-audited again later on 2026-10-01**, after 0B.10's tool surface was driven
+over real HTTP against a live daemon. That run found two defects in the §36
+operator escape hatch, adds **D-16**, and amends **D-14**: its closure is true
+about a job's birth and false about every field written after it. Worth noting
+for how this register is read — **D-14 was marked CLOSED, and a day later a
+defect sat directly behind it.** A closure records a fix, not an absence, and
+the two are easy to mistake for each other when the item was found by reading
+rather than by running.
+
 ## How to read this
 
 Severity is about consequence, not effort.
@@ -71,8 +80,9 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-11 | LOW | No real Debian/Fedora adapters | DEFERRED to Phase 1 (§106) |
 | D-12 | LOW | 0B.8 hardening suite is not exhaustive | DEFERRED |
 | D-13 | LOW | `git add -A` in this repo can sweep in unrelated local artifacts | PROCESS |
-| D-14 | MEDIUM | `rebuild_projection` rejects every real job's event log, so the §36 operator escape hatch cannot rebuild anything | **CLOSED** by 0B.10 — `JobEvent::JobCreated` carries the birth projection, so the log is authoritative for a never-transitioned job |
+| D-14 | MEDIUM | `rebuild_projection` rejects every real job's event log, so the §36 operator escape hatch cannot rebuild anything | **CLOSED** by 0B.10 — `JobEvent::JobCreated` carries the birth projection, so the log is authoritative for a never-transitioned job. **Amended 2026-10-01**: the closure is true about the birth and false about everything after it; the `active_candidate` gap is **D-16** |
 | D-15 | LOW | §102 item 30 ("an actual IronClaw agent can complete the synthetic repair workflow") is **unverifiable in this environment** — not unmet, and not a code defect | **ENVIRONMENT-BLOCKED**, with repro steps at the bottom of the register. 33 of 34 DoD items are true; this is the one that cannot be checked here |
+| D-16 | MEDIUM | The event log does not record candidate activation, so `rebuild-projections` cannot rebuild any job that has captured a candidate — and writing the replay anyway would drop the §30 binding every gate verdict depends on | **MITIGATED, NOT FIXED** by `8b95884`: the tool now refuses, by name, rather than writing a projection whose evidence chain it has just invalidated. The real fix is a new durable event variant, which changes the event format — see the entry for the costs |
 
 ---
 
@@ -870,6 +880,27 @@ this ship. Every pre-existing rebuild test hand-assembled a log beginning with a
 SQLite store, so a regression in what the runtime emits fails in CI rather than
 in production.
 
+### AMENDED 2026-10-01 — the closure is necessary and not sufficient
+
+**This entry's claim that the log is now authoritative is true about the birth
+and false about everything after it.** `JobCreated` carries the projection as it
+was at sequence 1. Nothing else in `JobEvent` carries a payload except
+`Transitioned` and `ResumeRecorded`, so the only field of `JobProjection` a
+replay cannot recover is `active_candidate` — which `activate_candidate` sets
+without ever writing an event that records it.
+
+So the log is authoritative for a never-transitioned job's birth, and **not**
+authoritative for any job that has captured a candidate. §102 item 3 is narrower
+than this entry's resolution implied. The follow-on defect is **D-16**, found
+three days later by running the binary rather than by reading the code, and it
+is worth noting that this entry was marked CLOSED in the interval.
+
+What the follow-on also found is that the *other* half of the escape hatch was
+broken independently, and the same blind spot hid it: `rebuild-projections` took
+its CAS token from the rebuilt projection rather than the stored row, so it
+could not write back even for a job whose log was authoritative. See **D-16** for
+both.
+
 ---
 
 ## D-15 — §102 item 30 is unverifiable in this environment (LOW, environment)
@@ -960,6 +991,126 @@ verify the *agent's repair loop*. The gap between those two is exactly what item
 
 ---
 
+## D-16 — the event log does not record candidate activation, so `rebuild-projections` cannot rebuild any job that has captured one (MEDIUM)
+
+**Found 2026-10-01**, by running `ironmaintctl rebuild-projections` against the
+live state directory of a daemon built from 0B.10's tool surface. This is the
+first defect in this register found by *operating the product* rather than by
+reading or unit-testing it, and the way it was found is the argument for the
+method.
+
+### The log records *that* something happened, not *what*
+
+`JobEvent` has five variants. Only three carry a payload:
+
+| Variant | Payload | Replayed into the projection? |
+|---|---|---|
+| `JobCreated(JobProjection)` | the birth projection | yes — the seed |
+| `Transitioned(Transition)` | `projection_after` | yes |
+| `ResumeRecorded(ResumeRecord)` | the record | no — pass-through, like `ToolRunFinished` |
+| `Domain(uuid)` | a bare identifier | no |
+| `ToolRunFinished(uuid)` | a bare identifier | no |
+
+`activate_candidate` writes `active_candidate` onto the projection, bumps
+`version`, and appends `JobEvent::Domain(domain_event_id)` — a `DomainEventId`
+and nothing else. There is no candidate id in it, and no path by which one could
+be recovered. A replay therefore reproduces the job's `state` faithfully and
+arrives with `active_candidate: None`, for every job that has ever captured a
+candidate.
+
+§30 binds every gate verdict to the active candidate's fingerprint, and §22
+makes a source change create a *new* candidate. So `active_candidate` is the
+highest-value field in `JobProjection` and the only one the log cannot justify.
+
+### What the tool does now, and why that is the right interim answer
+
+`replay_one` **refuses**, naming the missing fact:
+
+```text
+refusing to rebuild: the event log does not record candidate activation, so
+the replay would drop the active candidate (stored 0196…, replayed None).
+Repair this row by hand, or wait for the log to carry activation.
+```
+
+This is `8b95884`. The alternative — writing the replay anyway — is strictly
+worse in every dimension, and worth spelling out because it is the tempting
+one: the write would succeed, the tool would report `rebuilt: 1 job(s)`, and
+the job would lose the binding that every gate result already recorded. Not a
+partial loss — an *invalidating* one. The operator would be told the job was
+repaired at the moment its evidence chain was broken.
+
+A repair tool that destroys the thing it repairs is worse than one that refuses,
+which is why the interim answer is a refusal with a name in it. An operator can
+act on "the log does not record activation" and on nothing else.
+
+### The real fix, and what it costs
+
+A new event variant carrying the candidate id, on the D-14 pattern:
+
+```text
+JobEvent::CandidateActivated { job_id, candidate_id, fingerprint }
+```
+
+appended by `activate_candidate` in place of (or alongside) the `Domain`
+reference, and applied in `JobProjection::apply` as a pass-through that sets
+`active_candidate`. `Domain` is *not* the variant to widen: it is used for
+several unrelated domain writes, and the reason it carries a bare id is
+deliberate — it is an audit back-reference, not a state record. Widening it
+would make every `Domain` event ambiguous about which of its uses it is
+answering.
+
+The costs, stated so the next reader is not surprised:
+
+- **It changes the durable event format.** `serialise_event` / `deserialise_event`
+  in `ironmaint-store-sqlite` gain an arm, so every existing database needs a
+  migration or a forward-compatible deserialiser. This is the reason it is not
+  a small follow-up.
+- **`verify-migrations` snapshots must be regenerated** once a migration lands.
+- **The two store backends must agree**, which is the drift D-14's
+  `JobEvent::seed_projection` already had to fix once. Whatever seeds this
+  variant belongs next to that function, not in a backend.
+- **It is a new row in the ledger for every capture.** Candidate identity is
+  currently derivable from the `source_candidates` table joined on the job; a
+  first-class event makes the ledger self-sufficient and that is the point,
+  but it does mean the log grows.
+
+### Why it stayed logged rather than fixed in `8b95884`
+
+`AGENTS.md` — "One feature or fix per branch." The durable-format change above
+is its own reviewable decision, and stacking it onto a defect fix would have
+made neither legible. The refusal is what makes deferring it safe: **the
+exposure is bounded to a tool that now announces, by name, that it cannot do
+the job** rather than one that quietly does it wrong.
+
+### The standing hazard, which is the real content of this entry
+
+The CAS defect and this one were found together, in the same run, and both were
+invisible to the suite for the same reason — D-14's, one layer out:
+
+| Test | Why it could not see either |
+|---|---|
+| `rebuild_smoke.rs` | exercises the **no-events** path — the one path that always worked — and asserts the CLI prints a report |
+| `projection_rebuild.rs` | calls `rebuild_projection` and asserts on the return; never writes back, so it never meets the CAS check |
+| every pre-existing `rebuild_projection` test | hand-built its log (D-14) |
+
+Not one of these is a bad test. Each answers a real question about a real
+component. **No amount of testing inside the components finds a missing seam
+between them**, and the §36 escape hatch is a seam between four.
+
+The method that found both is the one 0B.10's C4 notes already generalised —
+*drive the real command surface against a real store, and assert on what the
+store says afterwards* — applied here to the **operator** surface rather than
+the MCP one. `bins/ironmaintctl/tests/rebuild_regression.rs` is that test,
+written afterwards so the pair cannot recur, and both of its halves were
+verified to fail without their respective fix.
+
+That makes three components in this repository — `rebuild_projection`, the
+`§101` drivers, and now the CLI — where the missing thing was never logic. It
+is the single most productive defect class in this codebase and it is not
+findable by any tool currently in the workspace.
+
+---
+
 ## Suggested ordering
 
 Not a plan — the user decides. In rough order of value-per-effort. **Revised
@@ -972,17 +1123,23 @@ was deliberately not done, so this list is shorter and its shape has changed.
    largest single item in the register**, and unrelated to everything 0B.10
    touched: `AGENTS.md`'s "one feature or fix per branch" is the reason it did
    not ride along.
-2. **D-05** — deletes three dead functions and two false comments; makes **D-04**'s
+2. **D-16** — a new durable event variant, so the log can justify the
+   active-candidate binding and the §36 escape hatch works on real jobs rather
+   than only on the ones that have never captured a candidate. **It is
+   mitigated, not fixed**, and the mitigation is a refusal, which is safe but
+   leaves §102 item 3 narrower than D-14's closure claimed. It changes the
+   durable event format, so it wants its own branch and its own review.
+3. **D-05** — deletes three dead functions and two false comments; makes **D-04**'s
    promotion honest. Cheap, and it should land in the same PR as D-01's sweep,
    since both are "the lint config promised something it did not do".
-3. **D-04** + **D-08** — same two `ProcessExecutor` fields; land together or not at all.
-4. **D-09** — the remaining half is a *producer* for `InfrastructureBlocked`, and
+4. **D-04** + **D-08** — same two `ProcessExecutor` fields; land together or not at all.
+5. **D-09** — the remaining half is a *producer* for `InfrastructureBlocked`, and
    the decision of "who may mark a job blocked, on what evidence" is a Phase 1
    question, not a 0B one. Write the decision down before writing the code.
-5. **D-11** — Phase 1, gated on the `ReadyForApproval`-through-the-tools criterion above.
-6. **D-06** and **D-15** — same root cause, same fix: an external binary. Nothing to
+6. **D-11** — Phase 1, gated on the `ReadyForApproval`-through-the-tools criterion above.
+7. **D-06** and **D-15** — same root cause, same fix: an external binary. Nothing to
    do until one exists; the repro steps are in D-15.
-7. **D-12**, **D-13** — as scheduled.
+8. **D-12**, **D-13** — as scheduled.
 
 **Closed since the previous revision, and therefore gone from this list:** D-02
 (C3 — `skills/` is canonical, the `integrations/` copy is deleted), D-03 (C1–C5),

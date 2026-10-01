@@ -322,6 +322,13 @@ yet, so "rebuild everything" is a shell loop over known ids.
 > **Amended 2026-10-01 (0B.10).** The §97 set is green at `2656528` with
 > **838** unit and **847** with `--features integration`, and
 > `verify-mcp-schemas` at **11**. The run below is 0B.9's, kept as written.
+>
+> **Amended again later on 2026-10-01**, at `8b95884`: **840** unit and **849**
+> integration, both green, four verifiers clean, `fmt` and clippy `-D warnings`
+> clean. The +2 is `bins/ironmaintctl/tests/rebuild_regression.rs` — two tests
+> for two separately-verified defects in the §36 escape hatch, and the first
+> tests in that crate to put a real job in front of the tool rather than
+> exercising the no-events path.
 
 All §97 commands green at `bf11da7` (0B.9 C6):
 
@@ -358,8 +365,15 @@ each verifier is invoked as `cargo run -p xtask -- <subcommand>`.
 > hardcoded tool count was the *fourth* place a stale nine survived a sub-phase
 > (after `schema.rs`, `auth.rs` and `transport.rs`). The `ironclaw` half is still
 > skipped with a notice, and the last paragraph's conclusion is now **wrong**:
-> see §16.8, which is closed. A live re-run of the script against the 0B.10
-> surface has not been done — §20's closing note says so.
+> see §16.8, which is closed.
+>
+> **Amended again later on 2026-10-01.** A live daemon built from the 0B.10
+> surface *was* driven, by hand, over HTTP with `tools/call` only — and that run
+> found two defects no test could reach, so "not done" was costing more than the
+> note said. What it proved, what it broke, and the one thing it still does not
+> prove (the agent loop, i.e. row 30) are in **§20's closing section**. The
+> script itself has not been re-run, because its IronClaw half skips anyway;
+> the hand-driven walk covered the same server surface.
 
 `scripts/ironclaw-e2e.sh` was rewritten in 0B.9. The previous version could
 not run at all — it was a checked-in script guarded by a "STATUS" note saying
@@ -932,11 +946,13 @@ fail** — and there was no production writer of any obligation status other tha
 exactly this.
 
 The same shape then recurred eight more times — **twelve in all by 0B.10's
-end** — and it is the single most important thing this section has to say:
+end**, and then two more, both in the **operator** surface rather than the MCP
+one, on the live daemon run recorded in §20. **Fourteen in all.** It is the
+single most important thing this section has to say:
 
 > **A component modelled something correctly, and no production path produced the
-> input.** Not one of the twelve was a bug *inside* a component. Every one was a
-> missing seam between two things that were individually correct and
+> input.** Not one of the fourteen was a bug *inside* a component. Every one was
+> a missing seam between two things that were individually correct and
 > individually tested — and no amount of unit testing inside a component finds a
 > missing seam.
 
@@ -966,6 +982,8 @@ an agent mid-conversation.
 | `ec9e06c` | eleventh instance — re-capturing an unchanged tree must not mint a second candidate |
 | `f009e2e` | twelfth instance — `next_actions` must report an outstanding obligation at every state, not only where a `GatePending` blocker happened to fire |
 | C5 | `mcp_acceptance_scenario.rs` — §101 through `dispatch()`, no `RuntimeService` handle (`2656528`) |
+| C6 | the register and this report (`9b159d1`) |
+| `8b95884` | thirteenth and fourteenth instances — `rebuild-projections` took its CAS token from the wrong projection, and the log cannot justify `active_candidate`. Found by running the binary against the live daemon, not by reading the code. **D-16** |
 
 ### Three things the plan did not predict
 
@@ -1000,6 +1018,15 @@ an agent mid-conversation.
 
 ## 20. §102 Definition of Done — status at `2656528`
 
+> **Amended 2026-10-01 at `8b95884`.** The count is unchanged — 33 of 34 — but
+> **row 3 is now qualified rather than flatly met**, because the live daemon run
+> proved the event log cannot justify `active_candidate`. A row reading "met"
+> with a defect sitting directly behind it is worse than a row reading
+> "met, with a stated limit": D-14 was marked CLOSED for three days on exactly
+> that ambiguity, and the thing behind it turned out to be a second defect. The
+> closing section of this § has also been rewritten — it previously said the
+> live run had not happened.
+
 **33 of 34 are true. One cannot be checked in this environment.**
 
 This table is the answer to "is Phase 0B complete", and it is written so that the
@@ -1009,7 +1036,7 @@ one that is not can be told apart from the one that was never attempted.
 |---|---|---|---|
 | 1 | durable SQLite persistence | **met** | `ironmaint-store-sqlite`; `verify-migrations` → 25 objects, clean |
 | 2 | domain events are append-only | **met** | no update or delete path to `job_events`; `hardening.rs` |
-| 3 | projections can be rebuilt from events | **met** — was **broken for every real job** until 0B.10 | D-14 / `0b33c3d`; `projection_rebuild.rs` drives the real `CreateJob` path |
+| 3 | projections can be rebuilt from events | **met, with a stated limit** — was **broken for every real job** until 0B.10 | D-14 / `0b33c3d`; `projection_rebuild.rs` drives the real `CreateJob` path. **Amended 2026-10-01:** true for a job's birth and for every transition, and **not** for `active_candidate` — the log records activation as a bare `JobEvent::Domain(uuid)`. The §36 tool now refuses rather than writing a projection whose evidence chain it has invalidated; the durable event variant that would close it is **D-16** |
 | 4 | jobs survive daemon restart | **met** | §101 steps 4–5, over real SQLite in both drivers |
 | 5 | candidates survive daemon restart | **met** | §101 step 5 |
 | 6 | evidence survives daemon restart | **met** | `hardening.rs` |
@@ -1054,12 +1081,60 @@ specific agent named by the spec has not been run against it.** A green §97 gat
 and a green C5 do not silently stand in for it — which is what `doc/DEBT.md` D-15
 is for.
 
-### The one honest gap in this report
+### The end-to-end run, and the two defects it found
 
-A real end-to-end daemon run with `scripts/ironclaw-e2e.sh` — HTTP transport,
-real auth, real process — has **not** been re-run against the 0B.10 tool surface.
+> **Amended 2026-10-01.** This section previously said the live run had *not*
+> been done. It has. What follows replaces that.
+
 The C5 claim is "no `RuntimeService` handle", which a test process can honour
-and a reviewer should still want confirmed over a socket. `scripts/ironclaw-e2e.sh`
-itself now checks for eleven tools, and its IronClaw half skips with a notice
-when no binary is present — so a green run of it proves the server, not the
-agent.
+and a reviewer should still want confirmed over a socket. So a daemon was built
+from this branch, started on a real port, and driven with nothing but
+`tools/call` over HTTP — real auth, real process, real SQLite state directory.
+
+**What it proved, server-side:**
+
+- `candidate.capture` against the real `debian` adapter activates the candidate,
+  materialises 4 checks, derives 2 obligations, marks the workspace clean, and
+  reports each of those in `notes`. C1's wiring is not a claim about a mock.
+- `next_actions` advertises four `run_check` verbs — the C3 `allowed` /
+  `requires_human` split behaving correctly on the wire.
+- `check.run` on a real materialised check returns a **typed, diagnosable**
+  error — `no tool registered for capability debian.build.sbuild` — instead of
+  the old behaviour, which was a job that silently never left `EventDetected`
+  and told the agent nothing. The adapters plan `debian.*`; only the
+  `synthetic.*` fixtures are registered. That is the honest end of 0B and it is
+  now *legible* rather than silent, which is what the C1 note asked for.
+- `reconcile` returns a real `blocked: MissingGate(GateId(...))` rather than an
+  empty result.
+- The daemon log reads `adapter registry loaded families=["debian", "fedora"]`,
+  and the `deferred to Phase 1` line is gone. §67's startup step is real.
+- A job survived a real daemon restart with its active candidate intact.
+
+**What it found — two defects, both in code no test could reach.** Driving
+`ironmaintctl rebuild-projections` against that same live state directory:
+
+1. the tool took its CAS token from the *rebuilt* projection rather than the
+   stored row, so it could never write back for any job that had advanced —
+   `Conflict: expected_version=0, found=1`;
+2. fixing that turned a loud failure into silent data loss, because
+   `activate_candidate` appends a bare `JobEvent::Domain(uuid)` and a replay
+   cannot recover the active candidate. The write would have succeeded, reported
+   `rebuilt: 1 job(s)`, and dropped the §30 binding every gate verdict depends on.
+
+Fixed in `8b95884`; the second is **D-16**, mitigated by a refusal rather than
+closed. Full detail in the commit and in `doc/DEBT.md`.
+
+**The lesson is the reason the run was worth doing, and it is the same one C4's
+notes generalised.** Neither defect was a bug *in* a component. Both were
+missing seams between components that were each correct and each individually
+tested. `rebuild_projection`'s tests hand-built their log (D-14);
+`rebuild_smoke.rs` exercises the no-events path — the one path that always
+worked; `projection_rebuild.rs` never writes its result back, so it never meets
+the CAS check that made the tool unusable. Three components, no missing logic,
+and no test in the workspace capable of finding it.
+
+**What this run does *not* prove.** It was a hand-driven walk, not
+`scripts/ironclaw-e2e.sh` — whose IronClaw half still skips with a notice when no
+binary is present, so a green run of *it* proves the server and not the agent.
+Row 30 is unaffected: the agent loop and the extension manifest still have not
+been exercised, and D-15's repro steps still stand.
