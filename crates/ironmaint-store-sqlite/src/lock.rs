@@ -38,8 +38,22 @@ impl DaemonLock {
             .write(true)
             .open(&lock_path)
             .map_err(|e| format!("open lock file {}: {e}", lock_path.display()))?;
-        file.try_lock_exclusive()
-            .map_err(|_| "another ironmaintd is using this state directory".to_owned())?;
+        file.try_lock_exclusive().map_err(|e| {
+            // Distinguish contention from every other I/O failure.
+            // The old form discarded the `io::Error` entirely and
+            // reported *all* of them as "another ironmaintd is
+            // using this state directory" — so a read-only
+            // filesystem or a permissions problem sent an operator
+            // hunting for a second daemon that was never running.
+            if e.kind() == std::io::ErrorKind::WouldBlock {
+                format!(
+                    "another ironmaintd is using this state directory ({})",
+                    state_dir.display()
+                )
+            } else {
+                format!("lock {}: {e}", lock_path.display())
+            }
+        })?;
         Ok(Self { file })
     }
 
@@ -47,14 +61,19 @@ impl DaemonLock {
     /// `SqliteStore` against an in-memory SQLite and therefore
     /// have no real lock file to hold.
     #[doc(hidden)]
-    pub fn empty_for_tests() -> Self {
+    pub fn empty_for_tests() -> Result<Self, String> {
         // Open `/dev/null` to satisfy `File`; the file's drop
-        // releases the placeholder.
+        // releases the placeholder. This cannot fail in any
+        // environment IronMaint supports, but it is a filesystem
+        // call in `src/` and the no-panic policy (PHASE-0A.md §85)
+        // is not relaxed for "cannot really happen" — the caller
+        // turns this into a `StoreError` like every other
+        // filesystem failure in this crate.
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open("/dev/null")
-            .expect("/dev/null must exist on test hosts");
-        Self { file }
+            .map_err(|e| format!("open /dev/null: {e}"))?;
+        Ok(Self { file })
     }
 }

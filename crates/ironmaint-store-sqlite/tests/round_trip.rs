@@ -6,6 +6,12 @@
 //! errors in the trait impls; the production `open` (with
 //! migrations applied) is exercised by the daemon in commit 14.
 
+// Integration tests are compiled as a separate crate and don't inherit
+// `cfg_attr(test, allow(...))` from `lib.rs`. Allow `unwrap`/`expect`
+// here for the same reason as the unit tests: a failed `unwrap` is a
+// failed test, and the values under test are constructed in this file.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use ironmaint_core::{
     CandidateFingerprint, DistributionFamily, DistributionRef, DistributionRelease,
     GitHashAlgorithm, GitObjectId, JobId, JobProjection, JobState, MaintenanceEventId,

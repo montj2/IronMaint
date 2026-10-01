@@ -8,6 +8,9 @@ authors = ["James Montgomery <james@ironmaint.dev>"]
 description = "Persistence contracts (async traits) for IronMaint's event-sourced store."
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 ironmaint-core = { path = "../ironmaint-core" }
 ironmaint-evidence = { path = "../ironmaint-evidence" }
