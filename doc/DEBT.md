@@ -82,7 +82,7 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-13 | LOW | `git add -A` in this repo can sweep in unrelated local artifacts | PROCESS |
 | D-14 | MEDIUM | `rebuild_projection` rejects every real job's event log, so the §36 operator escape hatch cannot rebuild anything | **CLOSED** by 0B.10 — `JobEvent::JobCreated` carries the birth projection, so the log is authoritative for a never-transitioned job. **Amended 2026-10-01**: the closure is true about the birth and false about everything after it; the `active_candidate` gap is **D-16** |
 | D-15 | LOW | §102 item 30 ("an actual IronClaw agent can complete the synthetic repair workflow") is **unverifiable in this environment** — not unmet, and not a code defect | **ENVIRONMENT-BLOCKED**, with repro steps at the bottom of the register. 33 of 34 DoD items are true; this is the one that cannot be checked here |
-| D-16 | MEDIUM | The event log does not record candidate activation, so `rebuild-projections` cannot rebuild any job that has captured a candidate — and writing the replay anyway would drop the §30 binding every gate verdict depends on | **MITIGATED, NOT FIXED** by `8b95884`: the tool now refuses, by name, rather than writing a projection whose evidence chain it has just invalidated. The real fix is a new durable event variant, which changes the event format — see the entry for the costs |
+| D-16 | MEDIUM | The event log does not record candidate activation — **or the version bump that activation performs** — so `rebuild-projections` cannot rebuild any job that has captured a candidate, and writing the replay anyway would drop the §30 binding every gate verdict depends on | **MITIGATED, NOT FIXED** by `8b95884`: the tool now refuses, by name, rather than writing a projection whose evidence chain it has just invalidated. The real fix is a new durable event variant, which changes the event format — see the entry for the costs and for the amendment on `version` |
 
 ---
 
@@ -1043,12 +1043,48 @@ A repair tool that destroys the thing it repairs is worse than one that refuses,
 which is why the interim answer is a refusal with a name in it. An operator can
 act on "the log does not record activation" and on nothing else.
 
-### The real fix, and what it costs
+### AMENDED 2026-10-01 — the same gap takes `version` with it
 
-A new event variant carrying the candidate id, on the D-14 pattern:
+The entry above names one field. It is two, and the second is currently being
+masked.
+
+`handle_set_active_candidate` (`crates/ironmaint-runtime/src/service.rs`) does
+two things to the **row**: it sets `active_candidate`, and it writes
+`version: current.version + 1`. It then appends `JobEvent::Domain(id)` — a bare
+identifier, which `ProjectionApply::apply` treats as `self.clone()`, a no-op. So
+**neither** the activation nor the version bump it performs reaches the log. A
+replay reproduces the last `Transitioned` event's candidate *and* version, which
+are the values from before the activation.
+
+Only a `Transitioned` event would carry either one forward, because its payload
+embeds a full `projection_after` snapshot — and activation does not transition.
+
+**Why this matters for the fix rather than the report.** `replay_one` sets
+`proj.version = expected`, taken from the stored row, to make the CAS token
+correct. That line was written to fix the *thirteenth* instance and it is right
+to exist, but it also silently sources `version` from the very row the tool
+exists to verify. A `CandidateActivated` variant carrying only the candidate id
+would satisfy the refusal above, the refusal would go away, and `version` would
+still be unlog-justified with nothing left to notice.
+
+So the variant needs a fourth field:
 
 ```text
-JobEvent::CandidateActivated { job_id, candidate_id, fingerprint }
+JobEvent::CandidateActivated { job_id, candidate_id, fingerprint, version_after }
+```
+
+and `xtask verify-seams` S7 — a round-trip asserting every `JobProjection` field
+against a production path — is what keeps a future variant from shipping half
+this again. See `doc/SEAM-VERIFICATION.md` §2/S7, whose first run is expected to
+fail on exactly these two fields.
+
+### The real fix, and what it costs
+
+A new event variant carrying the candidate id **and the version it left behind**,
+on the D-14 pattern:
+
+```text
+JobEvent::CandidateActivated { job_id, candidate_id, fingerprint, version_after }
 ```
 
 appended by `activate_candidate` in place of (or alongside) the `Domain`
