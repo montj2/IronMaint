@@ -66,7 +66,7 @@ Seven waves. Each is one branch, one PR, one reviewable claim.
 |---|---|---|---|---|---|
 | 1 | Lint the persistence layer | **D-01** | — | low | **done** 2026-10-01 |
 | 2 | Prove the log gap, then close it | **S7 → D-16** | — | **medium** | **done** 2026-10-01 |
-| 3 | The dead-code cluster | **D-04, D-05, D-08** | — | low | next |
+| 3 | The dead-code cluster | **D-04, D-05, D-08** | — | low | **done** 2026-10-01 |
 | 4 | Seam verification | **S1–S5, S8, S9** | 1, 2 | medium | unblocked |
 | 5 | Container images | new | — | **long** | unblocked |
 | 6 | The extension manifest | **D-06** | 5 | medium | — |
@@ -98,6 +98,24 @@ that make that promise dishonest, and D-08 is the one place with genuinely unrea
 fields that promotion would catch. Promoting `dead_code` while the vestigial
 allows still exist is D-14 again: a suppression recorded in place of a decision.
 They land together or the promotion is theatre.
+
+**Wave 3 landed in two PRs, and the split was forced by D-08.** The plan said one
+PR for all three; D-08 shipped first on its own (it is a feature fix — bounded
+artifact capture — and would have been unreviewable inside a lint sweep), and
+D-04 + D-05 followed. That ordering is the one this page already argued for
+above, so the deviation improved the outcome rather than departing from it: a
+`dead_code = "deny"` promoted over a crate that still needed the exemption cannot
+be distinguished from one promoted over a crate that does not, so D-08 had to land
+first for the promotion to be checkable. Nine register items are closed.
+
+**One wave-3 finding belongs in §0, not in a commit message.** D-05's written
+analysis of `DaemonLock.file` was wrong — it recommended deleting a field whose
+only function is its `Drop`, and had it been followed the daemon would have stopped
+taking its lock with every gate green. Building with the deny in place reversed the
+verdict, and rustc volunteered the reason. That is §0's lesson applied to the
+register's own text: **an entry that has never been executed is a hypothesis.**
+Worth carrying into waves 4 and 6, both of which reason about behaviour that has
+not yet been run.
 
 **Wave 4 after 1 and 2** so the new `xtask` code is itself lint-constrained, and
 so S7 already exists as a model for the behavioural checks.

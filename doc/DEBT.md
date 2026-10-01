@@ -48,6 +48,31 @@ needs **no migration**, because `events.event_type` is unconstrained `TEXT`. The
 refusal in `rebuild-projections` is kept, now as a legacy-data guard for rows
 written by the older binary. Seven items are now closed.
 
+**Wave 3 landed 2026-10-01** and closed **D-04** and **D-05** together, in the
+order the register asked for: D-08 removed the executor's last two exemptions
+first, so promoting `dead_code` to `deny` was a claim about a crate that no longer
+needed the exemption, and could be checked. Ten `#[allow(dead_code)]` sites were
+deleted, three were rewritten as real checks, and one was kept — the entry, and it
+is the more useful half of this note.
+
+**D-05's own analysis of `DaemonLock.file` was wrong**, and following it would
+have been a silent regression: it said *"the allow is wrong … it does not need the
+suppression"*, on a field whose only job is its `Drop`, because closing the file
+releases the OS flock. Building with the deny on produces the opposite verdict, and
+rustc volunteers the reason — *"has a derived impl for the trait `Debug`, but this
+is intentionally ignored during dead code analysis"*. `File::drop` is not a read,
+and the derived `Debug` does not rescue the field. Deleting it would have stopped
+the daemon from locking and the gate would have been green throughout.
+
+That is the **second entry in this register whose stated reasoning had to be
+corrected by running the code** (the first was D-16's migration cost, wrong in the
+*cheap* direction), and it is the D-14 lesson in its purest form: this register was
+written by reading, and reading produced a confidently wrong verdict about a field
+whose behaviour is a side effect. **An entry that has never been executed is a
+hypothesis.** The standing rule above — *closed by a commit and a passing gate* —
+is the same rule, and D-05 is what it looks like when the entry itself is the
+defect. Nine items are now closed.
+
 ## How to read this
 
 Severity is about consequence, not effort.
@@ -91,8 +116,8 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-01 | HIGH | `ironmaint-store` and `ironmaint-store-sqlite` inherit no lint set — the no-panic and no-unsafe policies are unenforced in the persistence layer | **CLOSED** 2026-10-01 — both manifests declare `[lints] workspace = true`, so §97 covers **21 of 21** members. The four predicted sites are fixed, one of them diverging from the register's own recommendation (recorded in the entry). Teeth-checked by adding a real `unwrap` to the SQLite crate's production path and watching clippy reject it |
 | D-02 | HIGH | The spec-designated `SKILL.md` is stale and documents a wire format the server rejects | **CLOSED** by 0B.10 C3 — `skills/` is canonical, the stale `integrations/` copy is deleted, and `PHASE-0B.md` §61 has been amended to point at the surviving file |
 | D-03 | HIGH | A job cannot advance past `EventDetected`; 5 of 9 runtime commands and 1 of 5 queries have no MCP entry point, and `next_actions` overloads `allowed` as both "moves you can make" and "this needs a human" | **CLOSED** by 0B.10 (C1–C5) — the three missing production links have one caller each, the `allowed` wire split landed in C3, and C5's `mcp_acceptance_scenario.rs` walks §101 from `job.create` to `ReadyForApproval` through `dispatch()` with no `RuntimeService` handle. The census is re-derived at the bottom of the entry, because the right column is now "has a *tool*" and several rows moved to "driven internally by `candidate.capture`" |
-| D-04 | MEDIUM | `dead_code = "warn"` carries a promise ("promoted once 0A.6 lands") that was never kept | OPEN |
-| D-05 | MEDIUM | 4 of 6 `#[allow(dead_code)]` sites are vestigial, two with false justifications | OPEN |
+| D-04 | MEDIUM | `dead_code = "warn"` carries a promise ("promoted once 0A.6 lands") that was never kept | **CLOSED** 2026-10-01 — promoted to `deny` in the workspace lint table, after D-08 removed the executor's last two exemptions so the promotion could be teeth-checked rather than assumed. The deny was verified to reject a deliberately dead item **in a test target**, where the old `warn` was useless |
+| D-05 | MEDIUM | 4 of 6 `#[allow(dead_code)]` sites are vestigial, two with false justifications | **CLOSED** 2026-10-01 — ten sites deleted, three rewritten as real checks, and the eleventh kept. The entry's own analysis of `DaemonLock.file` was **wrong** and recommended a fix that would have silently stopped the daemon from locking |
 | D-06 | MEDIUM | `mcp-registration.yaml` field names never round-tripped through a real `ironclaw extension install` | OPEN (no binary available) |
 | D-07 | MEDIUM | Dead `for _ in 0..15u32` loop in `reconcile`, suppressed with `clippy::never_loop` | **CLOSED** by 0B.10 C4 (`cec87d7`) — the loop now advances through every satisfied rule, matching §41 and `ReconcileOutcome::Advanced`'s own doc comment. The suppression is gone, not re-suppressed |
 | D-08 | MEDIUM | `ProcessExecutor` held `artifact_store` and `guard_factory` and read neither; oversized tool output was silently discarded while the daemon logged the store as verified | **CLOSED** — every run's complete stdout and stderr are spilled to the store, bounded by the job's guard, and the record names each digest, how much it could not keep, and any refusal. Closing it exposed two more defects: the "per-job" caps were per-call because neither factory memoised, and the truncating writer rounded its own cap down to a whole buffer |
@@ -625,6 +650,47 @@ promotion would have caught.)
 
 See D-08 for what those two fields are and why they are still zero.
 
+### CLOSED 2026-10-01 — promoted, and the promotion immediately found something the measurement had missed
+
+`dead_code = "deny"` in the workspace lint table. The comment above it was
+rewritten at the same time, because the old text still said *"Reachable code and
+unused imports are noise during skeleton bootstrap"* — a phase this repository
+left long ago, and a rationale that read as a reason not to.
+
+**The ordering was the point, and it was not cosmetic.** D-08 landed first, on
+2026-10-01, and it is what removed the last two `#[allow(dead_code)]` markers in
+the executor. Promoting before that would have compiled clean and taught nothing:
+the two fields D-08 was about were exempted, so a `deny` landing over them would
+have been indistinguishable from a `deny` landing over a crate that genuinely has
+no dead code. The two fixes land together, and in the order that lets the
+promotion be **teeth-checked** rather than assumed.
+
+**What the promotion actually caught.** The 2026-09-29 measurement above says the
+workspace compiles clean "except for exactly two sites". That is no longer true,
+and the extra site is the interesting one: `DaemonLock.file` in
+`ironmaint-store-sqlite/src/lock.rs`. The earlier measurement did not find it
+because the 0B.10 test files had not yet been written — it was a production-only
+sweep. `lock.rs` is production code and was there all along, so the miss was that
+the earlier pass did not *build* with the deny in place; it reasoned about which
+fields carried the marker instead. The field has carried the marker the whole
+time, and removing it to see what happened is the only way to find that.
+
+D-05's original analysis of that field was wrong in a way that would have made the
+fix a **silent regression** — it recommended deleting a field whose only job is
+its `Drop`. See the correction in D-05.
+
+**Teeth-checked**, deliberately in a test target rather than an obvious production
+one, because that is where `warn` was useless:
+
+```text
+error: function `teeth_check_this_is_dead` is never used
+   --> crates/ironmaint-store/tests/smoke.rs:584:4
+error: could not compile `ironmaint-store` (test "smoke") due to 1 previous error
+```
+
+**Result:** 852 unit / 861 integration (each +1 — D-05's new facade test), fmt
+clean, clippy `-D warnings` clean, four verifiers clean.
+
 ---
 
 ## D-05 — vestigial `#[allow(dead_code)]` sites (MEDIUM)
@@ -638,10 +704,10 @@ the no-stubs rule being violated in miniature.
 | `crates/ironmaint-store-sqlite/src/ops/workspaces.rs:89` | `fn _kind() -> StoreErrorKind` | **Vestigial.** Its comment says it exists to anchor the `StoreErrorKind` import. That import is genuinely unused in the file — so the right fix is to delete both the function *and* the import. |
 | `crates/ironmaint-executor/src/operation.rs:139` | `fn _ensure_time_import() -> OffsetDateTime` | **Vestigial, and its justification is false.** The comment says it anchors the `time::OffsetDateTime` import — but `OffsetDateTime` is already used in real code at `operation.rs:69` and as a parameter type at `operation.rs:110`. The anchor protects nothing. |
 | `xtask/src/mcp_schemas.rs:99` | `fn _ensure_used()` | **Vestigial.** Anchors `McpToolName`, which is genuinely unused in the file. Note its body is `let _ = McpToolName::from;` — this compiles only because name resolution falls through to the blanket `impl<T> From<T> for T`, so it is the identity conversion, not a real use. |
-| `crates/ironmaint-store-sqlite/src/lock.rs:23` | `DaemonLock.file` | **The allow is wrong.** The field is genuinely load-bearing — closing the `File` releases the OS flock, which is the entire design — and is read by the `#[derive(Debug)]` and by `File::drop`. It does not need the suppression. |
+| `crates/ironmaint-store-sqlite/src/lock.rs:23` | `DaemonLock.file` | **The allow is correct; this row's original claim was not.** The field is genuinely load-bearing — closing the `File` releases the OS flock, which is the entire design — but it is *never read*, and the derived `Debug` does not count: rustc ignores derived `Debug` during dead-code analysis and says so. **See the correction below.** |
 | `crates/ironmaint-executor/src/process.rs:72` | `ProcessExecutor.artifact_store` | Legitimate reservation → **D-08**. |
 | `crates/ironmaint-executor/src/process.rs:76` | `ProcessExecutor.guard_factory` | Legitimate reservation → **D-08**. |
-| `xtask/src/schemas.rs:218` | `pub fn schemas_path()` | **Grey zone.** Doc comment names its consumers as "CI scripts, docs, architecture.rs"; none exist. Either delete it or state the concrete future caller. `#[allow(dead_code)]` on a `pub fn` is a smell, because cargo cannot see out-of-workspace consumers. |
+| `xtask/src/schemas.rs:218` | `pub fn schemas_path()` | **Grey zone — resolved by deletion.** Doc comment named its consumers as "CI scripts, docs, architecture.rs"; none existed. `xtask` is a binary crate, so there is no out-of-workspace consumer to be missing — the "cargo cannot see" caveat that makes `#[allow(dead_code)]` defensible on a `pub fn` does not apply to it. |
 
 ### Why this matters beyond tidiness
 
@@ -654,6 +720,102 @@ misinformation is worse than the code.
 **Fix:** delete the three functions and the two now-unused imports; drop the allow
 in `lock.rs:23`; decide `schemas_path`. Cheap, and it makes D-04's promotion
 honest.
+
+### CLOSED 2026-10-01 — nine sites cleared, and the register's own claim about `lock.rs` was wrong
+
+Landed with D-04. Eleven `#[allow(dead_code)]` sites existed; **one remains**, and
+it is the one the register had argued against.
+
+**The correction.** This entry said of `DaemonLock.file` that *"the allow is
+wrong … it is read by the `#[derive(Debug)]` and by `File::drop`. It does not need
+the suppression."* Both halves of that are incorrect, and the compiler says so
+directly. Promoting `dead_code` to `deny` and building produces exactly one error
+at that site:
+
+```text
+error: field `file` is never read
+  --> crates/ironmaint-store-sqlite/src/lock.rs:32:5
+note: `DaemonLock` has a derived impl for the trait `Debug`, but this is
+      intentionally ignored during dead code analysis
+```
+
+`File::drop` is not a *read* in the lint's sense, and the derived `Debug` is
+explicitly excluded from the analysis. So the field is reported, and the field
+cannot be deleted: dropping it closes the file, which releases the OS flock,
+which is the entire mechanism. A field held for its `Drop` is a real pattern the
+lint cannot see, and the honest response is a **reasoned** allow, not a delete that
+silently stops locking.
+
+The allow stays. Its doc comment now records the compiler's own diagnostic as the
+receipt, so the next reader who is tempted to "clean it up" can check rather than
+guess. This is the second time in this register that an entry's reasoning had to
+be corrected by running the code — the first was D-16's migration cost estimate,
+which was wrong in the *cheap* direction. **A register entry that has never been
+executed is a hypothesis.**
+
+**What went.** The three vestigial anchor functions, and the two dead imports they
+were keeping alive:
+
+| Site | Deleted | Import consequence |
+|---|---|---|
+| `ops/workspaces.rs:89` | `fn _kind()` | `StoreErrorKind` orphaned → removed |
+| `executor/src/operation.rs:139` | `fn _ensure_time_import()` | none — the import was already used |
+| `xtask/src/mcp_schemas.rs:99` | `fn _ensure_used()` | `McpToolName` orphaned → removed |
+| `xtask/src/schemas.rs:218` | `pub fn schemas_path()` | `Path` orphaned → removed |
+| `tests/handle_run_check.rs:643,654` | `_query_projection`, `_imports_anchor` | `RuntimeQuery`, `MaintenanceEventId` orphaned → removed |
+| `tests/capture_candidate.rs:339,354` | `_imports_anchor`, `_system_clock_anchor` | `MaintenanceEventId`, `Evidence`, `CandidateFingerprint`, `SystemClock` orphaned → removed |
+| `tests/hardening.rs:114` | `fn fingerprint_zero()` | none |
+| `tests/smoke.rs:559` | `_policy_baseline_anchor` | `PolicyBaseline` orphaned → removed |
+
+Each row was checked for a real consumer before deletion rather than assumed. The
+outcome split three ways: the import was genuinely used elsewhere and the anchor
+was dead; the import was used *only* by the anchor, so both went; or — the
+`hardening.rs` case — the anchor was a copy-paste duplicate of two byte-identical
+helpers in `plan_run_check.rs` and `materialize_checks.rs`, used by neither in its
+own file.
+
+**Three sites were not deleted, because deleting them would have been worse.**
+
+`tests/smoke.rs`'s `_facade_satisfied` was a *real* compile-time check expressed
+as a dead function — the exemption was standing in for the assertion, which is the
+failure mode this entry exists to remove. It is now a `#[tokio::test]` that
+constructs the facade and round-trips a bundled method, so the check runs and the
+lint has nothing to suppress. Note it is `impl IronMaintStore`, **not**
+`Box<dyn IronMaintStore>`: the facade bundles traits with generic methods and is
+deliberately not dyn-compatible, so the `Box<dyn>` spelling does not compile. The
+first attempt used it.
+
+`tests/capability_object_safety.rs` carried a **file-level** `#![allow(dead_code)]`,
+which is the worst shape in this register: it exempts every line, so any genuinely
+dead item added to that file later would have been invisible. The seven unused
+`fn _v(_: &dyn Trait)` probes are now each bound to a `let _: fn(&dyn Trait) = …`,
+which is the coercion that *is* the object-safety assertion. They are seven
+separate `let`s rather than one tuple because `clippy::type_complexity` reads a
+seven-element tuple of `fn(&dyn Trait)` as a complex type, and the fix for that
+warning would be a type alias — more machinery than the assertion is worth.
+
+`lock.rs`, above.
+
+**Teeth-checked.** A deliberately dead `fn teeth_check_this_is_dead() -> u32` was
+appended to `tests/smoke.rs` and the build rejected it:
+
+```text
+error: function `teeth_check_this_is_dead` is never used
+   --> crates/ironmaint-store/tests/smoke.rs:584:4
+error: could not compile `ironmaint-store` (test "smoke") due to 1 previous error
+```
+
+Deliberately in a **test target**, because that is where the old `warn` setting
+would have scrolled past unremarked. The check is not "does the deny fire on an
+obvious production case" — it is "does it fire where the old setting was
+useless".
+
+**The duplication is left in place deliberately.** `fingerprint_zero()` now exists
+twice, identically, in `plan_run_check.rs` and `materialize_checks.rs`. The obvious
+consolidation is a `tests/common/` module, and that is wrong here: a helper in a
+shared module that a given test does not call is itself dead code, which the new
+`deny` rejects — reintroducing exactly the problem this entry closes, one level
+up. Recorded rather than fixed.
 
 ---
 
@@ -1391,15 +1553,11 @@ was deliberately not done, so this list is shorter and its shape has changed.
    mitigated, not fixed**, and the mitigation is a refusal, which is safe but
    leaves §102 item 3 narrower than D-14's closure claimed. It changes the
    durable event format, so it wants its own branch and its own review.
-3. **D-05** — deletes three dead functions and two false comments; makes **D-04**'s
-   promotion honest. Cheap, and it should land in the same PR as D-01's sweep,
-   since both are "the lint config promised something it did not do".
-4. **D-04** + **D-08** — same two `ProcessExecutor` fields; land together or not at all.
-5. **D-09** — the remaining half is a *producer* for `InfrastructureBlocked`, and
+3. **D-09** — the remaining half is a *producer* for `InfrastructureBlocked`, and
    the decision of "who may mark a job blocked, on what evidence" is a Phase 1
    question, not a 0B one. Write the decision down before writing the code.
-6. **D-11** — Phase 1, gated on the `ReadyForApproval`-through-the-tools criterion above.
-7. **D-06** and **D-15** — same root cause, same fix: an external binary. Nothing to
+4. **D-11** — Phase 1, gated on the `ReadyForApproval`-through-the-tools criterion above.
+5. **D-06** and **D-15** — same root cause, same fix: an external binary. Nothing to
    do until one exists; the repro steps are in D-15.
 8. **D-12**, **D-13** — as scheduled.
 
