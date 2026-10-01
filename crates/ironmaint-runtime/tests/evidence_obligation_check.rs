@@ -347,6 +347,10 @@ async fn run_check_invokes_executor_and_records_evidence() {
         stderr: String::new(),
         retries_exhausted: false,
         truncated: false,
+
+        // Constructed rather than executed: nothing spilled.
+        artifacts: Vec::new(),
+        artifacts_dropped: Vec::new(),
     };
     let (svc, _registry) = static_service(store.clone(), record);
 

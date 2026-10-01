@@ -185,6 +185,14 @@ impl JobArtifactGuard {
 /// Factory the executor holds for constructing per-job guards
 /// (PHASE-0B.md §15: caps outlive transient executor errors and
 /// are reused across retries).
+///
+/// The factory is a **policy** — "what caps apply to this job" —
+/// not a cache. [`crate::process::ProcessExecutor`] memoises it per
+/// job, so a factory that mints a fresh guard on every call still
+/// yields a genuinely per-job budget. That split is the whole
+/// reason the memoising lives in the executor: a caller cannot
+/// construct their way out of the accumulation the caps exist to
+/// enforce.
 pub type JobArtifactGuardFactory = Arc<dyn Fn(JobId) -> Arc<JobArtifactGuard> + Send + Sync>;
 
 /// Factory default: every job gets a permissive guard
@@ -199,6 +207,44 @@ pub fn permissive_guard(job_id: JobId) -> Arc<JobArtifactGuard> {
 #[must_use]
 pub fn factory_from_config(config: LimitsConfig) -> JobArtifactGuardFactory {
     Arc::new(move |job_id| Arc::new(JobArtifactGuard::from_config(job_id, &config)))
+}
+
+/// Per-job guard cache.
+///
+/// One entry per job the process has run a tool for, held for the
+/// process's lifetime. That is a deliberate leak: a guard is a
+/// handful of words, the alternative is caps that reset on every
+/// call — and a cap that resets on every call is not a cap. §15
+/// wants "caps outlive transient executor errors and are reused
+/// across retries", and a cache that dropped entries would be a
+/// different, undocumented policy.
+#[derive(Debug, Default)]
+pub(crate) struct GuardCache {
+    entries: std::sync::Mutex<std::collections::HashMap<JobId, Arc<JobArtifactGuard>>>,
+}
+
+impl GuardCache {
+    /// The guard for `job_id`, minted by `factory` on first sight.
+    pub(crate) fn get(
+        &self,
+        job_id: JobId,
+        factory: &JobArtifactGuardFactory,
+    ) -> Arc<JobArtifactGuard> {
+        // A poisoned lock here means some other thread panicked
+        // while holding it. The map contains `Arc`s to guards with
+        // no invariant that a panic could have broken, so
+        // recovering is correct and refusing is not.
+        let mut entries = self
+            .entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(existing) = entries.get(&job_id) {
+            return Arc::clone(existing);
+        }
+        let guard = factory(job_id);
+        entries.insert(job_id, Arc::clone(&guard));
+        guard
+    }
 }
 
 #[cfg(test)]

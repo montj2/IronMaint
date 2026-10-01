@@ -56,7 +56,7 @@ pub use limits::{ExecutionClass, ExecutionLimits, LimitsConfig};
 pub use normalizer::{NormalizationError, NormalizedResult, Observation, ResultNormalizer};
 pub use operation::{OperationLifecycle, RecoveryReport};
 pub use process::{ProcessExecutor, TimeFactory, wall_clock_time};
-pub use record::ExecutionRecord;
+pub use record::{DroppedArtifact, ExecutionRecord, OutputStream, SpilledArtifact};
 pub use record_builder::ToolDefinitionRecord;
 pub use registry::{RegistryError, ToolDefinition, ToolRegistry};
 pub use request::ExecutionRequest;

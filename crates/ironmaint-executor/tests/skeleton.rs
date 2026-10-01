@@ -8,10 +8,20 @@ use ironmaint_executor::{
 };
 use serde_json::json;
 
+/// A job id for an execution.
+///
+/// The executor's artifact guard is per-job (§15), so a request has
+/// to name one; the id itself is not what any of these tests are
+/// about.
+fn job_id() -> ironmaint_core::JobId {
+    ironmaint_core::JobId::new()
+}
+
 #[tokio::test]
 async fn null_executor_rejects() {
     let ex = NullExecutor;
     let req = ExecutionRequest::new(
+        job_id(),
         ToolCapabilityKey::new("synthetic.build.validate").unwrap(),
         RetryClass::Safe,
         json!({}),

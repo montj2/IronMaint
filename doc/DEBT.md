@@ -95,7 +95,7 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-05 | MEDIUM | 4 of 6 `#[allow(dead_code)]` sites are vestigial, two with false justifications | OPEN |
 | D-06 | MEDIUM | `mcp-registration.yaml` field names never round-tripped through a real `ironclaw extension install` | OPEN (no binary available) |
 | D-07 | MEDIUM | Dead `for _ in 0..15u32` loop in `reconcile`, suppressed with `clippy::never_loop` | **CLOSED** by 0B.10 C4 (`cec87d7`) — the loop now advances through every satisfied rule, matching §41 and `ReconcileOutcome::Advanced`'s own doc comment. The suppression is gone, not re-suppressed |
-| D-08 | MEDIUM | `ProcessExecutor` holds `artifact_store` and `guard_factory` and never reads either; oversized tool output is silently discarded | OPEN |
+| D-08 | MEDIUM | `ProcessExecutor` held `artifact_store` and `guard_factory` and read neither; oversized tool output was silently discarded while the daemon logged the store as verified | **CLOSED** — every run's complete stdout and stderr are spilled to the store, bounded by the job's guard, and the record names each digest, how much it could not keep, and any refusal. Closing it exposed two more defects: the "per-job" caps were per-call because neither factory memoised, and the truncating writer rounded its own cap down to a whole buffer |
 | D-09 | LOW | `CaptureResume` / `infrastructure_blocked` signal absent | **PARTLY CLOSED** by 0B.10 C2 — the *exit* is complete (`ResumeRecord` is persisted as a `JobEvent::ResumeRecorded`, and `job.resume` consumes it for **both** exceptional states), but nothing *writes* an `InfrastructureBlocked` transition, so the state has a way out and no way in |
 | D-10 | LOW | No background reconcile loop in the daemon | **NOT TAKEN**, and the reason is now recorded rather than deferred again — §41 defines `reconcile` as a per-call function, and no spec text requires a loop |
 | D-11 | LOW | No real Debian/Fedora adapters | DEFERRED to Phase 1 (§106) |
@@ -732,7 +732,7 @@ been a design decision deferred to a future reader. **Grep for
 
 ---
 
-## D-08 — `ProcessExecutor` holds two fields it never reads (MEDIUM)
+## D-08 — `ProcessExecutor` holds two fields it never reads (MEDIUM) — **CLOSED 2026-10-01**
 
 `crates/ironmaint-executor/src/process.rs:72,76`. Both are constructed in
 `ProcessExecutor::new` and never read. `Debug` is implemented with
@@ -757,6 +757,86 @@ Also note: `with_guard_factory` (the setter for the second field) has **no
 production caller**.
 
 **Closes when:** `execute()` uses both, or they are removed.
+
+### CLOSED 2026-10-01 — the reservation is now the behaviour, and the reservation was hiding two more defects
+
+`execute()` uses both. The closure took a working implementation rather than a
+deletion, because "the fields are removed" closes the entry and leaves the MEDIUM
+defect — the truncated build log — exactly where it was, and deletes the
+`ArtifactStore` alongside it.
+
+**The shape of the fix.** Each stream is read through `bounded_read`, which keeps
+at most `stdout_max_bytes` in memory for the record's ergonomic copy and forwards
+*every* byte down a 64 KiB bounded channel to a task that streams it into the
+store. Backpressure is what makes this safe: a child emitting a gigabyte is
+slowed rather than buffered, so the memory bound the old code was defending is
+kept. The artifact is the complete stream; the record's `stdout` is the prefix.
+
+Three things the record has to say, or the fix is half a fix:
+
+| Field | Why it cannot be omitted |
+|---|---|
+| `artifacts: Vec<SpilledArtifact>` | The digest. A content-addressed store with no index is a place bytes go; a record naming none of them is a run whose output cannot be recovered. That is the *same* silent-truncation defect, one level up. |
+| `dropped_bytes` | The artifact is bounded (§15 asks for a bounded capture). Without the number an operator reading a 1 MiB artifact cannot tell "the tool printed 1 MiB" from "the tool printed 40 and we kept 1". `retained + dropped` reconstructs what the tool actually printed, which is what makes it a measurement rather than a flag. |
+| `artifacts_dropped: Vec<DroppedArtifact>` | §15's caps are **refusals**, not silent trims. A spent budget must be a fact on the record, with a reason that distinguishes `budget_count` from `budget_bytes` from `store_cap`. An empty `artifacts` with an empty `artifacts_dropped` means nothing was lost; a non-empty one means it was. |
+
+The refusal is deliberately **not** an error. The tool already ran, its exit code
+is a fact, and refusing to keep a log does not make a build any less passed or any
+less failed. It only changes what can be read afterwards, and the record says so.
+
+**`ExecutionRequest` gained a `job_id`, and that was the actual blocker.** The
+guard factory is `Fn(JobId) -> Arc<JobArtifactGuard>` and the request had no job
+on it, so `execute()` *could not call the guard* even if it had wanted to. The
+field is required rather than optional for the same reason the reservation was
+worth closing: a per-job cap over a request that does not say which job is not a
+per-job cap. All 17 call sites now pass one.
+
+### Two defects the reservation was hiding
+
+Both were live for as long as the fields were unread, and neither was findable,
+because the code that would have hit them was never reached.
+
+**1. The "per-job" caps were per-call.** Neither `factory_from_config` nor
+`permissive_guard` memoises: both return a *fresh* guard on every call, so
+`count` and `bytes` reset to zero each time and no cap can ever be reached. The
+type's own doc comment says "caps outlive transient executor errors and are
+reused across retries", which is a description of behaviour the implementation
+did not have. `ironmaint-executor/tests/artifact_spill.rs` found it on its first
+run, by asserting that a second run on the same job would be refused.
+
+The fix splits the two things one type was conflating. The factory is now a
+**policy** — "what caps apply to this job" — and `ProcessExecutor` memoises it in
+a `GuardCache` keyed by `JobId`. Putting the memoising in the executor rather than
+in the factory is the part that matters: a caller cannot construct their way out
+of the accumulation the caps exist to enforce. A test that hands the executor
+`Arc::new(|job| Arc::new(JobArtifactGuard::new(...)))` — which is exactly what the
+first draft of the test did — now gets a genuinely per-job budget, where before it
+would have got a fresh one and a false pass.
+
+**2. The truncating writer rounded its own cap down.** `write_from_truncating`
+was written to stop at the cap, and it stopped at the largest whole read-buffer
+that fitted: ask for 32 768 and receive 28 672. A cap that silently rounds itself
+down by an arbitrary amount is not the cap that was asked for, and the caller
+cannot see the shortfall. The executor's test caught it as
+`assertion left == right failed — left: 28672, right: 32768`. It now writes the
+part that fits and drains the rest.
+
+A third, smaller one is worth naming because it is the kind that survives review:
+the first draft closed the pipe to the spill task with
+`AsyncWriteExt::shutdown()`. On a `DuplexStream` that tears down **both** halves
+and discards the buffer, so a tool that printed 256 KiB produced a 0-byte
+artifact — a spill that reported success while having retained nothing, which is
+the exact failure mode the entry exists to prevent. Dropping the write half is
+what signals EOF.
+
+**Closes when (revisited):** both fields are read by `execute()`, the daemon
+calls `with_guard_factory(factory_from_config(LimitsConfig::default()))`, and
+`crates/ironmaint-executor/tests/artifact_spill.rs` drives the real fixture binary
+through the real executor. The two `#[allow(dead_code)]` markers are gone, which
+is what makes D-04's `dead_code = "deny"` promotion honest for this crate —
+`doc/DEBT.md`'s note that D-04 and D-08 "land together or not at all" is satisfied
+in the order that lets D-04's teeth be checked against a crate that no longer
+needs the exemption.
 
 ---
 

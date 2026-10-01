@@ -131,6 +131,10 @@ fn make_record(
         stderr: String::new(),
         retries_exhausted: false,
         truncated,
+
+        // Constructed rather than executed: nothing spilled.
+        artifacts: Vec::new(),
+        artifacts_dropped: Vec::new(),
     }
 }
 
