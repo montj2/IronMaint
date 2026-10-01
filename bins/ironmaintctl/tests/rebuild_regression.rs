@@ -31,15 +31,17 @@ use std::sync::Arc;
 
 use ironmaint_core::{
     DistributionFamily, DistributionRef, DistributionRelease, GitHashAlgorithm, GitObjectId, JobId,
-    JobState, PackageIdentity, PackageName, PackageRevision, PackageVersion, RepositoryRef,
-    SourceCandidate, VcsKind,
+    JobProjection, JobState, PackageIdentity, PackageName, PackageRevision, PackageVersion,
+    RepositoryRef, SourceCandidate, VcsKind,
 };
 use ironmaint_executor::{NullExecutor, ToolRegistry};
 use ironmaint_runtime::{
     OrchestratorRef, RuntimeCommand, RuntimeService,
     clock::{Clock, FixedClock},
 };
-use ironmaint_store::ProjectionStore;
+use ironmaint_state::JobEvent;
+use ironmaint_store::envelope::EventEnvelope;
+use ironmaint_store::{EventStore, ProjectionStore};
 use ironmaint_store_sqlite::{SqliteStore, SqliteStoreConfig};
 use time::OffsetDateTime;
 
@@ -152,13 +154,15 @@ async fn corrupt_row(store: &SqliteStore, job_id: JobId, version: u64) {
         .get_projection(job_id)
         .await
         .expect("CreateJob seeds the projection");
+    // The CAS token is the version the row *currently* holds, not a
+    // literal. Hardcoding it to 0 was right only while every caller
+    // had a never-advanced job; a captured one is at version 1, and
+    // `put_projection` correctly rejected the stale token.
+    let current = drifted.version;
     drifted.state = JobState::ReadyForApproval;
     drifted.version = version;
-    // `put_projection` writes `projection.version`, and the token is
-    // the version the row currently holds — 0, straight from
-    // `CreateJob`.
     store
-        .put_projection(&drifted, 0)
+        .put_projection(&drifted, current)
         .await
         .expect("drift the row");
 }
@@ -249,8 +253,50 @@ async fn rebuilding_a_drifted_row_repairs_it_without_rewinding_the_version() {
     );
 }
 
+/// Rebuild a store that contains `kept` and nothing else, at `dir`.
+///
+/// Uses only the public store API rather than reaching into SQLite.
+/// The alternative — deleting the row from the live table — would
+/// need a `sqlx` dev-dependency in this crate for a fixture, and a
+/// test that pokes at tables directly stops being a test of the tool
+/// and starts being a test of the schema.
+///
+/// The projection is seeded from `projection` because the point of
+/// the legacy simulation is a *row* that the log cannot justify — the
+/// disagreement is the defect, so it has to be present on both sides.
+async fn store_with_events(
+    dir: &std::path::Path,
+    kept: &[EventEnvelope],
+    projection: &JobProjection,
+) {
+    let store = SqliteStore::open(store_config(dir))
+        .await
+        .expect("open the stripped store");
+    // The row goes in **first**: `events.job_id` has a foreign key
+    // to `projections(job_id)`, so a log cannot be written before the
+    // projection it refers to exists. This is also the direction the
+    // real system writes them — a job's projection row is seeded by
+    // `CreateJob` before any event is appended.
+    store
+        .put_projection(projection, 0)
+        .await
+        .expect("seed the row the log cannot justify");
+    for env in kept {
+        store
+            .append_event(env)
+            .await
+            .expect("replay the surviving event");
+    }
+}
+
+/// A job captured **after** D-16's fix carries a
+/// `JobEvent::CandidateActivated`, so its log justifies the active
+/// candidate and §36's escape hatch can rebuild it. This is the
+/// positive half: before the fix this exact scenario was the refusal
+/// below, which is why the refusal's test had to be rewritten rather
+/// than deleted.
 #[tokio::test]
-async fn a_rebuild_refuses_rather_than_dropping_the_active_candidate() {
+async fn a_captured_job_rebuilds_and_keeps_its_active_candidate() {
     let tmp = tempfile::tempdir().unwrap();
     let job_id;
     let before;
@@ -267,18 +313,126 @@ async fn a_rebuild_refuses_rather_than_dropping_the_active_candidate() {
             .get_projection(job_id)
             .await
             .expect("the capture seeded the projection");
-
-        // The precondition, asserted rather than assumed. Without
-        // this, the test would pass against a build whose refusal
-        // never fired — for the same reason the first draft of the
-        // CAS test passed against the broken code.
         assert!(
             before.active_candidate.is_some(),
             "capture must have activated a candidate, or this test proves nothing"
         );
+
+        // Drift the row so the rebuild has something to repair. The
+        // version bump goes through the store's own API, which is
+        // legitimate here for the reason given on `corrupt_row`.
+        corrupt_row(&store, job_id, 7).await;
     }
 
     let report = ironmaintctl::rebuild::run(tmp.path(), Some(job_id))
+        .await
+        .expect("rebuild-projections must not fail to open the store");
+
+    assert!(
+        report.errors.is_empty(),
+        "a job written after D-16's fix is fully log-justified and must \
+         rebuild, got: {:?}",
+        report.errors
+    );
+    assert_eq!(
+        report.rebuilt,
+        vec![job_id],
+        "one job requested, one rebuilt"
+    );
+
+    let store = SqliteStore::open(store_config(tmp.path()))
+        .await
+        .expect("reopen store");
+    let after = store
+        .get_projection(job_id)
+        .await
+        .expect("projection after rebuild");
+
+    // The thing the refusal used to protect. §30 binds every gate
+    // verdict to the active candidate, so a rebuild that "succeeds"
+    // by dropping it invalidates the evidence for every check already
+    // run against this job. It is asserted on the *repaired* row
+    // rather than the drifted one, so this is a claim about the
+    // replay and not a restatement of what went in.
+    assert_eq!(
+        after.active_candidate, before.active_candidate,
+        "the replay must carry the active candidate through"
+    );
+    assert_eq!(after.state, before.state, "and the state");
+    assert_eq!(
+        after.version, 7,
+        "and carry the stored version forward rather than rewinding to \
+         the log's count"
+    );
+}
+
+/// The negative half, and the reason the refusal is **kept**.
+///
+/// D-16's fix stops new rows from reaching the refusal. It does not
+/// help a row already written by an older binary, whose log has no
+/// `CandidateActivated` event — so the guard is now a legacy-data
+/// guard rather than a live limitation, and it is what an operator
+/// meets when repairing one of those.
+///
+/// The legacy log is produced the way C2's `resume_without_a_record`
+/// test produced its own: by **removing the event from a real log**
+/// and replaying what is left. That is the opposite of hand-building
+/// a log (D-14) — every other event survives, so a "helpful"
+/// implementation could infer the activation from history and pass.
+/// The assertion is that it does not.
+#[tokio::test]
+async fn a_row_whose_log_predates_the_fix_is_refused_not_clobbered() {
+    let tmp = tempfile::tempdir().unwrap();
+    let job_id;
+    let before;
+    let legacy_dir;
+
+    {
+        let store = Arc::new(
+            SqliteStore::open(store_config(tmp.path()))
+                .await
+                .expect("open store"),
+        );
+        job_id = create_real_job(Arc::clone(&store)).await;
+        capture_on(Arc::clone(&store), job_id).await;
+        before = store
+            .get_projection(job_id)
+            .await
+            .expect("the capture seeded the projection");
+        assert!(before.active_candidate.is_some(), "precondition");
+
+        // Simulate the pre-fix binary: keep the projection row, drop
+        // the event that records the activation. This is the exact
+        // state of a database written by the version this branch
+        // replaces.
+        let events = store
+            .list_events_for_job(job_id, 1, None)
+            .await
+            .expect("list events");
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e.event, JobEvent::CandidateActivated(_))),
+            "precondition: the log must carry the event before it is stripped"
+        );
+        let kept: Vec<EventEnvelope> = events
+            .iter()
+            .filter(|e| !matches!(e.event, JobEvent::CandidateActivated(_)))
+            .cloned()
+            .collect();
+        assert!(
+            kept.len() < events.len(),
+            "exactly the activation is removed"
+        );
+
+        let legacy = tempfile::tempdir().expect("legacy dir");
+        store_with_events(legacy.path(), &kept, &before).await;
+        legacy_dir = legacy;
+    }
+
+    let legacy = legacy_dir;
+
+    let report = ironmaintctl::rebuild::run(legacy.path(), Some(job_id))
         .await
         .expect("rebuild-projections must not fail to open the store");
 
@@ -294,27 +448,26 @@ async fn a_rebuild_refuses_rather_than_dropping_the_active_candidate() {
         "one job requested, one named refusal, got: {:?}",
         report.errors
     );
-    // The refusal has to be *nameable*. "rebuild failed" tells an
-    // operator nothing they can act on; the whole value of refusing
-    // is that the message says which fact the log is missing.
     assert!(
         report.errors[0].contains("does not record candidate activation"),
         "the refusal must name the missing event, got: {}",
         report.errors[0]
     );
+    assert!(
+        report.errors[0].contains("before that fix"),
+        "and must tell the operator this row predates the fix rather than \
+         implying the tool is still broken, got: {}",
+        report.errors[0]
+    );
 
-    let store = SqliteStore::open(store_config(tmp.path()))
+    let store = SqliteStore::open(store_config(legacy.path()))
         .await
-        .expect("reopen store");
+        .expect("reopen the legacy store");
     let after = store
         .get_projection(job_id)
         .await
         .expect("projection after the refused rebuild");
 
-    // The point of the whole exercise. §30 binds every gate verdict to
-    // the active candidate, so a rebuild that "succeeds" by dropping
-    // it does not degrade the row — it invalidates the evidence for
-    // every check already run against it.
     assert_eq!(
         after.active_candidate, before.active_candidate,
         "a refused rebuild must leave the active candidate exactly as it was"

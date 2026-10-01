@@ -38,6 +38,16 @@ was added to the SQLite crate's production path and clippy rejected it, so the
 gate is known to reject rather than assumed to. Every closure after this one
 should be treated the same way, given the D-14 note above.
 
+**Wave 2 landed 2026-10-01** and closed **D-16** with `JobEvent::CandidateActivated`.
+It is the first closure whose *receipt is a failing test*: S7 was committed red
+first, on purpose, because a test that has never been seen to fail is a test whose
+failure mode is unknown (D-14). The red run also found a third unrecoverable
+field — `updated_at` — that neither D-16 nor the earlier amendment on `version`
+had named, and it also corrected the entry's cost estimate: the format change
+needs **no migration**, because `events.event_type` is unconstrained `TEXT`. The
+refusal in `rebuild-projections` is kept, now as a legacy-data guard for rows
+written by the older binary. Seven items are now closed.
+
 ## How to read this
 
 Severity is about consequence, not effort.
@@ -93,7 +103,7 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-13 | LOW | `git add -A` in this repo can sweep in unrelated local artifacts | PROCESS |
 | D-14 | MEDIUM | `rebuild_projection` rejects every real job's event log, so the §36 operator escape hatch cannot rebuild anything | **CLOSED** by 0B.10 — `JobEvent::JobCreated` carries the birth projection, so the log is authoritative for a never-transitioned job. **Amended 2026-10-01**: the closure is true about the birth and false about everything after it; the `active_candidate` gap is **D-16** |
 | D-15 | LOW | §102 item 30 ("an actual IronClaw agent can complete the synthetic repair workflow") is **unverifiable in this environment** — not unmet, and not a code defect | **ENVIRONMENT-BLOCKED**, with repro steps at the bottom of the register. 33 of 34 DoD items are true; this is the one that cannot be checked here |
-| D-16 | MEDIUM | The event log does not record candidate activation — **or the version bump that activation performs** — so `rebuild-projections` cannot rebuild any job that has captured a candidate, and writing the replay anyway would drop the §30 binding every gate verdict depends on | **MITIGATED, NOT FIXED** by `8b95884`: the tool now refuses, by name, rather than writing a projection whose evidence chain it has just invalidated. The real fix is a new durable event variant, which changes the event format — see the entry for the costs and for the amendment on `version` |
+| D-16 | MEDIUM | The event log did not record candidate activation — **or the version and timestamp that activation writes to the row** — so `rebuild-projections` could not rebuild any job that had captured a candidate, and writing the replay anyway would have dropped the §30 binding every gate verdict depends on | **CLOSED** — `JobEvent::CandidateActivated` makes activation replayable, and `rebuild-projections` rebuilds a captured job with its active candidate intact. No migration was needed (`event_type` is unconstrained `TEXT`); the JSON schema snapshot was regenerated. The refusal is **kept** as a legacy-data guard for rows written by the older binary, whose logs genuinely cannot justify their activation |
 
 ---
 
@@ -1160,7 +1170,20 @@ The costs, stated so the next reader is not surprised:
   in `ironmaint-store-sqlite` gain an arm, so every existing database needs a
   migration or a forward-compatible deserialiser. This is the reason it is not
   a small follow-up.
-- **`verify-migrations` snapshots must be regenerated** once a migration lands.
+
+  > **CORRECTED 2026-10-01 — no migration is needed, and the estimate above was
+  > wrong.** `migrations/0001` declares `events.event_type` as unconstrained
+  > `TEXT` with no `CHECK` and no enum, so a new variant is a new *string* rather
+  > than a new column value the schema would reject. `verify-migrations` was
+  > re-run after the variant landed and stayed clean, which is the confirmation
+  > rather than an argument from reading the DDL. (`schema_version` is a
+  > hardcoded `"1"` that nothing reads back, so it could not have caught it
+  > either.) The real cost was the JSON schema snapshot:
+  > `schemas/JobEvent.json` grew 2 926 bytes and had to be regenerated.
+- **The forward-compatible deserialiser half is still a live concern** — not for
+  this variant, but for the next one. An older binary reading a newer database
+  will meet `"candidate_activated"` and fall through to its `unknown event type`
+  arm. That is the correct behaviour and is not what this entry is about.
 - **The two store backends must agree**, which is the drift D-14's
   `JobEvent::seed_projection` already had to fix once. Whatever seeds this
   variant belongs next to that function, not in a backend.
@@ -1203,6 +1226,70 @@ That makes three components in this repository — `rebuild_projection`, the
 `§101` drivers, and now the CLI — where the missing thing was never logic. It
 is the single most productive defect class in this codebase and it is not
 findable by any tool currently in the workspace.
+
+### CLOSED 2026-10-01 — three fields, not two, and a red commit as the receipt
+
+`JobEvent::CandidateActivated(CandidateActivated)` landed, carrying four fields:
+
+```text
+CandidateActivated { candidate_id, fingerprint, version_after, updated_at }
+```
+
+`job_id` is **not** among them: the envelope already carries it, and duplicating
+it would let the two disagree — the same "let the two disagree by construction"
+shape the entry above is about. `Domain` was not widened, for the reason already
+given.
+
+**The third field.** The two amendments above name `active_candidate` and
+`version`. S7's first run reported **three** unrecoverable fields: `active_candidate`,
+`version`, and `updated_at` — the last one appearing for the first time in this
+entry. `handle_set_active_candidate` stamps the row's `updated_at` from the same
+`now` that the envelope carries, so a replay that took its timestamp from the
+`JobCreated` seed's would produce a row that is correct in every other field and
+wrong in its own audit clock. Had the variant shipped with only the two predicted
+fields, `updated_at` would have stayed unjustified with nothing left to notice —
+the same half-fix the `version` amendment warned about, one field over.
+
+The second S7 test is what makes the report actionable rather than a bare failure:
+it asserts the two fields activation does *not* touch (`state`, and the timestamp
+of a never-activated job) round-trip cleanly, which is what isolates the
+unrecoverable set to the fields activation writes. Without it the report would
+have been "three of five fields differ" with no way to say whether the fault
+lies in the event or in the replay.
+
+**The refusal is kept, and its role changed.** With the variant in place, a job
+written by the new binary is fully log-justified and rebuilds. A row written
+before it is not, and cannot be made so — the event was never written and no
+amount of replay invents it. The guard is therefore a **legacy-data guard**
+rather than a live limitation, and its message says which of the two an operator
+is looking at. Removing it would make the tool report `rebuilt: 1` on precisely
+the rows whose logs cannot justify them, which is the data loss the refusal
+exists to prevent; there is no flag to "force" past it because the force would
+be the bug.
+
+`bins/ironmaintctl/tests/rebuild_regression.rs` is split into the two halves that
+distinction implies: a captured job rebuilds and keeps its active candidate, and
+a log stripped of its `CandidateActivated` event is refused and left untouched.
+The second builds its legacy database by **removing one event from a real log**
+and replaying the rest — the opposite of hand-building a log, so every other
+event survives and an implementation that inferred the activation from history
+would be caught.
+
+**The ordering, which was the point of the exercise.** D-16's fix and S7 landed
+in that order on purpose. S7's *first run is the evidence* that the defect was
+real:
+
+```text
+the replay cannot recover: active_candidate, version, updated_at
+stored   : state=EventDetected active_candidate=Some(CandidateId(..)) version=1 updated_at=…669241
+replayed : state=EventDetected active_candidate=None version=0 updated_at=…665628
+```
+
+Landing the fix first would have made S7 pass on its first run, having never been
+seen to fail — which is D-14's exact lesson reproduced inside the tool built to
+prevent D-14's class. The red commit is the receipt, and it is why the plan
+sequenced wave 2 as two commits rather than one.
+
 
 ---
 

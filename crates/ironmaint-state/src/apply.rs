@@ -60,6 +60,20 @@ impl ProjectionApply for JobProjection {
             // `ToolRunFinished` it is a record of intent, not a
             // state change — replaying it must not move the job.
             JobEvent::ResumeRecorded(_) => self.clone(),
+            // Activation is a state *record*, not a state change: it
+            // does not move the FSM. But unlike `Domain` it is not a
+            // bare back-reference — it carries the three facts the
+            // row gained, which is what makes the log authoritative
+            // for them. Without this arm, every replay of every
+            // captured job dropped the §30 binding that every gate
+            // verdict depends on (D-16).
+            JobEvent::CandidateActivated(r) => JobProjection {
+                job: self.job.clone(),
+                state: self.state,
+                active_candidate: Some(r.candidate_id),
+                version: r.version_after,
+                updated_at: r.updated_at,
+            },
         }
     }
 }

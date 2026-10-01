@@ -1305,6 +1305,7 @@ dependencies = [
  "ironmaint-core",
  "ironmaint-executor",
  "ironmaint-runtime",
+ "ironmaint-state",
  "ironmaint-store",
  "ironmaint-store-sqlite",
  "tempfile",

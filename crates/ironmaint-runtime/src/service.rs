@@ -24,7 +24,8 @@ use ironmaint_evidence::{Evidence, EvidenceProducer, EvidenceScope, GateStatus};
 use ironmaint_executor::{ExecutionRequest, Executor, ToolRegistry};
 use ironmaint_policy::{ObligationOutcome, ObligationStatus, PrivilegedOperation};
 use ironmaint_state::{
-    JobEvent, ToolOutcome, ToolRunFinished, TransitionBlocker, TransitionDecision,
+    CandidateActivated, JobEvent, ToolOutcome, ToolRunFinished, TransitionBlocker,
+    TransitionDecision,
 };
 use ironmaint_store::CheckDefinition;
 use ironmaint_store::IronMaintStore;
@@ -1960,13 +1961,29 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             .await
             .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
 
-        let domain_event_id = DomainEventId::new();
+        // `CandidateActivated`, **not** a bare `Domain` id. The
+        // three facts written into the row above — the candidate,
+        // the version this CAS left behind, and the timestamp —
+        // have to reach the log too, or the log is not the
+        // authority §36 says it is. `Domain` is a bare audit
+        // back-reference and `ProjectionApply::apply` treats it as
+        // a no-op, so a replay through it dropped all three on every
+        // single activation (D-16). A replay that dropped the active
+        // candidate would not degrade the row; §30 makes every gate
+        // verdict depend on that binding, so it would invalidate
+        // the evidence for every check already run against the job.
+        let activation = CandidateActivated {
+            candidate_id,
+            fingerprint: fingerprint.clone(),
+            version_after: updated.version,
+            updated_at: now,
+        };
         let envelope = EventEnvelope::new(
-            MaintenanceEventId::from_uuid(domain_event_id.as_uuid()),
+            MaintenanceEventId::new(),
             job_id,
             sequence,
             now,
-            JobEvent::Domain(domain_event_id),
+            JobEvent::CandidateActivated(activation),
         );
         self.store
             .append_event(&envelope)

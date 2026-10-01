@@ -3,7 +3,9 @@
 use sqlx::SqlitePool;
 
 use ironmaint_core::JobId;
-use ironmaint_state::{JobEvent, ResumeRecord, StateTransitioned, ToolRunFinished};
+use ironmaint_state::{
+    CandidateActivated, JobEvent, ResumeRecord, StateTransitioned, ToolRunFinished,
+};
 use ironmaint_store::{EventEnvelope, StoreError, StoreErrorKind};
 
 use super::{encode_json, map_json, map_sqlx_err, rfc3339_string};
@@ -130,6 +132,14 @@ fn serialise_event(event: &JobEvent) -> Result<(&'static str, String), StoreErro
         JobEvent::Domain(id) => Ok(("domain", encode_json(id)?)),
         JobEvent::ToolRunFinished(t) => Ok(("tool_run_finished", encode_json(t)?)),
         JobEvent::ResumeRecorded(r) => Ok(("resume_recorded", encode_json(r)?)),
+        JobEvent::CandidateActivated(r) => {
+            // `event_type` is an unconstrained `TEXT` column, so a
+            // new variant needs no migration — only a new string
+            // here and its inverse below. An older binary reading
+            // this row gets the existing `unknown event_type` error,
+            // which is the correct and already-tested failure.
+            Ok(("candidate_activated", encode_json(r)?))
+        }
     }
 }
 
@@ -155,6 +165,10 @@ fn deserialise_event(event_type: &str, payload: &str) -> Result<JobEvent, StoreE
         "resume_recorded" => {
             let r: ResumeRecord = map_json(payload.to_owned(), "ResumeRecord")?;
             Ok(JobEvent::ResumeRecorded(r))
+        }
+        "candidate_activated" => {
+            let r: CandidateActivated = map_json(payload.to_owned(), "CandidateActivated")?;
+            Ok(JobEvent::CandidateActivated(r))
         }
         other => Err(StoreError::new(
             StoreErrorKind::Corrupt,

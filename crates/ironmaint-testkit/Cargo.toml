@@ -69,3 +69,7 @@ required-features = ["integration"]
 name = "mcp_acceptance_scenario"
 path = "tests/mcp_acceptance_scenario.rs"
 required-features = ["integration"]
+
+[[test]]
+name = "replay_roundtrip"
+path = "tests/replay_roundtrip.rs"
