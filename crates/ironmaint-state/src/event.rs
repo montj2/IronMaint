@@ -143,6 +143,31 @@ impl ToolRunFinished {
     }
 }
 
+/// The durable record of a candidate becoming the job's active one.
+///
+/// A separate struct rather than inline variant fields, so the SQLite
+/// backend can `encode_json` / `map_json` it exactly as it does
+/// `ToolRunFinished` and `ResumeRecord`. Hand-rolling the JSON in one
+/// direction and parsing it in the other is how a payload ends up
+/// asymmetric, and nothing but a round-trip test would notice.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct CandidateActivated {
+    pub candidate_id: ironmaint_core::CandidateId,
+    /// The immutable identity of the source revision being activated.
+    /// Carried alongside the id so an audit reader can tell *which*
+    /// tree was made active without joining back to the candidates
+    /// table — the same self-sufficiency argument that keeps this
+    /// event out of the log's shadow.
+    pub fingerprint: ironmaint_core::CandidateFingerprint,
+    /// The projection version the activation left behind. Activation
+    /// is a CAS write (`put_projection` with `current.version`), so
+    /// without this the replay cannot know whether its write would
+    /// have been accepted.
+    pub version_after: u64,
+    #[schemars(with = "ironmaint_core::json_schema_impls::Rfc3339DateTime")]
+    pub updated_at: OffsetDateTime,
+}
+
 /// All events a job can emit.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
@@ -169,6 +194,29 @@ pub enum JobEvent {
     Domain(DomainEventId),
     ToolRunFinished(ToolRunFinished),
     ResumeRecorded(ResumeRecord),
+    /// A candidate became the job's active candidate.
+    ///
+    /// Activation is not a transition — it does not move the FSM and
+    /// has no `from`/`to` — but it is not a bare domain back-reference
+    /// either, and that is what this variant exists to fix. D-16:
+    /// `activate_candidate` set `active_candidate`, bumped `version`
+    /// and stamped `updated_at` in the **projection row**, then
+    /// appended a `Domain` id. `ProjectionApply::apply` treats
+    /// `Domain` as a no-op, so the log recorded *that* something
+    /// happened and the row recorded *what* — and the two disagreed
+    /// by construction on every activation.
+    ///
+    /// §36 makes the log the authority for a projection, and §30 binds
+    /// every gate verdict to the active candidate, so a replay that
+    /// drops this binding does not degrade the row — it invalidates
+    /// the evidence for every check already run against it.
+    ///
+    /// The three fields are exactly what the row gained. `job_id` is
+    /// not carried: the envelope already has it, and duplicating it
+    /// would let the two disagree. `Domain` is deliberately *not*
+    /// widened — it is used for several unrelated domain writes and
+    /// its bare id is an audit back-reference, not a state record.
+    CandidateActivated(CandidateActivated),
 }
 
 impl JobEvent {
@@ -194,6 +242,14 @@ impl JobEvent {
             Self::Domain(_) => Err("first event is a Domain reference".to_string()),
             Self::ToolRunFinished(_) => Err("first event is a ToolRunFinished".to_string()),
             Self::ResumeRecorded(_) => Err("first event is a ResumeRecorded".to_string()),
+            // Structurally impossible rather than merely unlikely: a
+            // candidate is activated only after `CaptureCandidate`
+            // has persisted it, which requires a `JobCreated` seed to
+            // attach the job to. This arm exists so that stays a
+            // compile-time obligation — a future variant added here
+            // without deciding which side of that line it falls on
+            // should not compile.
+            Self::CandidateActivated(_) => Err("first event is a CandidateActivated".to_string()),
         }
     }
 }

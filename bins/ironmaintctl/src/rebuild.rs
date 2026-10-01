@@ -112,30 +112,38 @@ async fn replay_one(store: &SqliteStore, jid: JobId) -> Result<bool, String> {
     };
     let expected = stored.as_ref().map_or(0, |s| s.version);
 
-    // **Refuse rather than clobber: `active_candidate` is not in the
-    // log.** `activate_candidate` appends `JobEvent::Domain(uuid)` —
-    // a bare identifier with no payload — so a replay reproduces the
-    // job's `state` but always arrives with `active_candidate: None`.
+    // **Refuse rather than clobber.**
     //
-    // Fixing only the CAS token above turns the old loud failure into
-    // silent data loss: the write would succeed, report `rebuilt: 1`,
-    // and drop the active-candidate binding that §30 makes every
-    // gate verdict depend on. That is worse in every way a repair
-    // tool can be worse.
+    // This guard existed because `activate_candidate` appended
+    // `JobEvent::Domain(uuid)` — a bare id that `ProjectionApply`
+    // treats as a no-op — so the log recorded *that* something
+    // happened and the row recorded *what*, and the two disagreed on
+    // every activation. D-16's fix gives activation a real event
+    // (`JobEvent::CandidateActivated`, carrying the candidate, the
+    // version and the timestamp), so **newly written rows are
+    // replayable and this check passes**.
     //
-    // So this tool rebuilds what the log can justify and refuses, by
-    // name, what it cannot. Making the log able to justify it means
-    // giving activation a real event variant, which changes the
-    // durable event format and is its own piece of work — see
-    // `doc/DEBT.md` D-16.
+    // It is kept anyway, and deliberately. A database written before
+    // the fix has no `CandidateActivated` event, so its rows still
+    // fail this comparison — correctly, because their logs genuinely
+    // cannot justify what they claim. Removing the guard would make
+    // this tool report `rebuilt: 1` on precisely those rows and drop
+    // the §30 binding every gate verdict depends on, which is the
+    // data loss the refusal was added to prevent.
+    //
+    // So: the refusal is now a **legacy-data guard** rather than a
+    // live limitation, and it is what an operator meets when repairing
+    // a row written by an older binary. Its message says so.
     if let Some(stored) = &stored
         && stored.active_candidate != proj.active_candidate
     {
         return Err(format!(
             "refusing to rebuild: the event log does not record candidate \
              activation, so the replay would drop the active candidate \
-             (stored {:?}, replayed {:?}). Repair this row by hand, or \
-             wait for the log to carry activation.",
+             (stored {:?}, replayed {:?}). Jobs captured after D-16's fix \
+             carry a JobEvent::CandidateActivated and are not affected; \
+             this row was written before that fix and must be repaired by \
+             hand.",
             stored.active_candidate, proj.active_candidate,
         ));
     }

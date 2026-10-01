@@ -27,5 +27,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 # with a fresh store about what the CAS token should be.
 ironmaint-executor = { path = "../../crates/ironmaint-executor" }
 ironmaint-runtime = { path = "../../crates/ironmaint-runtime" }
+# The legacy-data half of the rebuild regression test matches on
+# `JobEvent` to strip the activation event from a real log. The
+# variant is what D-16 added, so the test that simulates a
+# pre-fix database has to name the type that did not exist then.
+ironmaint-state = { path = "../../crates/ironmaint-state" }
 tempfile = { workspace = true }
 url = { workspace = true }

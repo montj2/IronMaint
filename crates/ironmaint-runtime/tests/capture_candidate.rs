@@ -36,7 +36,7 @@ use ironmaint_runtime::{
 };
 use ironmaint_state::JobEvent;
 use ironmaint_store::mock::MockStore;
-use ironmaint_store::{CandidateStore, EventStore};
+use ironmaint_store::{CandidateStore, EventStore, ProjectionStore};
 use time::OffsetDateTime;
 use url::Url;
 
@@ -206,12 +206,13 @@ async fn capture_candidate_is_idempotent_on_duplicate_fingerprint() {
 }
 
 #[tokio::test]
-async fn capture_candidate_appends_domain_event() {
+async fn capture_candidate_appends_a_candidate_activated_event() {
     let store: Arc<MockStore> = Arc::new(MockStore::new());
     let svc = build_service(store.clone());
     let job_id = create_job(&svc).await;
 
     let candidate = source_candidate(job_id, "1.0.0");
+    let fingerprint = candidate.fingerprint().clone();
     svc.handle_command(RuntimeCommand::CaptureCandidate { job_id, candidate })
         .await
         .expect("capture");
@@ -228,11 +229,43 @@ async fn capture_candidate_appends_domain_event() {
          activation that follows it) = 4 events"
     );
 
+    // The count is unchanged by D-16's fix — activation still appends
+    // exactly one event. What changed is *which*: a bare `Domain` id
+    // cannot be replayed, so the log recorded that something happened
+    // while the row recorded what. §36 makes the log the authority,
+    // and §30 binds every gate verdict to the active candidate, so a
+    // replay through `Domain` silently dropped the binding for every
+    // job that had ever captured one.
     let last = events.last().expect("last event");
-    assert!(
-        matches!(last.event, JobEvent::Domain(_)),
-        "CaptureCandidate must append a JobEvent::Domain envelope, got {:?}",
-        last.event
+    let JobEvent::CandidateActivated(activation) = &last.event else {
+        panic!(
+            "CaptureCandidate must append a JobEvent::CandidateActivated \
+             envelope, got {:?}",
+            last.event
+        );
+    };
+
+    // And it must carry what the row got. Asserting the variant alone
+    // would pass against a payload that dropped the fields — which is
+    // the shape the red S7 commit caught, when it reported `version`
+    // and `updated_at` as unrecoverable alongside the candidate.
+    let stored = store.get_projection(job_id).await.expect("projection");
+    assert_eq!(
+        activation.candidate_id,
+        stored.active_candidate.expect("activated"),
+        "the event names the candidate the row activated"
+    );
+    assert_eq!(
+        activation.fingerprint, fingerprint,
+        "and the fingerprint that identified it"
+    );
+    assert_eq!(
+        activation.version_after, stored.version,
+        "and the version the activation's CAS left behind"
+    );
+    assert_eq!(
+        activation.updated_at, stored.updated_at,
+        "and the timestamp it stamped"
     );
 }
 

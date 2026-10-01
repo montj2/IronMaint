@@ -211,30 +211,45 @@ by a **production** path replays to that value.
 `updated_at`. The check is a single test that drives real commands and compares
 the stored row against `rebuild_projection`.
 
-**Run against today's code, this check fails, and that is not a hypothetical.**
+> **STATUS: run, red, and green.** S7 was written before D-16's fix and
+> committed **failing** (`84af759`); the fix is `test/seam-s7-replay-roundtrip`'s
+> second commit. The first run's output is in `doc/DEBT.md` D-16's closing
+> section. The paragraph below predicted two unrecoverable fields; it was
+> **three** — `updated_at` joined `active_candidate` and `version`, for the
+> reason the last paragraph of this section anticipated without naming. The
+> prediction being two rather than three is the point: the check is what
+> enumerates, not a reviewer's reading of the code.
+
+**Against the code as it stood, this check failed, and not hypothetically.**
 The mechanism, verified in `handle_set_active_candidate`
-(`crates/ironmaint-runtime/src/service.rs`): it sets `active_candidate` and
-writes `version: current.version + 1` into the **projection row**, then appends
-`JobEvent::Domain(domain_event_id)` — a bare identifier, no payload. `ProjectionApply::apply`
-treats `Domain` as `self.clone()`, a no-op. So the log records *that* something
-happened and the row records *what*, and the two disagree by construction on
-every activation.
+(`crates/ironmaint-runtime/src/service.rs`): it sets `active_candidate`, writes
+`version: current.version + 1` and stamps `updated_at` into the **projection
+row**, then appends `JobEvent::Domain(domain_event_id)` — a bare identifier, no
+payload. `ProjectionApply::apply` treats `Domain` as `self.clone()`, a no-op. So
+the log records *that* something happened and the row records *what*, and the two
+disagree by construction on every activation.
 
-Only a `Transitioned` event would carry `active_candidate` and `version` forward,
-because `Transitioned`'s payload embeds a full `projection_after` snapshot — and
+Only a `Transitioned` event would carry any of them forward, because
+`Transitioned`'s payload embeds a full `projection_after` snapshot — and
 activation does not transition. A job whose last event is a `Domain` therefore
-replays to the last *transition's* candidate and version, which is the
-thirteenth and fourteenth defects, and is why `replay_one` refuses rather than
-clobbers.
+replays to the last *transition's* row, which is the thirteenth and fourteenth
+defects, and is why `replay_one` refused rather than clobbered.
 
-**So S7's first run is a real result and should be written up as one** — it is
-the D-16 fix's acceptance criterion, and it will name the exact fields that
-cannot be justified from the log.
+`updated_at` was the open question the check was written to answer, and it
+answered it the other way: `EventEnvelope.occurred_at` exists and `apply` takes
+a timestamp, but activation's timestamp was being passed to the row write and not
+to anything durable, so a replay produced a projection that was right in every
+field except its own audit clock. A variant carrying only the two predicted
+fields would have left it unjustified with nothing left to notice.
 
-`updated_at` is a genuine open question the check answers: `Transition` carries
-no timestamp, but `EventEnvelope.occurred_at` does, and `apply` takes it as a
-parameter. Whether a job that was never transitioned carries a faithful
-`updated_at` is not established, and the check should assert rather than assume.
+**Why the test lives in the testkit, not in the store crate.** The check was
+specified here as landing in `ironmaint-store-sqlite/tests/`, and it cannot:
+driving a job through `CreateJob` / `CaptureCandidate` needs `RuntimeService`,
+and `ironmaint-store-sqlite` is a dependency *of* the runtime, so the test could
+not name the type whose event log it is auditing. It lives at
+`crates/ironmaint-testkit/tests/replay_roundtrip.rs` instead — a location §98
+already blesses, and the same one §101's two drivers use for the same reason.
+The store crate is the *subject* of the check, not its author.
 
 ### S8 — every command is reachable through the public surface *(behavioural)*
 
@@ -273,7 +288,7 @@ returns `Err` is not a simplification, it is a hole with a passing test over it.
 | S4 seed selection | static | `xtask/src/seams.rs` | **yes** |
 | S5 store method parity | static | `xtask/src/seams.rs` | **yes** |
 | S6 no third copy | **deferred** | — | — |
-| S7 replay round-trip | behavioural | `ironmaint-store-sqlite/tests/` | **yes** |
+| S7 replay round-trip | behavioural | `ironmaint-testkit/tests/replay_roundtrip.rs` | **yes** |
 | S8 production reachability | behavioural | `ironmaint-testkit/tests/` | **yes** |
 | S9 store parity | behavioural | `ironmaint-testkit` | **yes** |
 
@@ -285,6 +300,12 @@ code. Write the test, watch it fail against the mechanism in §2/S7, and record
 both the failure and the fix. A verifier that has never failed is D-14's lesson
 learned too late.
 
+S7 is the one check on this list that is **already written** and does not wait
+for `verify-seams`: it is an ordinary integration test, so `cargo test
+--workspace` runs it, and D-16's closure depends on it. It was built first for
+the reason the paragraph above gives — its failure is the receipt — and
+`verify-seams` inherits it rather than reimplementing it.
+
 ---
 
 ## 4. Definition of done
@@ -294,7 +315,7 @@ learned too late.
 - [ ] Every allowlist entry carries a reason naming a spec section or a design
       fact — checked at review, and **counted**: an allowlist that has grown
       without a reason is the failure mode
-- [ ] S7's first run failed, and both the failure and its cause are written down
+- [x] S7's first run failed, and both the failure and its cause are written down
 - [ ] S6 is either built or explicitly deferred **in this document**, not left
       as a heading with no content
 - [ ] A deliberately introduced missing caller (S1) and a deliberately

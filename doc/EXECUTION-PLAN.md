@@ -33,21 +33,44 @@ So wave 2 is two commits, in this order:
 A red commit in the history is the evidence the check has teeth. It is worth more
 than a green one, and it costs nothing.
 
+> **Both done, 2026-10-01** (`84af759` red, then the fix on
+> `test/seam-s7-replay-roundtrip`). Two things the ordering got right and one it
+> got wrong, all three worth carrying to wave 4:
+>
+> - **The inversion held.** S7's first run failed, which is the only part of this
+>   plan that could not be recovered after the fact.
+> - **"Exactly those two fields" was wrong — it was three.** `updated_at` was
+>   also unrecoverable, for the reason §2/S7 of the seam spec had flagged as an
+>   open question and not resolved. A variant carrying the two predicted fields
+>   would have shipped a half-fix with nothing left to notice. This is the single
+>   strongest argument in the plan for S1–S5 and S9: a reviewer's reading of the
+>   code enumerated two of the three, and a *test* enumerated three.
+> - **D-16's cost estimate was wrong in the cheap direction.** The entry said the
+>   format change would need a migration on every existing database. It does not:
+>   `events.event_type` is unconstrained `TEXT`. `verify-migrations` confirmed it
+>   by staying clean. The only snapshot that moved was `schemas/JobEvent.json`.
+>
+> Wave 2 was scoped as medium-risk and came in as the cheapest of waves 1–4, and
+> the reason is worth stating before wave 4 is scoped: **the expensive part was
+> writing the test, not fixing the defect.** The defect was three fields on one
+> function. Wave 4 is nine checks of the same shape, and should be scoped on that
+> basis rather than on how small D-16's diff looked.
+
 ---
 
 ## 1. The waves
 
 Seven waves. Each is one branch, one PR, one reviewable claim.
 
-| # | Wave | Items | Blocked by | Risk |
-|---|---|---|---|---|
-| 1 | Lint the persistence layer | **D-01** | — | low |
-| 2 | Prove the log gap, then close it | **S7 → D-16** | — | **medium** |
-| 3 | The dead-code cluster | **D-04, D-05, D-08** | — | low |
-| 4 | Seam verification | **S1–S5, S8, S9** | 1, 2 | medium |
-| 5 | Container images | new | — | **long** |
-| 6 | The extension manifest | **D-06** | 5 | medium |
-| 7 | §102 item 30 | **D-15** | 5, 6 | low once unblocked |
+| # | Wave | Items | Blocked by | Risk | State |
+|---|---|---|---|---|---|
+| 1 | Lint the persistence layer | **D-01** | — | low | **done** 2026-10-01 |
+| 2 | Prove the log gap, then close it | **S7 → D-16** | — | **medium** | **done** 2026-10-01 |
+| 3 | The dead-code cluster | **D-04, D-05, D-08** | — | low | next |
+| 4 | Seam verification | **S1–S5, S8, S9** | 1, 2 | medium | unblocked |
+| 5 | Container images | new | — | **long** | unblocked |
+| 6 | The extension manifest | **D-06** | 5 | medium | — |
+| 7 | §102 item 30 | **D-15** | 5, 6 | low once unblocked | — |
 
 Plus one item that is **not** code and should be written now, in parallel:
 
@@ -110,7 +133,7 @@ the whole reason wave 5 exists.
 - [ ] Every open register row is CLOSED, or carries a recorded reason it is not
       closing, with a *changed* reason rather than a repeated "deferred to 0B.10"
 - [ ] `cargo run -p xtask -- verify-seams` is in the §97 set in `CLAUDE.md`
-- [ ] S7's failing commit is in the history, before D-16's fix
+- [x] S7's failing commit is in the history, before D-16's fix — `84af759`
 - [ ] `verify-seams` has been seen to fail on a deliberately introduced defect,
       twice (S1 and S9), per `doc/SEAM-VERIFICATION.md` §4
 - [ ] §102 is 34 of 34, or the remaining gap is D-15 and D-15 says why
