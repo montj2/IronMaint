@@ -2278,7 +2278,12 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             )
         })?;
 
-        let request = ExecutionRequest::new(cap_key.clone(), retry_class, serde_json::Value::Null);
+        let request = ExecutionRequest::new(
+            job_id,
+            cap_key.clone(),
+            retry_class,
+            serde_json::Value::Null,
+        );
 
         let started_at = self.clock.now_utc();
         // A real executor reports a wall-clock timeout and a
@@ -2322,6 +2327,10 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                         stderr: e.to_string(),
                         retries_exhausted: false,
                         truncated: false,
+                        // The executor was not reached, so no
+                        // output was produced to spill.
+                        artifacts: Vec::new(),
+                        artifacts_dropped: Vec::new(),
                     },
                     Some(outcome),
                 )

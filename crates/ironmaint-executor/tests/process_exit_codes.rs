@@ -18,6 +18,15 @@ use ironmaint_executor::{
 };
 use serde_json::json;
 
+/// A job id for an execution.
+///
+/// The executor's artifact guard is per-job (§15), so a request has
+/// to name one; the id itself is not what any of these tests are
+/// about.
+fn job_id() -> ironmaint_core::JobId {
+    ironmaint_core::JobId::new()
+}
+
 fn fixture_bin() -> PathBuf {
     // `CARGO_BIN_EXE_<name>` is only set for tests inside the
     // crate that owns the binary. Cross-crate tests resolve
@@ -86,7 +95,12 @@ async fn pass_path_returns_zero_exit() {
     let exec = make_executor(Arc::new(r), store);
 
     let rec = exec
-        .execute(ExecutionRequest::new(key, RetryClass::Safe, json!({})))
+        .execute(ExecutionRequest::new(
+            job_id(),
+            key,
+            RetryClass::Safe,
+            json!({}),
+        ))
         .await
         .expect("PASS");
     assert_eq!(rec.exit_code, 0);
@@ -103,7 +117,12 @@ async fn fail_path_returns_one_exit() {
     let exec = make_executor(Arc::new(r), store);
 
     let rec = exec
-        .execute(ExecutionRequest::new(key, RetryClass::Safe, json!({})))
+        .execute(ExecutionRequest::new(
+            job_id(),
+            key,
+            RetryClass::Safe,
+            json!({}),
+        ))
         .await
         .expect("FAIL is a record, not an error");
     assert_eq!(rec.exit_code, 1);
@@ -126,7 +145,12 @@ async fn timeout_kills_child() {
     let exec = make_executor(Arc::new(r), store);
 
     let err = exec
-        .execute(ExecutionRequest::new(key, RetryClass::Safe, json!({})))
+        .execute(ExecutionRequest::new(
+            job_id(),
+            key,
+            RetryClass::Safe,
+            json!({}),
+        ))
         .await
         .expect_err("must time out");
     assert_eq!(
@@ -148,7 +172,12 @@ async fn interrupt_path_returns_130() {
     let exec = make_executor(Arc::new(r), store);
 
     let rec = exec
-        .execute(ExecutionRequest::new(key, RetryClass::Safe, json!({})))
+        .execute(ExecutionRequest::new(
+            job_id(),
+            key,
+            RetryClass::Safe,
+            json!({}),
+        ))
         .await
         .expect("INTERRUPT is a record, not an error");
     assert_eq!(rec.exit_code, 130);
@@ -167,7 +196,12 @@ async fn infra_fail_exit_maps_to_infrastructure_outcome() {
     let exec = make_executor(Arc::new(r), store);
 
     let rec = exec
-        .execute(ExecutionRequest::new(key, RetryClass::Safe, json!({})))
+        .execute(ExecutionRequest::new(
+            job_id(),
+            key,
+            RetryClass::Safe,
+            json!({}),
+        ))
         .await
         .expect("exit 127 is a record");
     assert_eq!(rec.exit_code, 127);
@@ -190,7 +224,12 @@ async fn missing_executable_is_infra_failure() {
     let exec = make_executor(Arc::new(r), store);
 
     let err = exec
-        .execute(ExecutionRequest::new(key, RetryClass::Safe, json!({})))
+        .execute(ExecutionRequest::new(
+            job_id(),
+            key,
+            RetryClass::Safe,
+            json!({}),
+        ))
         .await
         .expect_err("spawn must fail");
     assert_eq!(
@@ -208,7 +247,12 @@ async fn unknown_capability_is_rejected() {
 
     let key = ToolCapabilityKey::new("synthetic.build.absent").unwrap();
     let err = exec
-        .execute(ExecutionRequest::new(key, RetryClass::Safe, json!({})))
+        .execute(ExecutionRequest::new(
+            job_id(),
+            key,
+            RetryClass::Safe,
+            json!({}),
+        ))
         .await
         .expect_err("must reject");
     assert_eq!(err.kind, ExecutorErrorKind::UnknownCapability);
@@ -230,7 +274,12 @@ async fn privileged_external_class_is_rejected() {
     let exec = make_executor(Arc::new(r), store);
 
     let err = exec
-        .execute(ExecutionRequest::new(key, RetryClass::Safe, json!({})))
+        .execute(ExecutionRequest::new(
+            job_id(),
+            key,
+            RetryClass::Safe,
+            json!({}),
+        ))
         .await
         .expect_err("must reject PrivilegedExternal");
     assert!(
@@ -255,7 +304,12 @@ async fn truncated_records_propagate_to_execution_record() {
     let exec = make_executor(Arc::new(r), store);
 
     let rec = exec
-        .execute(ExecutionRequest::new(key, RetryClass::Safe, json!({})))
+        .execute(ExecutionRequest::new(
+            job_id(),
+            key,
+            RetryClass::Safe,
+            json!({}),
+        ))
         .await
         .expect("truncate run produces a record");
     assert_eq!(rec.exit_code, 0);
@@ -280,7 +334,12 @@ async fn passthrough_when_under_limit_is_not_truncated() {
     let exec = make_executor(Arc::new(r), store);
 
     let rec = exec
-        .execute(ExecutionRequest::new(key, RetryClass::Safe, json!({})))
+        .execute(ExecutionRequest::new(
+            job_id(),
+            key,
+            RetryClass::Safe,
+            json!({}),
+        ))
         .await
         .expect("truncate run");
     assert!(!rec.truncated, "256 KiB < 1 MiB cap → not truncated");

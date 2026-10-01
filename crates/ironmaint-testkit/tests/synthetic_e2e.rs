@@ -89,6 +89,10 @@ impl Executor for PassExecutor {
             stderr: String::new(),
             retries_exhausted: false,
             truncated: false,
+
+            // Constructed rather than executed: nothing spilled.
+            artifacts: Vec::new(),
+            artifacts_dropped: Vec::new(),
         })
     }
 }
@@ -109,6 +113,10 @@ impl Executor for FailExecutor {
             stderr: String::from("synthetic fail"),
             retries_exhausted: false,
             truncated: false,
+
+            // Constructed rather than executed: nothing spilled.
+            artifacts: Vec::new(),
+            artifacts_dropped: Vec::new(),
         })
     }
 }

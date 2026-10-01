@@ -7,11 +7,20 @@
 
 use std::fmt;
 
+use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 /// Lowercase hex string of a SHA-256 digest (64 chars).
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+///
+/// `JsonSchema` is implemented here rather than leaving every
+/// durable record that names an artifact to stringify it. An
+/// `ExecutionRecord` that carries a digest is a record whose
+/// consumer must hand the digest back to `ArtifactStore::get`, and
+/// a `String` field cannot be turned back into a `Sha256Hex` — the
+/// wrapper has no public constructor. Stringifying it would produce
+/// a reference that reads well and cannot be followed.
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
 pub struct Sha256Hex(String);
 

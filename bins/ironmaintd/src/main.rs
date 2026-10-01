@@ -44,7 +44,9 @@ use std::process::ExitCode;
 use std::sync::Arc;
 
 use ironmaint_artifacts::{ArtifactRoot, ArtifactStore};
-use ironmaint_executor::{ProcessEnvironment, ProcessExecutor, ToolRegistry};
+use ironmaint_executor::{
+    LimitsConfig, ProcessEnvironment, ProcessExecutor, ToolRegistry, factory_from_config,
+};
 use ironmaint_mcp::{IronMaintMcpServer, McpRuntime, TokenValidator, default_config, router};
 use ironmaint_runtime::{AdapterRegistry, RuntimeService, SystemClock};
 use ironmaint_store_sqlite::{SqliteStore, SqliteStoreConfig};
@@ -190,11 +192,12 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
     // --- artifact store (§67 "verify artifact store") ---
     //
     // Opened and kept alive for the process. `ProcessExecutor`
-    // holds it and, as of this commit, does not yet spill
-    // oversized output to it — output is bounded in memory into
-    // the `ExecutionRecord`. The store is constructed and verified
-    // now so that enabling spilling later is not a second change
-    // that also has to invent where artifacts go.
+    // spills every tool run's complete stdout and stderr here, so
+    // this is not a directory that happens to exist — it is where
+    // the output a `check.run` bounded out of its record actually
+    // goes. Before D-08's fix nothing was ever written to it while
+    // startup logged that it was verified, which is the mismatch
+    // that entry was raised for.
     let artifact_store = Arc::new(ArtifactStore::open(ArtifactRoot::new(
         &config.artifacts_root,
     )));
@@ -235,11 +238,19 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
     // deciding whether a capability is registered at all. Two
     // copies would be two different answers to one question.
     let registry = Arc::new(tools);
-    let executor = Arc::new(ProcessExecutor::new(
-        Arc::clone(&registry),
-        artifact_store,
-        ProcessEnvironment::new(),
-    ));
+    // §15's per-job retention caps. Wired here rather than left at
+    // the executor's `permissive_guard` default: the caps are the
+    // only thing standing between a job that runs twenty chatty
+    // checks and an artifact store that fills the disk, and a
+    // default that is never overridden is not a policy.
+    let executor = Arc::new(
+        ProcessExecutor::new(
+            Arc::clone(&registry),
+            artifact_store,
+            ProcessEnvironment::new(),
+        )
+        .with_guard_factory(factory_from_config(LimitsConfig::default())),
+    );
 
     // --- workspace (§66) ---
     let workspace = Arc::new(WorkspaceManager::new(

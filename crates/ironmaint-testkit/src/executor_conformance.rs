@@ -101,9 +101,19 @@ pub async fn assert_executor_conformance<E: Executor + ?Sized>(executor: &E, key
 // §92 conditions.
 // -----------------------------------------------------------------------------
 
+/// A job id for an execution.
+///
+/// The executor's artifact guard is per-job (§15), so a request has
+/// to name one; the id itself is not what any of these tests are
+/// about.
+fn job_id() -> ironmaint_core::JobId {
+    ironmaint_core::JobId::new()
+}
+
 async fn assert_pass<E: Executor + ?Sized>(executor: &E, key: &ToolCapabilityKey) {
     let rec = executor
         .execute(ExecutionRequest::new(
+            job_id(),
             key.clone(),
             RetryClass::Safe,
             json!({}),
@@ -118,6 +128,7 @@ async fn assert_pass<E: Executor + ?Sized>(executor: &E, key: &ToolCapabilityKey
 async fn assert_fail<E: Executor + ?Sized>(executor: &E, key: &ToolCapabilityKey) {
     let rec = executor
         .execute(ExecutionRequest::new(
+            job_id(),
             key.clone(),
             RetryClass::Safe,
             json!({}),
@@ -131,6 +142,7 @@ async fn assert_fail<E: Executor + ?Sized>(executor: &E, key: &ToolCapabilityKey
 async fn assert_timeout<E: Executor + ?Sized>(executor: &E, key: &ToolCapabilityKey) {
     let err = executor
         .execute(ExecutionRequest::new(
+            job_id(),
             key.clone(),
             RetryClass::Safe,
             json!({}),
@@ -148,6 +160,7 @@ async fn assert_timeout<E: Executor + ?Sized>(executor: &E, key: &ToolCapability
 async fn assert_truncate<E: Executor + ?Sized>(executor: &E, key: &ToolCapabilityKey) {
     let rec = executor
         .execute(ExecutionRequest::new(
+            job_id(),
             key.clone(),
             RetryClass::Safe,
             json!({}),
@@ -175,6 +188,7 @@ async fn assert_truncate<E: Executor + ?Sized>(executor: &E, key: &ToolCapabilit
 async fn assert_interrupt<E: Executor + ?Sized>(executor: &E, key: &ToolCapabilityKey) {
     let rec = executor
         .execute(ExecutionRequest::new(
+            job_id(),
             key.clone(),
             RetryClass::Safe,
             json!({}),
@@ -191,6 +205,7 @@ async fn assert_interrupt<E: Executor + ?Sized>(executor: &E, key: &ToolCapabili
 async fn assert_infra_fail<E: Executor + ?Sized>(executor: &E, key: &ToolCapabilityKey) {
     let rec = executor
         .execute(ExecutionRequest::new(
+            job_id(),
             key.clone(),
             RetryClass::Safe,
             json!({}),
@@ -223,6 +238,10 @@ fn assert_normalizer_round_trip() {
         stderr: String::new(),
         retries_exhausted: false,
         truncated: false,
+
+        // Constructed rather than executed: nothing spilled.
+        artifacts: Vec::new(),
+        artifacts_dropped: Vec::new(),
     };
     let n = normalizer
         .normalize(&rec)
@@ -241,6 +260,10 @@ fn assert_normalizer_round_trip() {
         stderr: String::new(),
         retries_exhausted: false,
         truncated: false,
+
+        // Constructed rather than executed: nothing spilled.
+        artifacts: Vec::new(),
+        artifacts_dropped: Vec::new(),
     };
     let n_fail = normalizer
         .normalize(&rec_fail)
