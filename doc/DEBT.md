@@ -27,6 +27,17 @@ defect sat directly behind it.** A closure records a fix, not an absence, and
 the two are easy to mistake for each other when the item was found by reading
 rather than by running.
 
+**Wave 1 of `doc/EXECUTION-PLAN.md` landed 2026-10-01** and closed **D-01**, the
+register's last HIGH. The lint set now covers all 21 workspace members, so the
+project's central claim — no `unwrap`, no `expect`, no `panic`, no `unsafe` in a
+production path — is enforced everywhere it is claimed rather than in 19 of 21
+crates. Six items are now closed.
+
+D-01 is also the first closure here that was **teeth-checked**: a real `unwrap`
+was added to the SQLite crate's production path and clippy rejected it, so the
+gate is known to reject rather than assumed to. Every closure after this one
+should be treated the same way, given the D-14 note above.
+
 ## How to read this
 
 Severity is about consequence, not effort.
@@ -67,7 +78,7 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 
 | ID | Severity | Item | Status |
 |---|---|---|---|
-| D-01 | HIGH | `ironmaint-store` and `ironmaint-store-sqlite` inherit no lint set — the no-panic and no-unsafe policies are unenforced in the persistence layer | OPEN |
+| D-01 | HIGH | `ironmaint-store` and `ironmaint-store-sqlite` inherit no lint set — the no-panic and no-unsafe policies are unenforced in the persistence layer | **CLOSED** 2026-10-01 — both manifests declare `[lints] workspace = true`, so §97 covers **21 of 21** members. The four predicted sites are fixed, one of them diverging from the register's own recommendation (recorded in the entry). Teeth-checked by adding a real `unwrap` to the SQLite crate's production path and watching clippy reject it |
 | D-02 | HIGH | The spec-designated `SKILL.md` is stale and documents a wire format the server rejects | **CLOSED** by 0B.10 C3 — `skills/` is canonical, the stale `integrations/` copy is deleted, and `PHASE-0B.md` §61 has been amended to point at the surviving file |
 | D-03 | HIGH | A job cannot advance past `EventDetected`; 5 of 9 runtime commands and 1 of 5 queries have no MCP entry point, and `next_actions` overloads `allowed` as both "moves you can make" and "this needs a human" | **CLOSED** by 0B.10 (C1–C5) — the three missing production links have one caller each, the `allowed` wire split landed in C3, and C5's `mcp_acceptance_scenario.rs` walks §101 from `job.create` to `ReadyForApproval` through `dispatch()` with no `RuntimeService` handle. The census is re-derived at the bottom of the entry, because the right column is now "has a *tool*" and several rows moved to "driven internally by `candidate.capture`" |
 | D-04 | MEDIUM | `dead_code = "warn"` carries a promise ("promoted once 0A.6 lands") that was never kept | OPEN |
@@ -86,7 +97,7 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 
 ---
 
-## D-01 — the persistence layer has no lint enforcement (HIGH)
+## D-01 — the persistence layer has no lint enforcement (HIGH) — **CLOSED 2026-10-01**
 
 **Severity rationale:** the project's central safety claim is that no production
 path can panic or use `unsafe`. That claim is enforced in 17 crates and silently
@@ -144,6 +155,54 @@ Four sites, all mechanical. Worth doing as a single small commit:
 
 **Verification after the fix:** the §97 gate, unchanged. That is the point — the
 gate starts covering two more crates.
+
+### CLOSED 2026-10-01 — the four sites, and one recommendation not followed
+
+The sweep predicted four sites and found four. All four are fixed and
+`[lints] workspace = true` is on both manifests, so the §97 gate now covers 21 of
+21 workspace members rather than 19.
+
+**Three fixes followed the recommendation above.** `lock.rs:42` now branches on
+`ErrorKind::WouldBlock` and keeps the `io::Error` on every other path, so a
+read-only filesystem or a permissions problem no longer reports itself as
+"another ironmaintd is using this state directory" — an operator is no longer sent
+hunting for a second daemon that was never running. `empty_for_tests()` returns
+`Result<Self, String>` and `open_in_memory` maps it into a `StoreError`, as the
+entry suggested.
+
+**The `MockStore` lock fix diverges, and the reason is worth recording.** The
+recommendation was to return a `StoreError` rather than panicking. That is
+correct in principle and disproportionate in practice: `read()` and `write()`
+would have to return `Result<_, StoreError>`, threading a `?` through roughly
+thirty-five trait method bodies in a test double, to model a state that arises
+only when a test has *already* panicked.
+
+The fix taken is `unwrap_or_else(PoisonError::into_inner)` — recovery, not
+propagation. A lock poisons only when a holder panicked, so by the time the
+poison is observed the original panic is already unwinding; panicking a second
+time with "MockStore lock poisoned" **replaces** the real failure with a message
+about a lock. For a test double, the failing test's own assertion is the more
+useful signal, and recovering is also strictly closer to the §85 no-panic policy
+than either `.expect` or a half-built `Result` threaded through a mock.
+
+**The teeth-check, run before the fix was trusted.** A `read_to_string(...).unwrap()`
+was added to `DaemonLock::acquire` — the production path of the crate that
+previously had no lints at all — and `cargo clippy -p
+ironmaint-store-sqlite --all-targets --all-features` rejected it:
+
+```text
+error: used `unwrap()` on a `Result` value
+  --> crates/ironmaint-store-sqlite/src/lock.rs:58:17
+```
+
+Reverted immediately after. An hour earlier that line was invisible to the gate.
+This is the standing hazard in `doc/EXECUTION-PLAN.md` §4 applied to the first
+wave: a gate that has never rejected anything is an assumption wearing a green
+tick, and this register has now been wrong about one of those twice.
+
+**§97 after the fix:** `fmt` clean, clippy `-D warnings` clean, **840 unit / 849
+integration** — both counts unchanged from `d1ff70a`, so nothing regressed — and
+all four verifiers clean.
 
 ### Why this was missed
 

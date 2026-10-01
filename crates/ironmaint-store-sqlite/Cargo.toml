@@ -8,6 +8,9 @@ authors = ["James Montgomery <montj2@github.com>"]
 description = "SQLite backend for IronMaintStore. Uses runtime SQL (sqlx::query / sqlx::query_as::<_,T>); does not use compile-time sqlx::query! macros because 0B's CI does not have a live database at build time. See README.md."
 publish = false
 
+[lints]
+workspace = true
+
 [dependencies]
 ironmaint-core = { path = "../ironmaint-core" }
 ironmaint-evidence = { path = "../ironmaint-evidence" }

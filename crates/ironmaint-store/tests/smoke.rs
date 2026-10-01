@@ -7,6 +7,12 @@
 //! `StateTransitioned` directly because the engine's `TransitionContext`
 //! surface is wider than what a unit smoke test should pin down.
 
+// Integration tests are compiled as a separate crate and don't inherit
+// `cfg_attr(test, allow(...))` from `lib.rs`. Allow `unwrap`/`expect`
+// here for the same reason as the unit tests: a failed `unwrap` is a
+// failed test, and the values under test are constructed in this file.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use ironmaint_core::{
     CandidateFingerprint, DistributionFamily, DistributionRef, DistributionRelease,
     GitHashAlgorithm, GitObjectId, IssueActionId, JobId, JobProjection, JobState,

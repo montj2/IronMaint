@@ -3,7 +3,7 @@
 //! integration tests.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use ironmaint_core::{
     ArtifactId, CandidateFingerprint, CandidateId, CheckId, EvidenceId, GateId, JobId,
@@ -77,12 +77,29 @@ impl MockStore {
         Self::default()
     }
 
+    /// Recover the guard from a poisoned lock rather than
+    /// panicking.
+    ///
+    /// A lock poisons only when a holder panicked while holding it,
+    /// and in this crate that means a test has already failed and its
+    /// panic is already unwinding. Panicking again here — which is
+    /// what `.expect("MockStore lock poisoned")` did — replaces the
+    /// real failure with a message about a lock, which is strictly
+    /// worse for diagnosis and is a panic in a crate the no-panic
+    /// policy (PHASE-0A.md §85) is supposed to cover.
+    ///
+    /// Recovery is the right trade for a test double rather than a
+    /// compromise: the in-memory state may be half-updated, but the
+    /// test that caused it is already failing, and its own assertion
+    /// is the more useful signal.
     fn read(&self) -> RwLockReadGuard<'_, MockInner> {
-        self.inner.read().expect("MockStore lock poisoned")
+        self.inner.read().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// See [`MockStore::read`] for why a poisoned lock is recovered
+    /// rather than treated as a failure.
     fn write(&self) -> RwLockWriteGuard<'_, MockInner> {
-        self.inner.write().expect("MockStore lock poisoned")
+        self.inner.write().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn find_gate_result<'a>(

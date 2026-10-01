@@ -136,7 +136,9 @@ impl SqliteStore {
         Ok(Self {
             pool,
             config: SqliteStoreConfig::new(":memory:"),
-            _lock: Arc::new(DaemonLock::empty_for_tests()),
+            _lock: Arc::new(DaemonLock::empty_for_tests().map_err(|e| {
+                StoreError::new(StoreErrorKind::Backend, format!("in-memory: {e}"))
+            })?),
         })
     }
 
