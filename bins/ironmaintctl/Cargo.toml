@@ -20,4 +20,12 @@ time = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [dev-dependencies]
+# The rebuild regression test drives the *real* `CreateJob` path to
+# produce a log worth rebuilding. Hand-assembling the log is the
+# mistake D-14 was written about, and a mock-backed suite cannot see
+# the production symptom — `MockStore::put_projection` would agree
+# with a fresh store about what the CAS token should be.
+ironmaint-executor = { path = "../../crates/ironmaint-executor" }
+ironmaint-runtime = { path = "../../crates/ironmaint-runtime" }
 tempfile = { workspace = true }
+url = { workspace = true }

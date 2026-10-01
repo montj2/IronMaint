@@ -1303,11 +1303,14 @@ name = "ironmaintctl"
 version = "0.1.0"
 dependencies = [
  "ironmaint-core",
+ "ironmaint-executor",
+ "ironmaint-runtime",
  "ironmaint-store",
  "ironmaint-store-sqlite",
  "tempfile",
  "time",
  "tokio",
+ "url",
 ]
 
 [[package]]
