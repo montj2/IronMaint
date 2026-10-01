@@ -579,6 +579,190 @@ async fn next_actions_names_the_outstanding_obligation() {
     );
 }
 
+/// The same reporting, at a state where policy does not gate the
+/// next move.
+///
+/// `attach_obligation_state` used to return early unless the pure
+/// projection had already said `SatisfyObligation`, which it only
+/// does at `ReleaseReview` and `FinalValidation`. So the whole
+/// obligation-reporting path was unreachable below those states, and
+/// an agent at `EventDetected` whose policy evaluation had come back
+/// negative was told its blockers were empty. Its only visible move
+/// was to re-run the check that had just failed, which produces the
+/// same evidence and the same verdict — and SKILL.md had to tell
+/// agents to patch and re-capture instead, because the tool surface
+/// never said so.
+///
+/// What changed is the *blocker*, not `requires_human`. Whether a
+/// person has to act is state-dependent and the pure projection
+/// decides it; whether an assertion is outstanding is not.
+#[tokio::test]
+async fn an_outstanding_obligation_is_reported_at_an_early_state_too() {
+    let store = Arc::new(MockStore::new());
+    let svc = null_service(store.clone());
+    let job_id = make_job(&store, &svc).await;
+    let (_cid, fingerprint) = seed_candidate(&store, job_id).await;
+    svc.handle_command(RuntimeCommand::SetActiveCandidate {
+        job_id,
+        fingerprint: fingerprint.clone(),
+    })
+    .await
+    .expect("set active");
+
+    let obligation = Obligation::new(
+        fingerprint.clone(),
+        PolicyReference::new(ironmaint_core::AuthorityId::new()),
+        ObligationStrength::Mandatory,
+        Applicability::Applicable,
+        "copyright-file-present",
+    )
+    .unwrap();
+    store
+        .put_obligation(&obligation, job_id)
+        .await
+        .expect("put obligation");
+    svc.handle_command(RuntimeCommand::RecordObligationOutcome {
+        job_id,
+        obligation_ref: "copyright-file-present".to_string(),
+        outcome: ObligationOutcome::Fail,
+    })
+    .await
+    .expect("record");
+
+    // A fresh job: `EventDetected`, well below `ReleaseReview`.
+    let QueryResult::NextActions(actions) = svc
+        .handle_query(RuntimeQuery::ListNextActions { job_id })
+        .await
+        .expect("next actions")
+    else {
+        panic!("wrong QueryResult variant");
+    };
+
+    assert_eq!(
+        store
+            .get_projection(job_id)
+            .await
+            .expect("projection")
+            .state,
+        JobState::EventDetected,
+        "this test is only worth anything before policy gates the move"
+    );
+    assert!(
+        actions.blockers.iter().any(
+            |b| matches!(b, ActionBlocker::ObligationPending { reference }
+                if reference == "copyright-file-present")
+        ),
+        "the outstanding assertion is a fact at every state, not only near \
+         release: {:?}",
+        actions.blockers
+    );
+    assert_eq!(
+        actions.requires_human, None,
+        "but the fix is source, and source is the agent's work — reporting it \
+         as a human action would tell an agent to stop on a job §83 says it \
+         should drive"
+    );
+}
+
+/// `NotEvaluated` is an unasked question, not an outstanding
+/// assertion.
+///
+/// Every obligation a capture derives starts here, so reporting
+/// `NotEvaluated` would attach an `ObligationPending` blocker to
+/// every job from its first capture and tell the agent to go satisfy
+/// a verdict that does not exist. The question is already asked by
+/// the pending `RunCheck`.
+#[tokio::test]
+async fn an_unevaluated_obligation_is_not_a_blocker() {
+    let store = Arc::new(MockStore::new());
+    let svc = null_service(store.clone());
+    let job_id = make_job(&store, &svc).await;
+    let (_cid, fingerprint) = seed_candidate(&store, job_id).await;
+    svc.handle_command(RuntimeCommand::SetActiveCandidate {
+        job_id,
+        fingerprint: fingerprint.clone(),
+    })
+    .await
+    .expect("set active");
+
+    store
+        .put_obligation(
+            &Obligation::new(
+                fingerprint.clone(),
+                PolicyReference::new(ironmaint_core::AuthorityId::new()),
+                ObligationStrength::Mandatory,
+                Applicability::Applicable,
+                "copyright-file-present",
+            )
+            .unwrap(),
+            job_id,
+        )
+        .await
+        .expect("put obligation");
+
+    let QueryResult::NextActions(actions) = svc
+        .handle_query(RuntimeQuery::ListNextActions { job_id })
+        .await
+        .expect("next actions")
+    else {
+        panic!("wrong QueryResult variant");
+    };
+
+    assert!(
+        !actions
+            .blockers
+            .iter()
+            .any(|b| matches!(b, ActionBlocker::ObligationPending { .. })),
+        "an obligation nobody has evaluated is not something to clear: {:?}",
+        actions.blockers
+    );
+}
+
+/// And a job with no active candidate at all must not fail.
+///
+/// `next_actions` on a freshly created job is the first call an agent
+/// makes. Once the obligation scan stopped being gated on the
+/// projection's state it also stopped being gated on a candidate
+/// existing, and "no active candidate" is the normal state of a
+/// brand-new job — reported as a `no_active_candidate` blocker by the
+/// pure projection, not as an error.
+#[tokio::test]
+async fn next_actions_on_a_job_with_no_candidate_is_not_an_error() {
+    let store = Arc::new(MockStore::new());
+    let svc = null_service(store.clone());
+    let job_id = make_job(&store, &svc).await;
+
+    let QueryResult::NextActions(actions) = svc
+        .handle_query(RuntimeQuery::ListNextActions { job_id })
+        .await
+        .expect(
+            "a job with no candidate has a next-actions list; it is an empty \
+                 one",
+        )
+    else {
+        panic!("wrong QueryResult variant");
+    };
+    assert_eq!(
+        store
+            .get_projection(job_id)
+            .await
+            .expect("projection")
+            .state,
+        JobState::EventDetected,
+        "a job that has not captured anything yet is at EventDetected, and the \
+         only thing `next_actions` must say about it is that a capture is the \
+         next move"
+    );
+    assert!(
+        actions
+            .allowed
+            .iter()
+            .any(|a| matches!(a, ironmaint_runtime::AllowedAction::CaptureCandidate)),
+        "got {:?}",
+        actions.allowed
+    );
+}
+
 /// And when every mandatory obligation passes, the report must not
 /// claim there is something outstanding. The unconditional
 /// `SatisfyObligation { reference: None }` the pure projection emits

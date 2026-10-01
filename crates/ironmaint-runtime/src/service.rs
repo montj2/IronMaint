@@ -328,19 +328,32 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         job_id: JobId,
         actions: &mut crate::next_actions::JobNextActions,
     ) -> Result<(), RuntimeError> {
-        if !matches!(
+        // Whether a *person* has to act is state-dependent, and the
+        // pure projection already decided it: policy completion is
+        // someone's judgement only at `ReleaseReview` and
+        // `FinalValidation`. Whether an obligation is *outstanding*
+        // is not state-dependent, and until now this function only
+        // ran when the pure projection had already said
+        // `SatisfyObligation` — so at every earlier state a mandatory
+        // obligation that had come back `Fail` was invisible. An
+        // agent at `EventDetected` whose policy check failed was
+        // told its blockers were empty and its only move was to run
+        // the check again, which produces the same evidence and the
+        // same verdict. §83's loop has no way to express "the
+        // assertion is not met, and only different source will meet
+        // it"; SKILL.md has to tell the agent to patch and re-run
+        // instead, because the tool surface never said so.
+        let human_decision = matches!(
             actions.requires_human,
             Some(HumanAction::SatisfyObligation { .. })
-        ) {
-            return Ok(());
-        }
+        );
 
-        let fingerprint = self.active_fingerprint(job_id).await?.ok_or_else(|| {
-            RuntimeError::new(
-                RuntimeErrorKind::InvalidInput,
-                format!("no active candidate on job {job_id}; cannot report obligations"),
-            )
-        })?;
+        // No active candidate means no obligation is bound to
+        // anything, so there is nothing to report. A fresh job's
+        // `next_actions` must not fail.
+        let Some(fingerprint) = self.active_fingerprint(job_id).await? else {
+            return Ok(());
+        };
 
         let ids = self
             .store
@@ -359,25 +372,29 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             {
                 continue;
             }
-            if ob.status == ObligationStatus::Pass {
-                continue;
-            }
-            // An approved exception is unsatisfied-but-allowed. The
-            // engine's `UnbackedException` blocker is about an
-            // exception recorded with no approval behind it, which
-            // is a different fact and not this projection's to judge.
-            if ob.status == ObligationStatus::ExceptionApproved {
+            // `NotEvaluated` is not an outstanding assertion, it is
+            // an unasked question, and the question is already
+            // represented by the pending `RunCheck`. Reporting it
+            // would tell an agent to go satisfy an obligation whose
+            // verdict does not exist yet.
+            if !matches!(
+                ob.status,
+                ObligationStatus::Fail | ObligationStatus::RequiresReview
+            ) {
                 continue;
             }
             actions.blockers.push(ActionBlocker::ObligationPending {
                 reference: ob.requirement.clone(),
             });
-            // The first outstanding mandatory obligation is the one
-            // to work on; naming it is the difference between an
-            // agent that can act and one that has to guess.
-            actions.requires_human = Some(HumanAction::SatisfyObligation {
-                reference: Some(ob.requirement.clone()),
-            });
+            if human_decision {
+                // The first outstanding mandatory obligation is the
+                // one to work on; naming it is the difference
+                // between an agent that can act and one that has to
+                // guess.
+                actions.requires_human = Some(HumanAction::SatisfyObligation {
+                    reference: Some(ob.requirement.clone()),
+                });
+            }
             break;
         }
         Ok(())
