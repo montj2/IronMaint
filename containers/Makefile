@@ -94,8 +94,8 @@ smoke: smoke-base smoke-workspace
 .PHONY: smoke-base
 smoke-base: build-base
 	docker run --rm --platform linux/$(NATIVE_ARCH) \
-		--entrypoint /usr/local/bin/smoke.sh \
-		$(BASE_TAG)
+		$(BASE_TAG) \
+		/usr/local/bin/smoke.sh
 
 .PHONY: smoke-workspace
 smoke-workspace: build-workspace
