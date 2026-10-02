@@ -79,10 +79,19 @@ fn command_for(tmp: &tempfile::TempDir) -> tokio::process::Command {
         .arg(fixture_bin())
         .arg("--bind")
         .arg("127.0.0.1:0");
+    // Without this, dropping the `Child` neither kills nor reaps:
+    // the default is `false`, and the only thing that made a
+    // dropped daemon die was the explicit `start_kill` in
+    // `Drop for Daemon`, which signals but cannot wait. Setting it
+    // makes the panic path — an assertion fires mid-test and the
+    // `Daemon` goes out of scope — kill *and* return the process to
+    // the reaper, so a failing test does not leave a live daemon
+    // holding a state directory for the rest of the run.
+    command.kill_on_drop(true);
     command
 }
 
-/// A running daemon, killed on drop.
+/// A running daemon, reaped on drop and on an explicit [`Daemon::shutdown`].
 struct Daemon {
     child: tokio::process::Child,
     url: String,
@@ -170,7 +179,12 @@ impl Daemon {
         reqwest::Client::new()
     }
 
-    /// SIGTERM, then wait for exit.
+    /// SIGTERM, then wait for exit, and hand back the status.
+    ///
+    /// This is the strict form, for the two tests that are *about*
+    /// §68's graceful drain and therefore assert on the result. Every
+    /// other test wants [`Daemon::shutdown`], which does not care how
+    /// the daemon stopped as long as it did.
     async fn terminate(&mut self) -> std::process::ExitStatus {
         // `Child::kill` sends SIGKILL, which is precisely the
         // path §68 exists to avoid: it cannot be drained. SIGTERM
@@ -189,13 +203,62 @@ impl Daemon {
             .expect("the daemon must exit within 30s of SIGTERM")
             .expect("wait")
     }
+
+    /// Stop the daemon and **reap** it, escalating if it overstays.
+    ///
+    /// The distinction from [`Daemon::terminate`] is that this one
+    /// does not care how the daemon ended. Every test that merely
+    /// *used* the daemon should call it, because leaving the reaping
+    /// to `Drop` leaves it to tokio's SIGCHLD orphan handler — and
+    /// that handler is exactly what stops working when the
+    /// environment is already unhealthy, which is the state in which
+    /// a leaked child does the most damage. Eleven of the fifteen
+    /// tests in this file relied on that path alone.
+    async fn shutdown(&mut self) {
+        // Already gone is the outcome we wanted, not a failure: a
+        // test that made the daemon exit on its own must not report
+        // an error for having done so.
+        if self.child.try_wait().expect("try_wait").is_some() {
+            return;
+        }
+        if let Some(pid) = self.child.id() {
+            // Best effort. A `kill` that fails because the process
+            // exited between the `try_wait` and the signal is
+            // harmless, and the timeout below turns the genuinely
+            // stuck case into a kill rather than a hang.
+            let _ = std::process::Command::new("kill")
+                .arg("-TERM")
+                .arg(pid.to_string())
+                .status();
+        }
+        // 10s rather than the 30s above: this path only runs when a
+        // test is finishing, so the only thing being bought is a
+        // clean exit between tests, not a correctness assertion.
+        if tokio::time::timeout(Duration::from_secs(10), self.child.wait())
+            .await
+            .is_err()
+        {
+            let _ = self.child.start_kill();
+            // The reap that `Drop` cannot perform, and that the
+            // orphan handler would eventually perform on its own
+            // schedule. Doing it here means the next test starts from
+            // a process table with nothing left in it.
+            let _ = self.child.wait().await;
+        }
+    }
 }
 
 impl Drop for Daemon {
     fn drop(&mut self) {
-        // A test that panicked mid-scenario must not leave a
-        // daemon holding the state directory's lock, which would
-        // make the *next* test fail for the wrong reason.
+        // The panic path, and only that. `start_kill` signals and
+        // returns; `kill_on_drop(true)` on the `Command` in
+        // `command_for` is what turns the subsequent field drop into
+        // a reap. A test that reaches its end calls `shutdown` and
+        // never lands here having run to completion.
+        //
+        // A test that panicked mid-scenario must not leave a daemon
+        // holding the state directory's lock, which would make the
+        // *next* test fail for the wrong reason.
         let _ = self.child.start_kill();
     }
 }
@@ -209,7 +272,7 @@ async fn the_daemon_binds_a_socket_and_says_which_one() {
     // The line itself is the contract: the e2e script, the
     // operator doc, and these tests all learn the port from it.
     // With `--bind 127.0.0.1:0` there is no other way.
-    let d = Daemon::start().await;
+    let mut d = Daemon::start().await;
     assert!(d.url.starts_with("http://127.0.0.1:"), "{}", d.url);
     assert!(d.url.ends_with("/mcp"), "{}", d.url);
     let port: u16 = d
@@ -219,11 +282,12 @@ async fn the_daemon_binds_a_socket_and_says_which_one() {
         .and_then(|p| p.trim_end_matches("/mcp").parse().ok())
         .expect("a port in the URL");
     assert_ne!(port, 0, "the daemon must report the port it actually got");
+    d.shutdown().await;
 }
 
 #[tokio::test]
 async fn the_daemon_creates_its_directories_and_database() {
-    let d = Daemon::start().await;
+    let mut d = Daemon::start().await;
     let state = d.tmp.path().join("state");
     assert!(
         state.join("ironmaint.sqlite").is_file(),
@@ -242,6 +306,7 @@ async fn the_daemon_creates_its_directories_and_database() {
         "no workspace root"
     );
     assert!(d.tmp.path().join("artifacts").is_dir(), "no artifact root");
+    d.shutdown().await;
 }
 
 #[tokio::test]
@@ -249,7 +314,7 @@ async fn a_second_daemon_on_the_same_state_dir_refuses_to_start() {
     // §10. The failure must be immediate and loud: two daemons
     // sharing a state directory race on the same workspaces and
     // the same executor, and the loser must not run anyway.
-    let d = Daemon::start().await;
+    let mut d = Daemon::start().await;
     // Same tempdir, therefore the same `--state-dir`. §10's rule
     // is about one daemon per *state directory*, so the second
     // process has to be pointed at the first one's directory or
@@ -270,6 +335,7 @@ async fn a_second_daemon_on_the_same_state_dir_refuses_to_start() {
         body["job_id"].is_string(),
         "the first daemon stopped working: {body}"
     );
+    d.shutdown().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,7 +397,7 @@ async fn help_prints_usage_on_stdout_and_exits_zero() {
 
 #[tokio::test]
 async fn an_authenticated_initialize_is_answered() {
-    let d = Daemon::start().await;
+    let mut d = Daemon::start().await;
     let response = d
         .post(
             json!({
@@ -354,11 +420,12 @@ async fn an_authenticated_initialize_is_answered() {
         body["result"]["capabilities"]["tools"].is_object(),
         "{body}"
     );
+    d.shutdown().await;
 }
 
 #[tokio::test]
 async fn an_unauthenticated_call_is_401() {
-    let d = Daemon::start().await;
+    let mut d = Daemon::start().await;
     let response = d
         .post(
             json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}),
@@ -370,6 +437,7 @@ async fn an_unauthenticated_call_is_401() {
         401,
         "the daemon must not serve an anonymous caller"
     );
+    d.shutdown().await;
 }
 
 #[tokio::test]
@@ -384,7 +452,7 @@ async fn the_daemon_advertises_every_tool_the_server_registers() {
     //
     // The e2e script hardcodes the same list. A missing tool here is
     // the exact failure that made `ironclaw-e2e.sh` unrunnable.
-    let d = Daemon::start().await;
+    let mut d = Daemon::start().await;
     let response = d
         .post(
             json!({"jsonrpc": "2.0", "id": 1, "method": "tools/list", "params": {}}),
@@ -415,6 +483,7 @@ async fn the_daemon_advertises_every_tool_the_server_registers() {
             "workspace.stat",
         ]
     );
+    d.shutdown().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -437,7 +506,7 @@ async fn a_job_created_over_http_is_persisted_and_readable_back() {
     // The load-bearing end-to-end claim: an agent talks to this
     // process, and what it creates is real state on disk, not a
     // response object that vanishes when the connection closes.
-    let d = Daemon::start().await;
+    let mut d = Daemon::start().await;
     let created = d.call("job.create", create_job_args()).await;
     let job_id = created["job_id"]
         .as_str()
@@ -470,13 +539,14 @@ async fn a_job_created_over_http_is_persisted_and_readable_back() {
         allowed[0], "capture_candidate",
         "the first move a fresh job may take is to capture a candidate: {next}"
     );
+    d.shutdown().await;
 }
 
 #[tokio::test]
 async fn a_failing_tool_call_is_reported_readably_rather_than_as_a_crash() {
     // The daemon's job is to keep serving after an agent makes a
     // mistake. A missing job id is the most likely one.
-    let d = Daemon::start().await;
+    let mut d = Daemon::start().await;
     let body: Value = d
         .post(
             json!({
@@ -511,6 +581,7 @@ async fn a_failing_tool_call_is_reported_readably_rather_than_as_a_crash() {
     // Still serving.
     let created = d.call("job.create", create_job_args()).await;
     assert!(created["job_id"].is_string(), "{created}");
+    d.shutdown().await;
 }
 
 #[tokio::test]
@@ -531,7 +602,7 @@ async fn a_second_daemon_reuses_the_persisted_database() {
         id
     };
 
-    let d = Daemon::start_on(tmp).await;
+    let mut d = Daemon::start_on(tmp).await;
     // Readable back over a *second* HTTP request, from a second
     // connection, in a different keep-alive session. What proves
     // it was actually persisted rather than held in the request is
@@ -544,6 +615,7 @@ async fn a_second_daemon_reuses_the_persisted_database() {
         job_id.as_str(),
         "the job must survive a restart: {fetched}"
     );
+    d.shutdown().await;
 }
 
 // ---------------------------------------------------------------------------
@@ -566,6 +638,54 @@ async fn sigterm_drains_and_exits_zero() {
     );
 }
 
+#[tokio::test]
+async fn a_shutdown_reaps_the_daemon_rather_than_merely_signalling_it() {
+    // The property every other test in this file now depends on, and
+    // the one the old `Drop` did not have: when `shutdown` *returns*,
+    // the process is gone from the kernel's table, not merely told to
+    // go away.
+    //
+    // `Drop` could never assert this. It can only call `start_kill`,
+    // which delivers SIGKILL and returns before the target has
+    // certainly processed it, and it cannot call `wait` at all — so
+    // the reap fell to tokio's SIGCHLD orphan handler on whatever
+    // schedule the handler got to it. That is fine while everything
+    // is healthy and useless precisely when it is not.
+    let mut d = Daemon::start().await;
+    let pid = d.child.id().expect("the daemon has a pid");
+    assert!(process_exists(pid), "the daemon should be running");
+
+    d.shutdown().await;
+
+    // `kill -0` is the kernel's own answer to "does this pid exist",
+    // and it distinguishes a live process from a zombie: a zombie is
+    // still in the table, which is the state `start_kill` alone would
+    // leave behind. A reaped child is gone entirely.
+    assert!(
+        !process_exists(pid),
+        "{pid} is still in the process table after shutdown returned; \
+         shutdown must wait for the exit, not just request it"
+    );
+}
+
+/// Whether `pid` is still in the kernel's process table — true for a
+/// running process *and* for a zombie, false only once it has been
+/// waited for.
+fn process_exists(pid: u32) -> bool {
+    // Signal 0 performs the permission and existence checks without
+    // delivering anything. `std::process::Command` rather than a raw
+    // `kill(2)` because the workspace forbids `unsafe`. stderr is
+    // discarded because the answer for a gone pid is non-zero, and
+    // `kill` narrates that on stderr, which is not a test failure and
+    // does not belong in the output.
+    std::process::Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
+}
+
 // ---------------------------------------------------------------------------
 // The adapter registry (§67), over the wire
 // ---------------------------------------------------------------------------
@@ -583,7 +703,7 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
     // it derives name `debian.*` tools, which are not executable in
     // 0B — but `next_actions` naming them, rather than silence, is
     // the whole difference this test pins.
-    let d = Daemon::start().await;
+    let mut d = Daemon::start().await;
     let created = d.call("job.create", create_job_args()).await;
     let job_id = created["job_id"]
         .as_str()
@@ -710,6 +830,7 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
         "an unrunnable 0B tool must be reported by name, so the agent \
          knows which gate it is blocked on rather than guessing: {message}"
     );
+    d.shutdown().await;
 }
 
 #[tokio::test]
@@ -717,7 +838,7 @@ async fn a_family_the_daemon_has_no_adapter_for_still_captures() {
     // The registry is keyed by family, and a miss must be a
     // diagnostic, not a failure: refusing the capture would make a
     // candidate for an unknown distribution unrepresentable.
-    let d = Daemon::start().await;
+    let mut d = Daemon::start().await;
     let created = d
         .call(
             "job.create",
@@ -762,4 +883,5 @@ async fn a_family_the_daemon_has_no_adapter_for_still_captures() {
         fetched["projection"]["active_candidate"].is_string(),
         "activation is a fact about the job, not about the adapter: {fetched}"
     );
+    d.shutdown().await;
 }

@@ -131,6 +131,7 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-16 | MEDIUM | The event log did not record candidate activation — **or the version and timestamp that activation writes to the row** — so `rebuild-projections` could not rebuild any job that had captured a candidate, and writing the replay anyway would have dropped the §30 binding every gate verdict depends on | **CLOSED** — `JobEvent::CandidateActivated` makes activation replayable, and `rebuild-projections` rebuilds a captured job with its active candidate intact. No migration was needed (`event_type` is unconstrained `TEXT`); the JSON schema snapshot was regenerated. The refusal is **kept** as a legacy-data guard for rows written by the older binary, whose logs genuinely cannot justify their activation |
 | D-17 | LOW | Container images not built in CI. `ironmaint/base:0.1` and `ironmaint/workspace:0.1` ship as Dockerfiles + a Makefile + per-image smoke tests; nothing builds them on every push. Spec §10 is explicit that adding CI is a separate decision with a separate owner. The smoke tests have teeth (D-14 lesson applied) but a digest bump or FROM-tag drift would not be caught automatically. | OPEN |
 | D-18 | MEDIUM | One symptom — 7 of 10 `process_exit_codes` tests failing with `exit_code: 127` in the container — with **two independent causes**, plus a third found while verifying. Six tests were a harness defect (three sites resolved the `ironmaint-fixture` binary by walking to `target/` and guarding with `path.exists()`); one was a **production** defect (on Linux `posix_spawn` reports a failed `exec` as a child exiting 127, so a missing tool was recorded as a tool that ran) | **CLOSED 2026-10-02** — the original entry's hypothesis was *half* right and the first correction was *half* wrong: both halves shared the exit code 127, which is why the 7/10 never identified a single cause. Four fixes: `67fedbc` one loadability-checking resolver, `3e30002` a fourth call site, `c0e551b` a pre-spawn launchability check, `29c8e23`/`02ee489` the container build dir and the verifier that read it. In-container §97 is green for the first time (877/886). Raised LOW → **MEDIUM** on the production half. See the long-form entry below |
+| D-19 | MEDIUM | A §97 container run hung in `startup_shutdown.rs` and the cause is **not known**. One confirmed defect found while investigating: `Drop for Daemon` signalled SIGKILL but never reaped, so 11 of the 15 tests in that file depended on tokio's SIGCHLD orphan handler to collect their own children — and a live `ironmaintd` from a killed run survived on the host for two days | **PARTLY FIXED** — `kill_on_drop(true)`, an awaited `shutdown()` that escalates, and a test that pins the reap. The **hang itself is OPEN**: see the entry for what is ruled out, what is not, and what would settle it |
 
 ---
 
@@ -319,6 +320,132 @@ So the rule needs its companion: **a refutation is a hypothesis too, and
 The thing that caught it was not more reading — the same reading had been done
 twice. It was running the suite in the environment the register is about, and
 being surprised by a result the theory had already explained away.
+
+---
+
+## D-19 — a §97 run hung in `startup_shutdown.rs`, and the teardown never reaped (MEDIUM) — **PARTLY FIXED 2026-10-02, hang OPEN**
+
+### The register's rule, applied in the other direction
+
+D-18 was closed by establishing that a *running* suite contradicted a written
+diagnosis. This entry is the mirror case: the diagnosis is that the hang was
+environmental, and **the evidence for that is a set of runs that did not
+reproduce**. That is weaker than it looks. Seven attempts across three
+configurations is not a refutation of a hang; it is an absence of a
+reproduction, over a window in which the conditions that caused it were
+deliberately absent.
+
+So this entry stays open. The one part that is not open is below.
+
+### What is confirmed
+
+`Drop for Daemon` (`bins/ironmaintd/tests/startup_shutdown.rs`) was:
+
+```rust
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        // A test that panicked mid-scenario must not leave a
+        // daemon holding the state directory's lock, which would
+        // make the *next* test fail for the wrong reason.
+        let _ = self.child.start_kill();
+    }
+}
+```
+
+`start_kill` delivers SIGKILL and returns. Nothing calls `wait`, and
+`command_for` did not set `kill_on_drop` (it defaults to `false`), so the reap
+fell entirely to tokio's SIGCHLD orphan handler. **Eleven of the fifteen tests
+in the file relied on that alone** — only `sigterm_drains_and_exits_zero` and
+the first daemon in `a_second_daemon_reuses_the_persisted_database` went
+through the bounded `terminate`.
+
+The comment above claims the drop prevents a daemon "holding the state
+directory's lock." It did not. Signalling is not reaping, and a reaped-away
+lock file is what the next test needed; a process still in the process table is
+a different problem, and one the comment does not describe.
+
+That this was not hypothetical on this machine:
+
+```
+PID   PPID STAT  ELAPSED
+52192     1 SN   02-01:00:40  ./target/debug/ironmaintd --state-dir .../tmp.GcMRbc9JnP/state ...
+```
+
+A daemon, reparented to init, two days old, pointing at a temp directory that
+no longer exists — the fingerprint of a test binary killed before its `Drop`
+ran. It was still resident when this entry was written.
+
+### Teeth-checked
+
+`a_shutdown_reaps_the_daemon_rather_than_merely_signalling_it` asserts that
+when `shutdown()` **returns**, `kill -0 <pid>` reports the process gone —
+which distinguishes a reaped child from a zombie, and is the property `Drop`
+could never have.
+
+The mutation: `shutdown()` reduced to `start_kill` and an early `return`.
+Result: the new test fails (`10946 is still in the process table after
+shutdown returned`), and **the other fifteen still pass.** That second half is
+the point — the old behaviour was invisible to the entire suite. A green
+`startup_shutdown` run was never evidence of correct teardown, and still is
+not, on its own.
+
+### What is ruled out
+
+Every code-side witness checks out, so the next reader does not re-derive them:
+
+| Candidate | Finding |
+|---|---|
+| `Daemon::start_on` blocking forever | bounded — `tokio::time::timeout(…, 30s)` waiting for the listening line |
+| `Daemon::terminate` blocking forever | bounded — 30s, then `start_kill` + panic |
+| State-dir lock contention | `fs2::try_lock_exclusive` (`crates/ironmaint-store-sqlite/src/lock.rs`) returns `WouldBlock`; it does not block |
+| Port collision | `--bind 127.0.0.1:0` — the kernel assigns |
+| Shared state between tests | every test gets a fresh `tempfile::TempDir` |
+| A second spawner competing | no other test binary spawns `ironmaintd`; the `integration` feature gates in-process testkit binaries only |
+
+### What is **not** ruled out
+
+The hang showed 13 threads, the test process parked in `rt_mutex_schedule`, and
+three defunct `ironmaintd` children alongside one live. Under the old `Drop`
+that shape is reachable without any code being wrong: three tests' children
+were signalled but not yet reaped, and the runtime had not drained them. So
+the observation and the defect corroborate each other — and neither identifies
+what stopped the runtime's timer wheel.
+
+**Seven reproduction attempts, all after the conditions had changed:**
+
+- 5 isolated runs of `--test startup_shutdown`: 0.88–1.41s each
+- 1 serial run (`--test-threads=1`): 15/15 in 3.71s
+- 1 full clean integration run: 886/886
+
+### What would settle it
+
+One of:
+
+1. A run under a container left in the state `docker kill` produces — the
+   original incident's only untested variable.
+2. A core dump or `SIGQUIT` of a wedged test process, read for the runtime's
+   parked-task list rather than one thread's stack. `rt_mutex_schedule` names
+   the thread that was *looking*; the answer is in the threads that were not
+   running.
+3. The incident recurring after this fix. If the teardown was load-bearing,
+   a fixed suite will hang again. That is the cheapest available experiment
+   and needs nothing but patience.
+
+### The fix
+
+`kill_on_drop(true)` on the `Command` in `command_for`, so the panic path kills
+*and* reaps; an awaited `Daemon::shutdown()` that SIGTERMs, waits 10s,
+escalates to kill, and **waits again**; and `.shutdown().await` at the end of
+all eleven tests that previously relied on `Drop`. `terminate()` keeps its
+strict form for the two tests that are *about* §68's graceful drain.
+
+`Drop` is now the panic path only. The `futures_executor::block_on` in a
+`Drop` impl — which an earlier draft of this entry proposed — was rejected:
+`Drop` runs on whichever thread releases the value, frequently a tokio worker,
+and blocking there converts a leak into a deadlock.
+
+§97 after the change: 878 unit, 887 integration, four verifiers, in-container
+included.
 
 ---
 
