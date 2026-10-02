@@ -1248,22 +1248,44 @@ about the handoff.
 | `500e37c` | #36 | D-18 — one symptom, two independent causes, and a third found while verifying. In-container §97 green for the first time |
 | `79a7a2a` | #37 | daemon teardown in tests: `kill_on_drop`, an awaited `shutdown()`, and a test that pins the reap (D-19's found half) |
 | `ffccbd7` | #38 | `verify-seams` — static checks S1, S2, S4, S5, in the §97 set |
+| this PR | — | `CLAUDE.md` rewritten: it described a repository with no code in it |
+| this PR | — | D-20's two false doc comments corrected, and the question they were hiding posed as §17 question 8 |
+| this PR | — | S9 store parity — **found D-21, a live agent-reachable divergence** |
+| this PR | — | S3 capability inventory — eight unregistered keys, each with the phase that supplies it |
+| this PR | — | S8 tool reachability — the direction S2 declined, plus `pub` dispatch helpers no arm reaches |
 
 §97 on that tree: **916** unit, **925** integration, five verifiers, `fmt` and
 clippy `-D warnings` clean.
 
+**The behavioural half of the seam work turned out to be the productive half.**
+S9's script found D-21 on its first run, and nothing in the register, the phase
+report or a code read had caught it — because the mock *is* the gate for every
+test of the path it breaks. Both new checks also got broken on purpose before
+they were trusted (`026e559`, `a34e0e9`, `5f2076a`), and **two of those breaks
+corrected a claim the check's own documentation had made** — S3's failure
+reported one key per run, and S8's doc promised a reachability the workspace
+`dead_code` lint already provided for private helpers. That is recorded in
+`doc/EXECUTION-PLAN.md` §3 because it is the part of the teeth-check that is not
+about the check.
+
 ### 21.2 The register, and who owns each open row
 
-`doc/DEBT.md` carries twenty rows; ten were closed by those five commits and
-their predecessors. The remaining ten now each open with a tag saying **who
-decides**, because a flat list of "OPEN" rows mixed six different kinds of
-object. In summary: **two are architect decisions** (D-09's open half, and
-D-20 — the latter closed on 2026-10-02 by *posing* its question rather than
-coding it), **two are environment-blocked** (D-06 and D-15 — neither closable by
-writing code), **two are Phase 1 by design** (D-11, D-12), **one is a recorded
-non-decision** (D-10), **one is process** (D-13), and **two are real but
-bounded and not Phase 1's problem** (D-17 needs a CI owner; D-19's teardown
-defect is fixed and the unreproduced hang is not a blocker).
+`doc/DEBT.md` carried twenty rows; ten were closed by those five commits and
+their predecessors. **Two more were added while writing this section, and both
+are the kind of row that only appears when something is actually run** — D-21
+(found by S9's script on its first run) and D-22 (what `verify-seams` provably
+cannot find, which no run can tell you). The ten that were open each now opens
+with a tag saying **who decides**, because a flat list of "OPEN" rows mixed six
+different kinds of object. In summary: **three are architect decisions**
+(D-09's open half, D-20 — closed on 2026-10-02 by *posing* its question rather
+than coding it — and now **D-21**), **two are environment-blocked** (D-06 and
+D-15 — neither closable by writing code), **two are Phase 1 by design** (D-11,
+D-12), **one is a recorded non-decision** (D-10), **one is process** (D-13),
+and **two are real but bounded and not Phase 1's problem** (D-17 needs a CI
+owner; D-19's teardown defect is fixed and the unreproduced hang is not a
+blocker). **D-22 is closed by being written down**, which is the whole point of
+it: it is a scoping note about what a green `verify-seams` means, and no commit
+closes it.
 
 **D-06 and D-15 are the only two that stop a claim from being verified rather
 than a capability from existing.** Neither will be closed by Phase 1 writing
@@ -1271,27 +1293,62 @@ code; both close on a machine with an `ironclaw` binary.
 
 ### 21.3 Phase 1 landmines
 
-Four things an adapter author will hit. Only the first is a live defect; the
-rest are decisions the code is currently making by omission.
+**Six things an adapter author will hit. The first is now fixed; the second is
+a live defect; the rest are decisions the code is making by omission.** Landmine 1 was
+originally written as "not in the register", and the store-parity script that
+found the second of these has since landed and turned it into a fixed bug plus
+a new one — so this list is now what the tree actually says.
 
-**1. `MockStore` and SQLite disagree on duplicate fingerprints, and the
-disagreement is not registered.** `MockStore::put_source_candidate`
-(`crates/ironmaint-store/src/mock.rs:223`) does `source_by_fp.insert(fp, id)`
-unconditionally, so a second candidate carrying a duplicate fingerprint
-silently overwrites the index. Real SQLite rejects it —
-`migrations/0001_initial.sql:65` is `fingerprint TEXT NOT NULL UNIQUE`.
+**1. `MockStore` accepted a duplicate fingerprint; that is fixed, and the fix is
+pinned.** `MockStore::put_source_candidate` did
+`source_by_fp.insert(fp, id)` unconditionally, so a second candidate carrying a
+duplicate fingerprint silently overwrote the index while real SQLite rejected it
+(`migrations/0001_initial.sql:65` is `fingerprint TEXT NOT NULL UNIQUE`).
+Defect instances 9 and 11, made invisible because every test of capture ran on
+the mock. `ironmaint-testkit/src/store_conformance.rs` now runs the same
+assertions against both backends, and the guard is in the store rather than
+only at the one call site that had it. **D-09-era, closed by S9.**
 
-*This one is mitigated, not fixed.* `crates/ironmaint-workspace/src/capture.rs:125–133`
-looks the fingerprint up before inserting, and the comment at 107–124 names
-`MockStore` as the reason the original bug was invisible to every test. The
-guard shipped with the fix. **But the store-level divergence remains**, and any
-*new* caller of `put_source_candidate` — which is exactly what a real adapter
-brings — re-exposes it with no test able to see the difference. The two capture
-tests that motivated it are D-09-era instances 9 and 11. The `verify-seams` work
-in flight adds the store-parity script (S9) that would catch this; it is not in
-the tree yet.
+**2. `MockStore` has no referential integrity, and `job.capture` reaches the
+gap — D-21, and this is the one to read before writing an adapter.**
+`source_candidates.job_id` is a `FOREIGN KEY` to `jobs(id)` and `SqliteStore`
+sets `PRAGMA foreign_keys = ON` on every connection
+(`crates/ironmaint-store-sqlite/src/lib.rs:90,121`), so SQLite genuinely
+refuses a candidate whose job was never created. **Nothing between the agent and
+the insert creates it**: the `job.capture` dispatcher takes `input.job_id`
+verbatim (`crates/ironmaint-mcp/src/dispatch.rs:263`), `ensure_workspace` does
+not create a job, and `handle_capture_candidate`
+(`crates/ironmaint-runtime/src/service.rs:1461`) checks only that
+`candidate.job_id() == job_id`. An agent that calls `job.capture` before
+`job.create` gets a raw `FOREIGN KEY constraint failed` out of SQLite, while
+every test of that path runs on the mock and sees it succeed.
 
-**2. Nothing escalates a job to `HumanReviewRequired` in production**, so the
+*This one is recorded, not fixed, and the reason matters.* Giving the mock
+referential integrity has a measured blast radius of **7 tests across 5
+binaries**, and most of them legitimately build a candidate for a job the
+workspace layer has no business knowing about. So the disagreement underneath is
+real and it is a design question: **the workspace layer and the runtime disagree
+about who creates the job first.** That is a state-ownership decision, which
+§106 puts on the do-not-redesign list, so it goes to the architect alongside
+[§17 question 8](#17-questions-requiring-review-before-real-debian-integration)
+rather than getting patched. The divergence is pinned executably by
+`store_parity_sqlite::a_candidate_for_an_unknown_job_is_refused`, in the
+backend-specific driver rather than the shared script, because the mock cannot
+pass it.
+
+**3. A `SourceCandidate` is a property of a source tree, not of a job.**
+`compute_fingerprint` hashes family, release, source name, version, repository
+URL, commit and tree — **`JobId` is not among them** — and the `UNIQUE`
+constraint is global rather than per job. So two jobs that capture the same
+upstream tree are contending for one candidate, and the second write is refused.
+That falls out of two independent design choices, neither of which mentions the
+other, and **nothing in the workspace asserted it until
+`a_fingerprint_is_shared_across_jobs` existed.** Whether it is right is not the
+suite's call; an adapter that lets two jobs point at one tree needs to know, so
+the behaviour is pinned to make a future change a decision rather than an
+accident.
+
+**4. Nothing escalates a job to `HumanReviewRequired` in production**, so the
 registered `job.resume` tool cannot succeed on any job a real agent can reach.
 `EnterHumanReview` is implemented, dispatched, and works — its only
 construction site is `crates/ironmaint-mcp/tests/dispatcher.rs:236`. Same
@@ -1300,22 +1357,30 @@ shape as the `InfrastructureBlocked` entry in D-09. **Both are posed as
 above, with three candidate answers.** Nothing is broken; the decision is
 simply unmade, and state ownership is on §106's do-not-redesign list.
 
-**3. The stubs' plans are real and unwired.** `adapters/debian-stub` and
-`adapters/fedora-stub` return distribution-distinct plans —
-`debian.build.sbuild`, `debian.qa.lintian`, `fedora.build.mock`,
-`fedora.qa.rpmlint` — and both pass the shared conformance suite. **Their only
-caller is that conformance suite.** Wiring `build_plan()`/`qa_plan()` into a
-production flow is Phase 1's first task, and §17 question 7 already settled that
-the first real adapter must activate its candidate or it is not exercising what
-it claims to.
+**5. The stubs' plans are real and unwired.** `adapters/debian-stub` and
+`adapters/fedora-stub` return distribution-distinct plans — eight capability
+keys across the two, none of which has a registered tool — and both pass the
+shared conformance suite. **Their only caller is that conformance suite.**
+Wiring `build_plan()`/`qa_plan()` into a production flow is Phase 1's first
+task, and §17 question 7 already settled that the first real adapter must
+activate its candidate or it is not exercising what it claims to.
 
-**4. Six of the fourteen wrong-guard defects are out of reach of any verifier
-shipped so far.** `reconcile`'s `never_loop`, `SetActiveCandidate`'s state
-guard, `attach_obligation_state`'s read-before-check, `next_actions` omitting an
-obligation. The link exists, has a caller, and does the wrong thing. A "is this
-called" check sees a called function and has nothing to say. This is recorded so
-those six are not later re-attributed to `verify-seams`, and so **a green
-`verify-seams` is never read as "no missing seams."**
+**The allowlist that now names all eight is the useful artefact here.**
+`crates/ironmaint-adapter-api/tests/capability_inventory.rs` pairs each
+unregistered key with the phase that supplies it, and
+`debian.qa.piuparts` is the one that does **not** need
+`doc/CONTAINER-IMAGES.md` §4.3 — piuparts tests the source package, which the
+capture boundary already produces — so it is the first that can be unblocked
+without the image work.
+
+**6. Six of the fourteen wrong-guard defects are out of reach of any verifier
+shipped so far — now D-22.** `reconcile`'s `never_loop`, `SetActiveCandidate`'s
+state guard, `attach_obligation_state`'s read-before-check, `next_actions`
+omitting an obligation. The link exists, has a caller, and does the wrong thing.
+A "is this called" check sees a called function and has nothing to say. This is
+recorded so those six are not later re-attributed to `verify-seams`, and so **a
+green `verify-seams` is never read as "no missing seams."**
+
 
 ### 21.4 What Phase 0A left behind
 
