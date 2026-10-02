@@ -870,6 +870,75 @@ driven end to end over MCP.)
 > **eleven**; `release.candidate.create` landed at the C5 prerequisite, for
 > §101 steps 26–27.)
 
+**8. Who may put a job into `HumanReviewRequired` or `InfrastructureBlocked`,
+and on what evidence?** **OPEN. This is the one question in this section that
+Phase 1 cannot start without an answer to, and it is a state-ownership
+decision.**
+
+It is the same question asked three times, and each asking found the same hole:
+
+- `RuntimeCommand::EnterHumanReview` is implemented, dispatched, and works.
+  `handle_enter_human_review` writes the `ResumeRecord`, and `job.resume`
+  consumes it. **The only thing missing is a caller** — the sole construction
+  site in the tree is `crates/ironmaint-mcp/tests/dispatcher.rs:236`. No
+  registered tool builds it. So `job.resume` is a tool that cannot succeed on
+  any job a real agent can reach (D-20 part 2).
+- `InfrastructureBlocked` has the mirror-image shape. D-09 records the *exit*
+  as complete and the *entry* as absent: `ResumeRecord` is persisted and
+  `job.resume` returns the job from either exceptional state, but nothing
+  writes the transition into the first one.
+- The intent is documented and deliberate — *"escalation is an orchestration
+  decision, and an agent that could raise it against itself could also strand
+  itself"* (`mcp/tests/dispatcher.rs:204`), and 0A §21 gives the state no entry
+  point at all. **Both are correct answers to a question Phase 0 was not asked
+  to answer.** The gap is that nobody has since been asked it.
+
+Why this blocks Phase 1 specifically: the human-review loop is what a real
+adapter's escalation path terminates in, and **state ownership is on §106's
+do-not-redesign list.** If the first adapter needs an escalation entry point
+and there is none, Phase 1 either waits or invents one — and inventing one
+under deadline is exactly the redesign §106 says would mean 0B failed.
+
+Three candidate answers. **These are options, not a recommendation** — the
+choice is architectural, and the deciding constraint is one only the architect
+can weigh.
+
+> **(a) An operator tool the agent cannot call.** A registered MCP tool,
+> alongside `RequestApproval`'s refusal, that only a human can invoke. This
+> matches the principle already established for approvals — the agent may not
+> self-grant — and it is the only option where "who" is settled by
+> construction rather than by policy. *Does not change:* the state machine, the
+> `ResumeRecord`, `job.resume`, or the projection. *Costs:* a new tool, a new
+> authorisation surface, and a decision about whether the daemon can authenticate
+> an operator at all — which it currently cannot, and which is the same missing
+> piece that makes `RequestApproval` a refusal (D-20 part 1).
+
+> **(b) Adapter-derived and deterministic.** The adapter's plan declares that
+> a particular check *requires* human judgement, and the runtime escalates when
+> the plan says so rather than when an agent asks. Escalation becomes a
+> property of the distribution's requirements, which is the same shape as
+> `Obligation` and keeps the decision in the engine. *Does not change:* the
+> state machine or `job.resume`. *Costs:* a new field in `AdapterCapabilities`,
+> a schema change, and a path where a distribution's policy can strand a job —
+> which needs its own "who un-strands it" answer, and lands back on (a).
+
+> **(c) A `reconcile` rule.** §41's rule list grows one: a job that has held
+> the same state across N reconcile passes with no progress escalates. This
+> keeps the decision in the state machine, next to the rules already there, and
+> needs no new tool. *Does not change:* the state machine. *Costs:* a
+> notion of progress or elapsed time that `JobProjection` may not currently
+> carry, and it is in tension with D-10 — `reconcile` is per-call with no
+> background loop, so "N passes" needs a loop that Phase 0 deliberately did not
+> build. This option is the one that would re-open a recorded decision.
+
+The three are not exclusive, and the cheapest honest answer may be "operator
+tool now, adapter-derived later" — but that should be a decision, not a drift.
+
+**What is not at stake.** Nothing here is broken. `EnterHumanReview` and
+`InfrastructureBlocked` both have working handlers, a working exit, a working
+projection and passing tests. The code is correct; what is missing is a
+decision about who is allowed to start it.
+
 ---
 
 ## 18. North-star check (§105)
