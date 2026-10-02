@@ -62,6 +62,24 @@
 //! same limit and it is a limit worth stating rather than a defect. It closes
 //! the arm-miss and the orphan-helper cases, which are the two that a rename
 //! or a copy-paste actually produces.
+//!
+//! ## The orphan-helper assertion is about `pub` helpers, and only those
+//!
+//! The teeth-check established this rather than assuming it. Deleting an arm
+//! whose helper is *private* never reaches S8: the workspace denies
+//! `dead_code`, so an uncalled private function is a compile error
+//! (`5f2076a`):
+//!
+//! ```text
+//! error: function `dispatch_operation_get` is never used
+//! note: requested on the command line with `-D dead-code`
+//! ```
+//!
+//! Nothing is wrong with that — it is a stronger check than S8's. But it means
+//! the lints already own the private case, and S8 is for the one they are blind
+//! to: a `pub` fn in a `pub mod` gets no dead-code warning, so when it stops
+//! being reachable nothing else in the build objects. That is the case worth
+//! having a check for, and it is the only one this assertion can catch.
 
 use std::collections::{BTreeMap, BTreeSet};
 
