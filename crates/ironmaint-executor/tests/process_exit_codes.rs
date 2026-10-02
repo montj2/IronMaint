@@ -28,27 +28,7 @@ fn job_id() -> ironmaint_core::JobId {
 }
 
 fn fixture_bin() -> PathBuf {
-    // `CARGO_BIN_EXE_<name>` is only set for tests inside the
-    // crate that owns the binary. Cross-crate tests resolve
-    // the path relative to the workspace target dir. This
-    // works for `cargo test` run from the workspace root.
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace_dir = manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root");
-    let mut path = workspace_dir
-        .join("target")
-        .join("debug")
-        .join("ironmaint-fixture");
-    if !path.exists() {
-        // Fall back to release profile.
-        path = workspace_dir
-            .join("target")
-            .join("release")
-            .join("ironmaint-fixture");
-    }
-    path
+    ironmaint_fixture::fixture_binary_path()
 }
 
 fn temp_store() -> (tempfile::TempDir, Arc<ArtifactStore>) {

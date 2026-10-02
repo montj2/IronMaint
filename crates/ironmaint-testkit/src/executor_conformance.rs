@@ -37,7 +37,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_core::CandidateFingerprint;
@@ -302,25 +302,15 @@ fn assert_evidence_truncated_round_trip() {
     assert!(!back.truncated);
 }
 
-/// Resolve the `ironmaint-fixture` binary path. Mirrors the
-/// pattern in `crates/ironmaint-executor/tests/process_exit_codes.rs`
-/// — cross-crate tests cannot use `CARGO_BIN_EXE_<name>`, so the
-/// path is resolved relative to the workspace target dir.
-pub fn fixture_binary_path() -> PathBuf {
-    let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace_dir = manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("workspace root resolves from testkit/../..");
-    let mut path = workspace_dir
-        .join("target")
-        .join("debug")
-        .join("ironmaint-fixture");
-    if !path.exists() {
-        path = workspace_dir
-            .join("target")
-            .join("release")
-            .join("ironmaint-fixture");
-    }
-    path
-}
+/// Resolve the `ironmaint-fixture` binary path.
+///
+/// Re-exported from the crate that owns the binary. Cross-crate tests
+/// cannot use `CARGO_BIN_EXE_<name>` — cargo sets it only for tests in
+/// the package that declares the `[[bin]]` — so this lookup lives with
+/// the binary and checks that what it finds is loadable on this host.
+///
+/// The previous implementation here walked the workspace `target/`
+/// itself and returned whatever `path.exists()` accepted, which is
+/// not the same question: a `target/` shared with another platform's
+/// build holds a real file that cannot be exec'd here.
+pub use ironmaint_fixture::fixture_binary_path;

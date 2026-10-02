@@ -1121,6 +1121,7 @@ dependencies = [
  "ironmaint-adapter-api",
  "ironmaint-executor",
  "serde_json",
+ "tempfile",
  "time",
  "tokio",
 ]
@@ -1265,6 +1266,7 @@ dependencies = [
  "ironmaint-core",
  "ironmaint-evidence",
  "ironmaint-executor",
+ "ironmaint-fixture",
  "ironmaint-mcp",
  "ironmaint-policy",
  "ironmaint-runtime",
