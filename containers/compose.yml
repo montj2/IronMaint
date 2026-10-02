@@ -1,0 +1,100 @@
+# compose.yml — local development orchestration for IronMaint.
+#
+# This file is intentionally MINIMAL. The workspace image is a toolchain;
+# it doesn't have a long-running default process. You use it via
+# `compose run --rm workspace <command>`:
+#
+#   docker compose run --rm workspace cargo test --workspace
+#   docker compose run --rm workspace cargo fmt --check
+#   docker compose run --rm workspace cargo clippy --workspace \
+#       --all-targets --all-features -- -D warnings
+#   docker compose run --rm workspace cargo run -p xtask -- verify-architecture
+#   docker compose run --rm workspace cargo run -p xtask -- verify-schemas
+#   docker compose run --rm workspace cargo run -p xtask -- verify-migrations
+#   docker compose run --rm workspace cargo run -p xtask -- verify-mcp-schemas
+#
+# To run ironmaintd itself (the §97 gate is offline-only; ironmaintd is
+# interactive):
+#
+#   echo "test-token-1234" > /tmp/ironmaint-token
+#   docker compose run --rm \
+#     -v /tmp/ironmaint-token:/run/secrets/token:ro \
+#     workspace ironmaintd \
+#       --state-dir /work/.ironmaint \
+#       --migrations-dir /work/migrations \
+#       --token-file /run/secrets/token
+#
+# Note on platforms: the `platform: linux/arm64` pin below assumes the
+# dev machine is aarch64 macOS (verified: spec §8). Override on linux/amd64
+# hosts with `COMPOSE_PLATFORM=linux/amd64 docker compose run …` or by
+# editing this file. The Makefile picks the right platform automatically.
+#
+# Path resolution: this file lives at `containers/compose.yml`, so its
+# "project directory" is `containers/`. `..` is therefore the repo root.
+# `build.context: ..` and `source: ..` make both build and bind mount
+# resolve to the repo root.
+
+name: ironmaint
+
+services:
+  workspace:
+    build:
+      context: ..
+      dockerfile: containers/workspace/Dockerfile
+      args:
+        # BuildKit is required for the Dockerfile 1.7 syntax. Explicit so a
+        # CI run on a vanilla buildx without BUILDKIT_INLINE_CACHE=1 still works.
+        BUILDKIT_INLINE_CACHE: "1"
+    image: ironmaint/workspace:0.1
+    platform: linux/arm64
+    init: true                # Compose equivalent of `docker run --init`; uses tini
+    working_dir: /work
+    environment:
+      # Forwarded from the host, so a developer's local IRONMAINT_LOG carries
+      # over (e.g. for `IRONMAINT_LOG=ironmaintd=debug` runs).
+      IRONMAINT_LOG: ${IRONMAINT_LOG:-info}
+      # Cargo config — keep caches in the named volumes mounted outside the
+      # bind mount at /work (named volumes under a bind mount come up
+      # root-owned regardless of `:U`).
+      #
+      # CARGO_TARGET_DIR is unset so cargo writes to /work/target — the
+      # same path that integration tests hardcode in their fixture-binary
+      # lookup (see crates/ironmaint-executor/tests/process_exit_codes.rs
+      # fixture_bin()). /work/target lives on the bind mount at /work, so
+      # it persists across `run --rm` naturally without needing a named
+      # volume; files appear owned by uid 1000 on the host (harmless;
+      # `make clean` removes them).
+      CARGO_HOME: /var/cargo
+      CARGO_TERM_COLOR: always
+      # Backtraces on panic, because the §97 gate is allowed to fail loud.
+      RUST_BACKTRACE: "1"
+      # Don't make Cargo use the git CLI's stored credentials; we don't have any.
+      CARGO_NET_GIT_FETCH_WITH_CLI: "false"
+    volumes:
+      # Source — bind mount from the repo root (this file is in containers/,
+      # so `..` is the repo root). Edit-on-host semantics.
+      - type: bind
+        source: ..
+        target: /work
+      # cargo registry + git index caches — shared across projects.
+      # Mounted OUTSIDE the bind mount at /work because named volumes under
+      # a bind mount come up root-owned regardless of `:U`. CARGO_HOME
+      # points cargo here.
+      - cargo-registry:/var/cargo/registry:U
+      - cargo-git:/var/cargo/git:U
+      # IronMaint state — sqlite db, single-daemon lock, workspace + artifacts.
+      # Mounted OUTSIDE the bind mount at the same reason; the daemon is
+      # passed `--state-dir=/var/ironmaint-state` at run time.
+      - ironmaint-state:/var/ironmaint-state:U
+      # NOTE: target/ is NOT a named volume — it lives on the bind mount
+      # at /work. Cargo writes there as uid 1000 (rust); the host sees
+      # target/ owned by uid 1000, which is harmless. A named volume
+      # here would come up root-owned regardless of `:U`, and integration
+      # tests hardcode `workspace_dir.join("target")` in their
+      # fixture-binary lookup, so /work/target must be the build dir.
+      # Persists across `run --rm` because the bind mount survives.
+
+volumes:
+  cargo-registry:
+  cargo-git:
+  ironmaint-state:

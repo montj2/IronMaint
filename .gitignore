@@ -23,3 +23,13 @@ target
 # Playwright MCP session captures: written by an unrelated tool
 # that happens to run on this machine, never by this project.
 .playwright-mcp/
+
+# Claude Code session data — never committed.
+.claude/
+
+# Host-side cargo cache created by accident when an early compose
+# revision set CARGO_HOME=/work/.cargo (causing cargo to mirror its
+# registry into the bind-mounted source tree). The current compose
+# sets CARGO_HOME=/var/cargo on a named volume, so this is dead.
+# Keep the ignore so a future CARGO_HOME regression doesn't re-add it.
+/.cargo/

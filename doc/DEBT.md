@@ -129,6 +129,8 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-14 | MEDIUM | `rebuild_projection` rejects every real job's event log, so the §36 operator escape hatch cannot rebuild anything | **CLOSED** by 0B.10 — `JobEvent::JobCreated` carries the birth projection, so the log is authoritative for a never-transitioned job. **Amended 2026-10-01**: the closure is true about the birth and false about everything after it; the `active_candidate` gap is **D-16** |
 | D-15 | LOW | §102 item 30 ("an actual IronClaw agent can complete the synthetic repair workflow") is **unverifiable in this environment** — not unmet, and not a code defect | **ENVIRONMENT-BLOCKED**, with repro steps at the bottom of the register. 33 of 34 DoD items are true; this is the one that cannot be checked here |
 | D-16 | MEDIUM | The event log did not record candidate activation — **or the version and timestamp that activation writes to the row** — so `rebuild-projections` could not rebuild any job that had captured a candidate, and writing the replay anyway would have dropped the §30 binding every gate verdict depends on | **CLOSED** — `JobEvent::CandidateActivated` makes activation replayable, and `rebuild-projections` rebuilds a captured job with its active candidate intact. No migration was needed (`event_type` is unconstrained `TEXT`); the JSON schema snapshot was regenerated. The refusal is **kept** as a legacy-data guard for rows written by the older binary, whose logs genuinely cannot justify their activation |
+| D-17 | LOW | Container images not built in CI. `ironmaint/base:0.1` and `ironmaint/workspace:0.1` ship as Dockerfiles + a Makefile + per-image smoke tests; nothing builds them on every push. Spec §10 is explicit that adding CI is a separate decision with a separate owner. The smoke tests have teeth (D-14 lesson applied) but a digest bump or FROM-tag drift would not be caught automatically. | OPEN |
+| D-18 | LOW | `missing_executable_is_infra_failure` (`crates/ironmaint-executor/tests/process_exit_codes.rs:177`) asserts the executor returns `Err(InfrastructureFailed)` for `/this/executable/does/not/exist/at/all`; the executor returns `Ok(ExecutionRecord { exit_code: 127, ... })` instead. Likely a real bug in `ProcessExecutor::spawn` (probably the missing-binary path is treated as "sh exited 127" rather than `ENOENT`). Surfaces only in container/CI Linux runs because host macOS `Command::new` fails the spawn earlier; no caller of `execute()` depends on the `Err` shape today, so the test is the only witness. Discovered while running the §97 gate inside the workspace container during the `feature/containers` PR; out of scope for that PR (workspace test logic, not container behaviour). | OPEN |
 
 ---
 
@@ -1232,7 +1234,7 @@ $ rustup toolchain list
 stable-aarch64-apple-darwin (default)          # 1.94.0
 nightly-2025-11-21-aarch64-apple-darwin
 1.85.0-aarch64-apple-darwin
-1.88.0-aarch64-apple-darwin (active)           # the workspace MSRV
+1.94.0-aarch64-apple-darwin (active)           # the workspace MSRV
 
 $ grep channel doc/vendor/ironclaw/rust-toolchain.toml
 channel = "1.98.0"
@@ -1244,8 +1246,8 @@ channel = "1.98.0"
    something this repo builds.
 2. **The submodule pins a toolchain nobody here has.** `1.98.0` is not in the
    list above, and raising the workspace to match is not an option:
-   `Cargo.toml:30` declares `rust-version = "1.88"` and every crate inherits it.
-   Note that nothing *enforces* 1.88 today — there is no CI workflow in the repo
+   `Cargo.toml:30` declares `rust-version = "1.94"` and every crate inherits it.
+   Note that nothing *enforces* 1.94 today — there is no CI workflow in the repo
    — so this is a declared floor, not a gate. Worth knowing, and worth a real
    gate later; it is not what blocks item 30.
 
