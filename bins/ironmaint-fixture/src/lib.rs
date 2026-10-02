@@ -15,14 +15,21 @@
 //! of them guarded the result with `path.exists()` and returned it
 //! regardless.
 //!
-//! `exists()` is not the question worth asking. Bind-mounting the
-//! repo into a Linux container exposes the *host's* macOS Mach-O
-//! binary at `target/debug/ironmaint-fixture`; it exists, so the
-//! fallback never fires, and the Linux `fork` succeeds while `exec`
-//! fails `ENOEXEC` — surfacing as exit code 127, indistinguishable
-//! from a shell's "command not found". That is how a test-harness
-//! defect got filed as a suspected bug in `ProcessExecutor::spawn`
-//! (register entry D-18) and survived a full audit cycle.
+//! `exists()` is not the question worth asking. A `target/` directory
+//! shared with a build for another platform holds a real file that this
+//! host cannot load: it existed, so the fallback never fired, and the
+//! Linux `fork` succeeded while `exec` failed `ENOEXEC` — surfacing as
+//! exit code 127, indistinguishable from a shell's "command not
+//! found". That is how a test-harness defect got filed as a suspected
+//! bug in `ProcessExecutor::spawn` (register entry D-18) and survived a
+//! full audit cycle.
+//!
+//! `containers/compose.yml` no longer creates that situation — the
+//! container's build output is a named volume, not the host's
+//! `target/`. The check below stays because the resolver must not
+//! depend on every caller having configured its build layout
+//! correctly, and because a resolver that trusts `exists()` cannot tell
+//! a developer what is wrong when one of them does not.
 //!
 //! So the resolver below checks that the candidate is a binary this
 //! host can load, and if it is not, it says which file, what it
@@ -241,6 +248,34 @@ fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Directory cargo is writing build output to.
+///
+/// `CARGO_TARGET_DIR` wins when set, because that is where cargo
+/// actually put the binary and looking anywhere else guarantees a
+/// miss. Cargo re-exports the variable to the test process (verified:
+/// `CARGO_TARGET_DIR=/tmp/x cargo test` prints `Ok("/tmp/x")` inside
+/// the test), so this is a read of cargo's own answer rather than a
+/// guess.
+///
+/// This is not the "no env-var reads inside domain types" rule from
+/// `CLAUDE.md` — that rule is about time and identity, which must be
+/// injected so a value cannot change under a decision. This is a
+/// build-layout question in a test-support crate, and the process
+/// environment is cargo's own channel for it.
+///
+/// Public because it is the one piece of the resolver's decision that a
+/// caller may legitimately need to know, and — more to the point —
+/// because [`crate::tests`] has to be able to assert on it from a
+/// *child* process. An earlier version of that test reimplemented this
+/// function inside the probe, and the reimplementation kept passing
+/// after this one was broken: the test was checking a copy. See
+/// `tests/ctd_probe.rs`.
+#[must_use]
+pub fn target_dir() -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR")
+        .map_or_else(|| workspace_root().join("target"), PathBuf::from)
+}
+
 /// The outcome of scanning candidate paths for a loadable binary.
 struct Selection {
     /// The first candidate that exists and is loadable here.
@@ -283,11 +318,12 @@ fn select(candidates: &[PathBuf]) -> Selection {
 /// Resolve the `ironmaint-fixture` binary, returning a path this host
 /// can actually load.
 ///
-/// Prefers `target/debug/`, then `target/release/`, returning the
-/// first candidate that is present *and* loadable. A candidate that is
-/// present but not loadable does not satisfy the request: it is
-/// recorded and reported rather than returned, because returning it
-/// reproduces the `ENOEXEC`-becomes-127 failure this exists to prevent.
+/// Looks in `target/debug/`, then `target/release/`, under
+/// [`target_dir`], returning the first candidate that is present *and*
+/// loadable. A candidate that is present but not loadable does not
+/// satisfy the request: it is recorded and reported rather than
+/// returned, because returning it reproduces the `ENOEXEC`-becomes-127
+/// failure this exists to prevent.
 ///
 /// # Panics
 ///
@@ -296,10 +332,10 @@ fn select(candidates: &[PathBuf]) -> Selection {
 /// a stale cross-platform `target/` read as an unexplained 127.
 #[must_use]
 pub fn fixture_binary_path() -> PathBuf {
-    let root = workspace_root();
+    let root = target_dir();
     let candidates: Vec<PathBuf> = ["debug", "release"]
         .iter()
-        .map(|profile| root.join("target").join(profile).join(FIXTURE_BINARY_NAME))
+        .map(|profile| root.join(profile).join(FIXTURE_BINARY_NAME))
         .collect();
 
     let Selection { chosen, rejected } = select(&candidates);
@@ -307,19 +343,20 @@ pub fn fixture_binary_path() -> PathBuf {
         panic!(
             "no loadable `{FIXTURE_BINARY_NAME}` binary for this host ({os}/{arch}).\n\
              \n\
+             Looked under: {root}\n\
              Checked, and rejected:\n{rejected_detail}\n\
              \n\
              A binary that exists but cannot be loaded here is almost always a \
-             `target/` directory shared with a build for another platform — the \
-             container mounts the host's `target/`, so a macOS Mach-O binary sits \
-             where cargo will put the Linux one.\n\
+             `target/` directory shared with a build for another platform — a \
+             macOS Mach-O binary sitting where cargo will put the Linux one.\n\
              \n\
              Build it for this host first:\n    \
              cargo build -p {FIXTURE_BINARY_NAME}\n",
             os = std::env::consts::OS,
             arch = std::env::consts::ARCH,
+            root = root.display(),
             rejected_detail = if rejected.is_empty() {
-                "  (neither target/debug/ nor target/release/ exists)".to_owned()
+                "  (neither the debug/ nor the release/ profile directory exists)".to_owned()
             } else {
                 rejected.join("\n")
             },
@@ -593,6 +630,58 @@ mod tests {
             path.display(),
             std::env::consts::OS,
             std::env::consts::ARCH,
+        );
+    }
+
+    /// `CARGO_TARGET_DIR` must win over the workspace default, because
+    /// that is the directory cargo actually wrote the binary to.
+    ///
+    /// This is the arrangement `containers/compose.yml` relies on: the
+    /// container's build output is a named volume at
+    /// `/var/cargo-target`, not the host's `target/` on the bind mount.
+    /// A resolver that looked only at `<workspace>/target` would miss
+    /// every binary in the container and report a build that plainly
+    /// succeeded.
+    ///
+    /// Setting a process-wide env var is not safe to do inside a test
+    /// binary — other tests in this crate read the same process — so
+    /// this asserts the property through a child `cargo test`
+    /// invocation with the variable set, and reads back what the child
+    /// resolved. That is also the only way to prove the part that
+    /// actually matters: that cargo re-exports the variable *to the
+    /// test process*, which is the assumption the whole branch rests
+    /// on. If cargo ever stopped doing that, this test fails instead
+    /// of the container failing mysteriously.
+    #[test]
+    fn cargo_target_dir_overrides_the_workspace_default() {
+        let dir = tempfile::tempdir().expect("temp dir");
+
+        // A child cargo test, same as this one, with CARGO_TARGET_DIR
+        // pointed somewhere the workspace default does not reach.
+        let output = std::process::Command::new(env!("CARGO"))
+            .args(["test", "--quiet", "--package", "ironmaint-fixture"])
+            .args(["--test", "ctd_probe", "--", "--nocapture"])
+            .env("CARGO_TARGET_DIR", dir.path())
+            // A probe target dir is fine to throw away, but keep the
+            // build output next to the probe's own temp dir so this
+            // test does not evict the workspace's incremental cache.
+            .current_dir(env!("CARGO_MANIFEST_DIR"))
+            .output()
+            .expect("run child cargo test");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "child cargo test failed\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
+        );
+        // The probe prints the directory it resolved. If cargo did not
+        // re-export CARGO_TARGET_DIR, the child would have printed the
+        // workspace default and this assertion fails.
+        assert!(
+            stdout.contains(&format!("PROBE_TARGET_DIR={}", dir.path().display())),
+            "child did not resolve CARGO_TARGET_DIR; it reported something else\n\
+             --- stdout ---\n{stdout}\n--- stderr ---\n{stderr}"
         );
     }
 }
