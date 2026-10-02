@@ -7,7 +7,7 @@ Last verified: 2026-10-01
 | `ironmaint/base` | `0.1` | BUILT | PASS | `debian:trixie-slim` + tini + ca-certificates + git + bash + curl + python3 + non-root uid 1000 |
 | `ironmaint/workspace` | `0.1` | BUILT | PASS | `rust:1.94.0-bookworm` + build-essential + ca-certificates + python3; prebuilt `target/` DEFERRED to CI PR |
 | `ironmaint/debian-tools` | `0.1` | BUILT | PASS | `ironmaint/base:0.1` + sbuild + lintian + autopkgtest + dpkg-dev + debhelper + git-buildpackage + devscripts + diffoscope + reprotest + piuparts + uidmap; schroot built at first run; `--privileged` required |
-| `ironmaint/fedora-tools` | `0.1` | NOT BUILT | — | Spec §4.4; arm64/amd64 question (§8) needs day-one test before Dockerfile |
+| `ironmaint/fedora-tools` | `0.1` | BUILT | PASS | `fedora:44` (NOT from base, spec §3) + mock + rpmlint + rpm-build + tmt + fedpkg + koji + bodhi-client + packit; `--privileged` required for buildroot |
 | `ironmaint/agent` | `0.1` | NOT BUILT | — | Spec §4.5; `rust:1.98.0`; ironclaw submodule required |
 | `ironmaint/fake-services` | `0.1` | NOT BUILT | — | Spec §4.6; Phase 1 |
 

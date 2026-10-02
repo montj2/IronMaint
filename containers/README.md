@@ -19,7 +19,10 @@ containers/
 ├── workspace/     ← ironmaint/workspace:0.1
 │   ├── Dockerfile
 │   └── smoke.sh
-└── debian-tools/  ← ironmaint/debian-tools:0.1
+├── debian-tools/  ← ironmaint/debian-tools:0.1
+│   ├── Dockerfile
+│   └── smoke.sh
+└── fedora-tools/  ← ironmaint/fedora-tools:0.1
     ├── Dockerfile
     └── smoke.sh
 ```
@@ -34,7 +37,8 @@ debian:trixie-slim ────────▶ ironmaint/base:0.1     (substrate
 
 rust:1.94.0-bookworm ──────▶ ironmaint/workspace:0.1   (Rust 1.94.0 pinned; + build-essential, ca-certificates, python3; USER rust)
 
-fedora:44 ─────────────────▶ (future) ironmaint/fedora-tools:0.1
+fedora:44 ─────────────────▶ ironmaint/fedora-tools:0.1   (dnf: mock, rpmlint, rpm-build, tmt, fedpkg, koji, bodhi-client, packit; uid 1000)
+
 rust:1.98.0-bookworm ──────▶ (future) ironmaint/agent:0.1
 ```
 
@@ -137,6 +141,7 @@ test."* Run them individually or all together:
 make -C containers smoke-base
 make -C containers smoke-workspace
 make -C containers smoke-debian-tools
+make -C containers smoke-fedora-tools
 make -C containers smoke
 ```
 
@@ -165,6 +170,17 @@ fall back to `--privileged` only when the alternative doesn't work on your
 Docker runtime. The compose service is not configured for `debian-tools` —
 the sbuild-gated jobs are invoked ad-hoc from a developer machine, not from
 the §97 build loop.
+
+## `fedora-tools` — sandbox requirement
+
+`mock` builds its chroot via `newuidmap` / user namespaces, and also needs to
+mount `/proc` and `/sys` from the host. Mock must therefore run with
+`--privileged` (mock deliberately refuses to start without it; there is no
+unprivileged-user-namespaces mode comparable to sbuild's unshare backend).
+The `smoke-fedora-tools` target runs the version-and-TLS smoke, which doesn't
+need privileges; the `mock -r fedora-44-aarch64 --init` and trivial-build gate
+lives in `scripts/fedora-tools-build-smoke.sh` and is invoked separately with
+`--privileged`. Spec §4.4.
 
 ## Cleanup
 
