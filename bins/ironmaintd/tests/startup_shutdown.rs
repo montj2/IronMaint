@@ -33,20 +33,21 @@ fn migrations_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations")
 }
 
+/// The fixture binary the daemon's `check.run` will execute.
+///
+/// Resolved by the crate that owns the binary, which also checks the
+/// candidate is loadable on this host. The previous version anchored
+/// on the daemon's own path and joined a sibling, which held for the
+/// *daemon* — `CARGO_BIN_EXE_ironmaintd` is set because the daemon is
+/// in this package, and it is freshly built for this host. The sibling
+/// had neither property: `ironmaintd` does not depend on the fixture
+/// crate, so cargo does not rebuild it, and a `target/` shared with
+/// another platform's build satisfies the `is_file()` check with a
+/// binary that cannot be executed here. The daemon then reports a tool
+/// that exits 127, which is not a shape any test in this file could
+/// have attributed to its cause.
 fn fixture_bin() -> PathBuf {
-    // Anchored on the daemon's own path, not this test binary's:
-    // `current_exe()` in a test resolves to `target/debug/deps/`.
-    let path = PathBuf::from(env!("CARGO_BIN_EXE_ironmaintd"))
-        .parent()
-        .expect("target dir")
-        .join("ironmaint-fixture");
-    assert!(
-        path.is_file(),
-        "{} is missing — the daemon's check.run has nothing to execute. \
-         `cargo test --workspace` builds it; `cargo test -p ironmaintd` alone may not.",
-        path.display()
-    );
-    path
+    ironmaint_fixture::fixture_binary_path()
 }
 
 /// The full argument list for a daemon rooted at `tmp`.
