@@ -38,6 +38,28 @@
 //! diff. D-14's lesson is that a check which has never rejected anything is an
 //! assumption wearing a green tick, and a check whose failures are all
 //! suppressed is the same thing with more steps.
+//!
+//! ## A fourth thing, which is not a rule about seams
+//!
+//! The first run of this file reported six violations, and **five of the six
+//! were bugs in the check** — it flagged constructions I had verified by hand
+//! at `dispatch.rs:138, 229, 304, 352, 486`. The cause was one line: the
+//! qualification test compared the enum's tail segment against the
+//! *construction path's* tail segment, which is the variant, so every
+//! construction failed to qualify.
+//!
+//! The test that would have caught it — `a_fully_qualified_path_counts_as_construction`
+//! — had never been executed. The module compiled, `cargo run -p xtask --
+//! verify-seams` produced output, and the check reported violations with a
+//! confident format. Nobody had run `cargo test -p xtask`, and it turns out
+//! twelve of its tests failed.
+//!
+//! So: **run the new check's own tests before believing its first output.** A
+//! check that has never been run against inputs whose answers are known is
+//! indistinguishable from a check that works, right up until the moment it
+//! matters. `cargo test` also does not run clippy lints, so the §97 gate has to
+//! be walked in full the first time rather than assumed from the parts of it
+//! that were already green.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
@@ -135,8 +157,8 @@ pub fn run() -> Result<Report, Box<dyn Error>> {
     let files = collect_source_files(&root)?;
     let mut report = Report::default();
 
-    // S2 resolves its own sources because one half of it (the registered tool
-    // set) comes from the live MCP API rather than from the tree.
+    // One walk, four checks. S2 reads the same sources as the rest; only half
+    // of it comes from the tree, and that half is the half that needs reading.
     let outcomes = [
         ("S1", CommandsCheck::run(&files)),
         ("S2", ActionsCheck::run(&files)),

@@ -56,15 +56,36 @@ const ALLOWLIST: &[(&str, &str)] = &[
     ),
     (
         "RecordCheckEvidence",
-        "A decision, recorded at the call site rather than here. The recording          does happen in production — `handle_run_check` writes the gate result          itself (service.rs:2417) — but it does so inline, and the reason is          written down where the code is: \"There is deliberately no MCP tool          for this: §53 forbids `ironmaint_obligation_set_pass`\". The command          is the interface; the flow calls the handler directly. A settable          command here would be the forbidden tool with an extra hop.",
+        "A decision, recorded at the call site rather than here. The recording \
+         does happen in production — `handle_run_check` writes the gate result \
+         itself (service.rs:2417) — but it does so inline, and the reason is \
+         written down where the code is: \"There is deliberately no MCP tool \
+         for this: §53 forbids `ironmaint_obligation_set_pass`\". The command \
+         is the interface; the flow calls the handler directly. A settable \
+         command here would be the forbidden tool with an extra hop.",
     ),
     (
         "RecordObligationOutcome",
-        "As `RecordCheckEvidence`, and by the same reasoning:          `handle_run_check` derives the obligation verdict inline via          `derive_obligation_verdicts` (service.rs:2431), and the comment there          states the consequence of not doing so — \"Without this step a          mandatory obligation could only ever be `NotEvaluated` over the tool          surface, and a job could never reach `ReadyForApproval`\". So the          capability the variant exists to express is live; only the command          wrapper is unconstructed.",
+        "As `RecordCheckEvidence`, and by the same reasoning: `handle_run_check` \
+         derives the obligation verdict inline via `derive_obligation_verdicts` \
+         (service.rs:2431), and the comment there states the consequence of not \
+         doing so — \"Without this step a mandatory obligation could only ever \
+         be `NotEvaluated` over the tool surface, and a job could never reach \
+         `ReadyForApproval`\". So the capability the variant exists to express \
+         is live; only the command wrapper is unconstructed.",
     ),
     (
         "RequestApproval",
-        "A correct refusal, deliberately unreachable as a write (§0B 0B.10 C1          and the command's own doc): 0B ships no approval principal, no          delivery channel and no durable `ApprovalStore`, so implementing the          write would record a decision nobody made. **D-20 is the command's          doc, not the refusal.** The doc claims `next_actions` advertises          `RequestApproval` and that an agent following it calls this and reads          the refusal. `ReadyForApproval` emits `allowed: vec![]` and          `requires_human: ApproveRelease` (service.rs:2706), and          `RequestApproval` is not an `AllowedAction` at all — so the doc          describes a design that no longer exists.",
+        "A correct refusal, deliberately unreachable as a write (§0B 0B.10 C1 \
+         and the command's own doc): 0B ships no approval principal, no \
+         delivery channel and no durable `ApprovalStore`, so implementing the \
+         write would record a decision nobody made. **D-20 is the command's \
+         doc, not the refusal.** The doc claims `next_actions` advertises \
+         `RequestApproval` and that an agent following it calls this and reads \
+         the refusal. `ReadyForApproval` emits `allowed: vec![]` and \
+         `requires_human: ApproveRelease` (service.rs:2706), and \
+         `RequestApproval` is not an `AllowedAction` at all — so the doc \
+         describes a design that no longer exists.",
     ),
     (
         "Reconcile",
