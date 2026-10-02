@@ -121,7 +121,6 @@ pub async fn dispatch<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         "check.run" => dispatch_check_run(&runtime, input).await,
         "workspace.apply_patch" => dispatch_apply_patch(&runtime, input).await,
         "workspace.stat" => dispatch_workspace_stat(&runtime, input).await,
-        "operation.get" => dispatch_operation_get(&runtime, input).await,
         "release.candidate.create" => dispatch_release_candidate_create(&runtime, input).await,
         unknown => Err(McpError::Other(format!("unknown tool: {unknown}"))),
     }
@@ -424,7 +423,7 @@ async fn dispatch_workspace_stat<S: IronMaintStore + ?Sized, E: Executor + ?Size
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 
-async fn dispatch_operation_get<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+pub async fn dispatch_operation_get<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
     runtime: &McpRuntime<S, E>,
     input: serde_json::Value,
 ) -> Result<serde_json::Value, McpError> {
