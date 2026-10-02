@@ -39,10 +39,19 @@ ok "git, python3, curl all on PATH and reporting versions"
 # (verified: Cargo.toml). That backend reads the OS trust store. Without
 # ca-certificates, the connect fails with a TLS error that looks like a
 # network fault. This is the single most likely thing to be missed.
+#
+# Temporarily disable set -e so we can capture curl's exit code AND have
+# the FAIL message printed with a useful diagnostic. Re-enable after.
+set +e
 out=$(curl -sSI --max-time 10 https://github.com 2>&1 | head -n1 | tr -d '\r')
+curl_rc=$?
+set -e
+if [ "$curl_rc" -ne 0 ]; then
+  fail "TLS to github.com failed: curl exited $curl_rc (likely missing ca-certificates — §11.2)"
+fi
 case "$out" in
   HTTP/1.1\ 200*|HTTP/2\ 200*|HTTP/3\ 200*) ok "TLS to github.com returns 200 ($out)" ;;
-  *) fail "TLS check failed: expected HTTP 200, got '$out' — ca-certificates likely missing" ;;
+  *) fail "TLS check failed: expected HTTP 200, got '$out'" ;;
 esac
 
 # ---- 5. tini forwards signals (the most subtle property) ----------------

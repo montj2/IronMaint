@@ -16,6 +16,16 @@ set -euo pipefail
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 ok()   { printf 'OK:   %s\n' "$*"; }
 
+# CRITICAL: rustup reads rust-toolchain.toml from the current directory and
+# auto-installs / switches to the toolchain specified there. The IronMaint
+# workspace has rust-toolchain.toml pinned to 1.88.0, so running smoke.sh
+# from /work would mask a broken image (rustup would download 1.88.0 on
+# demand and the test would falsely pass).
+#
+# cd to /tmp before any toolchain queries so we test the image's actual
+# default toolchain, not the workspace's pinned one.
+cd /tmp
+
 # ---- 1. toolchain pin (the whole point of the image) --------------------
 # If the image resolves to a newer toolchain, the image is worse than no
 # image — it converts an unenforced MSRV claim into an actively false one.
@@ -26,11 +36,12 @@ got=$(rustc --version | awk '{print $2}')
 ok "rustc pinned at $expected"
 
 # rustup reports the same thing — guards against rustc being a different
-# toolchain than what rustup would invoke.
+# toolchain than what rustup would invoke. Reads the image's default
+# toolchain (no rust-toolchain.toml in /tmp).
 active=$(rustup show active-toolchain 2>/dev/null | awk '{print $1}')
 case "$active" in
-  1.88.0*) ok "rustup active toolchain is $active" ;;
-  *) fail "rustup active toolchain is '$active', expected 1.88.0*" ;;
+  1.88.0*) ok "rustup default toolchain is $active" ;;
+  *) fail "rustup default toolchain is '$active', expected 1.88.0*" ;;
 esac
 
 # ---- 2. cargo tooling on PATH --------------------------------------------
@@ -96,7 +107,16 @@ ok "cargo build on minimal workspace (with a serde dep) succeeded"
 # the server and got *some* HTTP status. If CA roots are gone, curl
 # exits with code 60 (CURLE_PEER_FAILED_VERIFICATION) and the pipeline
 # fails under pipefail before we reach the case statement.
+#
+# Same set -e dance as base/smoke.sh step 4 — capture curl's exit code
+# and produce a useful FAIL message.
+set +e
 out=$(curl -sS --max-time 10 -o /dev/null -w "%{http_code}" https://crates.io 2>&1 | tr -d '\r')
+curl_rc=$?
+set -e
+if [ "$curl_rc" -ne 0 ]; then
+  fail "TLS to crates.io failed: curl exited $curl_rc (likely missing ca-certificates — §11.2)"
+fi
 case "$out" in
   2*|3*|4*|5*) ok "TLS to crates.io completed (HTTP $out) — CA certs present" ;;
   *) fail "TLS to crates.io returned unexpected status: '$out'" ;;

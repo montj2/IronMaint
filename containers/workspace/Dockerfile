@@ -46,9 +46,15 @@ RUN apt-get update \
 # Confirm the rust image's rustup-managed toolchain is the pinned 1.88.0.
 # If a future `rust:1.88.0-bookworm` re-tag ever ships 1.88.1, the smoke
 # test catches it at run time; this line is the build-time guard.
+#
+# Also install the components needed by the §97 gate: clippy, rustfmt, and
+# rust-src. The upstream rust:1.88.0-bookworm image only ships cargo,
+# rust-std, and rustc — verified by `rustup component list --installed`.
+# Without this, `cargo clippy` and `cargo fmt` would fail at first run.
 RUN rustc --version \
  && cargo --version \
- && rustup show active-toolchain
+ && rustup show active-toolchain \
+ && rustup component add clippy rustfmt rust-src
 
 # ---- non-root user -------------------------------------------------------
 # Older `rust:*` images shipped a `rust` user (uid 1000); the current
