@@ -327,7 +327,7 @@ async fn reconcile_still_parks_at_ready_for_approval() {
 }
 
 #[tokio::test]
-async fn next_actions_advertises_exactly_the_action_that_is_refused() {
+async fn next_actions_reports_the_refused_action_as_a_human_one() {
     // This is the pairing that makes the workflow honest. If
     // `next_actions` said nothing, the agent would not know an
     // approval is the thing it needs — which is the exit checkpoint
@@ -339,6 +339,12 @@ async fn next_actions_advertises_exactly_the_action_that_is_refused() {
     // used to be an `AllowedAction`, which claimed the caller "can take
     // it right now" — and then refused. It is now a `HumanAction`, which
     // says the opposite thing accurately.
+    //
+    // The name used to be `next_actions_advertises_exactly_the_action_
+    // that_is_refused`, which is what this test asserted in 0B.9 and
+    // stopped asserting in 0B.10 — the body below was always right
+    // about the split, so the stale claim survived in the name alone,
+    // and then in `RuntimeCommand::RequestApproval`'s doc. D-20.
     let store = Arc::new(MockStore::new());
     let svc = build_service(&store);
     let job_id = seed_at_ready_for_approval(&store).await;

@@ -122,14 +122,29 @@ pub enum RuntimeCommand {
     /// `reconcile` still reports `NeedsActorDecision` at
     /// `ReadyForApproval` so the job parks rather than advancing.
     ///
-    /// `next_actions` still advertises `RequestApproval` at that
-    /// state, and that is not a contradiction: asking for approval
-    /// *is* the orchestrator's next move, and the refusal is the
-    /// answer. What the runtime refuses is recording the request as
-    /// though a decision had been made. An agent that follows
-    /// `next_actions`, calls this, and reads the refusal has learned
-    /// it must hand off to a person — which is the exit checkpoint
-    /// in `SKILL.md` made executable rather than implied.
+    /// **No path reaches this from `next_actions`.** At
+    /// `ReadyForApproval` the projection emits `allowed: vec![]` and
+    /// `requires_human: Some(HumanAction::ApproveRelease)` — approval
+    /// is a human's move, so `RequestApproval` is not an
+    /// `AllowedAction` and `next_actions` does not name it. An agent
+    /// that follows `next_actions` correctly here **stops**, which is
+    /// what `SKILL.md` tells it to do.
+    ///
+    /// The command still exists so the boundary is *observable*: an
+    /// orchestrator that reaches for the obvious write anyway gets a
+    /// typed refusal naming it, rather than a missing-arms
+    /// `Other("unhandled command")` that reads like a bug. That is
+    /// its whole job now — not to be the advertised next move, which
+    /// an earlier wire format made it.
+    ///
+    /// > This paragraph previously claimed the opposite, and was right
+    /// > to: at 0B.9 (`349c8f1`) `ReadyForApproval` emitted
+    /// > `allowed: vec![AllowedAction::RequestApproval]`. 0B.10's C3
+    /// > split moved human moves onto `requires_human`, and the
+    /// > behaviour changed silently — no test failed, because the
+    /// > test that covers this state
+    /// > (`mcp_acceptance_scenario.rs`, step 29) asserts the
+    /// > *behaviour*, and a doc comment is not behaviour. See D-20.
     ///
     /// The field is carried so the request is well-formed and a
     /// future implementation has the category it would need; it is
