@@ -32,6 +32,7 @@
 //! [`crate::fixture::outcome_from_record`] helper and the
 //! [`crate::fixture::Outcome`] enum.
 
+use std::path::Path;
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -50,6 +51,93 @@ use crate::limits::ExecutionClass;
 use crate::record::{DroppedArtifact, ExecutionRecord, OutputStream, SpilledArtifact};
 use crate::registry::ToolRegistry;
 use crate::request::ExecutionRequest;
+
+/// Confirm `program` names something this host can actually execute.
+///
+/// Returns `Ok(())` when the program is launchable and `Err` with a
+/// human-readable reason when it is not, so the caller can fail with
+/// `InfrastructureFailed` and a message that names the cause.
+///
+/// A program containing a path separator is checked at that exact
+/// path. A bare name is resolved against the executor's own
+/// sanitised `PATH` — the same one the child would be given — rather
+/// than the ambient process environment, so this cannot disagree with
+/// what the child would have found.
+///
+/// This is a `stat`, not an `exec`: it is a pre-flight check, not a
+/// second launch. It is a race in principle (a program can be removed
+/// between the check and the spawn), which is why the spawn below
+/// still handles `Err`. What it buys is that the *common* case — a
+/// tool that is not installed, which is static for the duration of a
+/// job — is reported as a missing tool rather than as a tool that ran
+/// and exited 127.
+fn check_launchable(program: &Path, env: &ProcessEnvironment) -> Result<(), String> {
+    if program.as_os_str().is_empty() {
+        return Err("the tool declares an empty executable path".to_owned());
+    }
+
+    // Mirrors what exec does: a name with no separator is looked up in
+    // PATH, anything else is used as given. Checking this rather than
+    // always joining PATH is what keeps an absolute path from being
+    // reported as "not on PATH".
+    if program.components().count() > 1 {
+        return match is_executable_file(program) {
+            true => Ok(()),
+            false => Err(format!("{} is not an executable file", program.display())),
+        };
+    }
+
+    let path = env.get("PATH").unwrap_or_default();
+    if path.is_empty() {
+        return Err(format!(
+            "tool {} is a bare name but the executor's PATH is empty",
+            program.display()
+        ));
+    }
+
+    let dirs: Vec<&str> = path.split(':').filter(|d| !d.is_empty()).collect();
+    if dirs.is_empty() {
+        return Err(format!(
+            "tool {} is a bare name but the executor's PATH ({path}) has no usable entry",
+            program.display()
+        ));
+    }
+
+    for dir in &dirs {
+        let candidate = Path::new(dir).join(program);
+        if is_executable_file(&candidate) {
+            return Ok(());
+        }
+    }
+
+    Err(format!(
+        "{} was not found as an executable in PATH ({path})",
+        program.display()
+    ))
+}
+
+/// Whether `path` is a regular file this process may execute.
+///
+/// Unix checks an execute bit; elsewhere existence as a file is the
+/// strongest portable answer available, because Windows resolves
+/// executability from the extension rather than from a mode.
+fn is_executable_file(path: &Path) -> bool {
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return false;
+    };
+    if !metadata.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        metadata.permissions().mode() & 0o111 != 0
+    }
+    #[cfg(not(unix))]
+    {
+        true
+    }
+}
 
 /// Factory for wall-clock reads. Core has no `now()`; this
 /// closure is the only way an `ExecutionRecord`'s `started_at` /
@@ -182,7 +270,38 @@ impl Executor for ProcessExecutor {
 
         let started_at = (self.time_factory)();
 
-        // (6) Spawn.
+        // (6) Check the program is launchable *before* spawning.
+        //
+        // `spawn` alone cannot report a missing executable on Linux.
+        // std uses `posix_spawn` when the Command is eligible, and
+        // `posix_spawn` reports a failed `exec` by exiting the child
+        // 127 — which arrives here as `Ok(child)`, not as an `Err`.
+        // The `Err` arm below therefore only ever fires for a failure
+        // the parent can see (a bad descriptor, a resource limit), and
+        // "that tool is not installed" arrives as a successful spawn of
+        // a process that instantly dies.
+        //
+        // It cannot be repaired after the fact either: 127 is a
+        // legitimate tool exit code in this very workspace —
+        // `synthetic.build.infra_fail` returns it on purpose and
+        // `process_exit_codes.rs` asserts on it — so a post-hoc
+        // "did it exit 127 with no output?" rule would misreport a
+        // real tool failure as a missing binary.
+        //
+        // So the check goes before the spawn. `pre_exec` would force
+        // the fork+exec path that does surface `ENOENT`, but that is
+        // `unsafe`, and this workspace sets `unsafe_code = "forbid"`.
+        if let Err(reason) = check_launchable(tool.executable(), &self.env) {
+            return Err(ExecutorError::new(
+                ExecutorErrorKind::InfrastructureFailed,
+                format!(
+                    "cannot execute tool {}: {reason}",
+                    request.tool_key.as_str()
+                ),
+            ));
+        }
+
+        // (7) Spawn.
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => {
@@ -502,6 +621,145 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- check_launchable -------------------------------------------
+    //
+    // These exist because the defect they cover is invisible on macOS
+    // and in a mock-backed test: on Darwin a missing program makes
+    // `spawn` return `Err(NotFound)`, so the pre-flight check has
+    // nothing to do there. The case that matters is Linux, where
+    // `posix_spawn` turns the same situation into `Ok(child)` that
+    // exits 127.
+
+    /// A missing absolute path is refused, and the message names the
+    /// path rather than saying "spawn failed".
+    #[test]
+    fn a_missing_absolute_path_is_refused_by_name() {
+        let env = ProcessEnvironment::new();
+        let err = check_launchable(Path::new("/this/executable/does/not/exist/at/all"), &env)
+            .expect_err("a missing path must be refused");
+        assert!(
+            err.contains("/this/executable/does/not/exist/at/all"),
+            "the message must name the path, got: {err}"
+        );
+    }
+
+    /// The teeth-check: a bare name absent from the executor's PATH is
+    /// refused, and the message names the PATH that was searched.
+    ///
+    /// This is the branch that can silently degrade into a no-op — a
+    /// version that forgot to consult PATH would return `Ok` for every
+    /// bare name and the check would only ever catch absolute paths,
+    /// which is the case that already worked on Darwin.
+    #[test]
+    fn a_bare_name_missing_from_the_executors_path_is_refused() {
+        let env = ProcessEnvironment::new();
+        let err = check_launchable(Path::new("definitely-not-a-real-binary-xyz"), &env)
+            .expect_err("a bare name absent from PATH must be refused");
+        assert!(
+            err.contains("definitely-not-a-real-binary-xyz") && err.contains("PATH"),
+            "the message must name the tool and the PATH searched, got: {err}"
+        );
+    }
+
+    /// A bare name that *is* on the executor's PATH is accepted — so
+    /// the check does not refuse every program that has no separator,
+    /// which would be a fix that breaks the common case.
+    #[test]
+    fn a_bare_name_on_the_executors_path_is_accepted() {
+        let mut env = ProcessEnvironment::new();
+        // An empty directory is on PATH; no bare name resolves there.
+        let dir = tempfile::tempdir().expect("temp dir");
+        // Plant an executable file so the lookup has something to find.
+        let planted = dir.path().join("planted-tool");
+        std::fs::write(&planted, b"#!/bin/sh\nexit 0\n").expect("write");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        env.insert("PATH", dir.path().display().to_string());
+
+        check_launchable(Path::new("planted-tool"), &env)
+            .expect("a bare name on PATH must be accepted");
+    }
+
+    /// A file that exists but is not executable is refused. Without
+    /// this, a non-executable file would pass the check and then fail
+    /// at `exec` — which on Linux is 127 again, the exact confusion
+    /// this function exists to remove.
+    #[cfg(unix)]
+    #[test]
+    fn a_non_executable_file_is_refused() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let planted = dir.path().join("not-executable");
+        std::fs::write(&planted, b"data").expect("write");
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&planted, std::fs::Permissions::from_mode(0o644))
+                .expect("chmod");
+        }
+
+        let env = ProcessEnvironment::new();
+        check_launchable(&planted, &env).expect_err("a non-executable file must be refused");
+    }
+
+    /// An existing executable is accepted, so the absolute-path branch
+    /// does not refuse every path-shaped program.
+    #[test]
+    fn an_existing_absolute_path_is_accepted() {
+        let env = ProcessEnvironment::new();
+        // /bin/sh exists and is executable on every platform this suite
+        // runs on; it is not executed, only stat'd.
+        #[cfg(unix)]
+        let path = Path::new("/bin/sh");
+        #[cfg(not(unix))]
+        let path = Path::new("C:\\Windows\\System32\\cmd.exe");
+
+        check_launchable(path, &env).expect("an existing executable must be accepted");
+    }
+
+    /// A directory is refused even when it is on PATH and carries the
+    /// execute bit.
+    ///
+    /// This is the case that `is_file` exists for, and it is the
+    /// reason the check cannot be "does this path exist and have an
+    /// execute bit": a directory satisfies the second test and fails
+    /// at `exec` with `EACCES`, which on Linux is again a 127 this
+    /// function is meant to pre-empt. A tempdir root is a directory
+    /// that exists, is on a real path, and is traversable.
+    #[test]
+    fn a_directory_is_refused_even_though_it_exists() {
+        let dir = tempfile::tempdir().expect("temp dir");
+        let env = ProcessEnvironment::new();
+        check_launchable(dir.path(), &env)
+            .expect_err("a directory is not an executable and must be refused");
+    }
+
+    /// A directory found on PATH is refused for the same reason — a
+    /// bare name must not stop at the first PATH entry that exists.
+    #[test]
+    fn a_directory_on_path_is_refused() {
+        let mut env = ProcessEnvironment::new();
+        let dir = tempfile::tempdir().expect("temp dir");
+        // The tempdir itself is the PATH entry, so the lookup finds an
+        // existing, traversable entry and must keep going / refuse.
+        env.insert("PATH", dir.path().display().to_string());
+
+        check_launchable(Path::new("any-subdir"), &env)
+            .expect_err("a directory on PATH must not satisfy the lookup");
+    }
+
+    /// An empty executable path is refused rather than resolved against
+    /// PATH — an empty string has no separator, so without this it
+    /// would be joined onto every PATH entry and one of them would
+    /// match.
+    #[test]
+    fn an_empty_executable_path_is_refused() {
+        let env = ProcessEnvironment::new();
+        check_launchable(Path::new(""), &env).expect_err("empty path must be refused");
+    }
 
     /// Collect everything the reader forwards, so the tests can
     /// assert on both halves of the split: the in-memory prefix and
