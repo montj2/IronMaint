@@ -244,22 +244,6 @@ impl CandidateStore for MockStore {
             ));
         }
 
-        // DELIBERATELY BROKEN (F2), reverted in the next commit.
-        //
-        // This is the duplicate-fingerprint guard of the case above,
-        // with `is_some_and` weakened to a truthiness test so that a
-        // re-put of the *same* candidate is refused too -- the
-        // upsert case's twin mistake, and the one a mock is most
-        // likely to make. `verify-seams` cannot see this: the call is
-        // there, the guard is there, and what it computes is wrong.
-        // Only the behavioural suite can, which is the point.
-        if w.source_by_fp.contains_key(&fp) {
-            return Err(StoreError::new(
-                StoreErrorKind::Conflict,
-                format!("source candidate {id} already has a fingerprint of {fp}"),
-            ));
-        }
-
         let already = w.sources.contains_key(&id);
         w.sources.insert(id, candidate.clone());
         w.source_by_fp.insert(fp, id);
