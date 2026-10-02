@@ -26,3 +26,10 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 toml_edit = "0.22"
+# The seam checks in `verify-seams` (S1/S2/S4/S5) assert properties of
+# source *shape* — "this variant is constructed, not merely mentioned" —
+# which a regex cannot distinguish from a match arm. `syn` reads the
+# tree; `proc-macro2`'s span locations let a report name file:line, so a
+# failure points at the construction rather than at the file.
+syn = { version = "2", features = ["visit", "visit-mut", "full", "extra-traits"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }

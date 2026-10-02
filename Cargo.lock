@@ -3116,9 +3116,11 @@ dependencies = [
  "ironmaint-runtime",
  "ironmaint-state",
  "ironmaint-store-sqlite",
+ "proc-macro2",
  "schemars 0.8.22",
  "serde_json",
  "sqlx",
+ "syn 2.0.119",
  "tokio",
  "toml_edit",
 ]
