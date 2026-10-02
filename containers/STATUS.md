@@ -1,6 +1,6 @@
 # IronMaint image build status
 
-Last verified: 2026-10-01
+Last verified: 2026-10-02
 
 | Image | Tag | Status | Smoke | Notes |
 |---|---|---|---|---|
@@ -8,8 +8,8 @@ Last verified: 2026-10-01
 | `ironmaint/workspace` | `0.1` | BUILT | PASS | `rust:1.94.0-bookworm` + build-essential + ca-certificates + python3; prebuilt `target/` DEFERRED to CI PR |
 | `ironmaint/debian-tools` | `0.1` | BUILT | PASS | `ironmaint/base:0.1` + sbuild + lintian + autopkgtest + dpkg-dev + debhelper + git-buildpackage + devscripts + diffoscope + reprotest + piuparts + uidmap; schroot built at first run; `--privileged` required |
 | `ironmaint/fedora-tools` | `0.1` | BUILT | PASS | `fedora:44` (NOT from base, spec §3) + mock + rpmlint + rpm-build + tmt + fedpkg + koji + bodhi-client + packit; `--privileged` required for buildroot |
-| `ironmaint/agent` | `0.1` | NOT BUILT | — | Spec §4.5; `rust:1.98.0`; ironclaw submodule required |
-| `ironmaint/fake-services` | `0.1` | NOT BUILT | — | Spec §4.6; Phase 1 |
+| `ironmaint/agent` | `0.1` | BUILT | PASS | `ironmaint/base:0.1`; prebuilt `ironclaw 1.4.1` tarball from `nearai/ironclaw` `ironclaw-v1.4.1` (SHA256-pinned, no compilation); spec §4.5 env-var contract; secrets NOT baked |
+| `ironmaint/fake-services` | `0.1` | BUILT | PASS | `ironmaint/base:0.1`; Python 3 stdlib HTTP server; 6 endpoint ops (debian-bts / redhat-bugzilla reads, IssueTrackerMutation, CanonicalRepositoryPush, RemoteBuildSubmission, DistributionUpdateCreation); 401 unauth, 429 rate, occasional 502; spec §4.6 |
 
 ## Prebuilt debug deps — DEFERRED
 

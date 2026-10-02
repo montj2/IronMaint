@@ -2,20 +2,24 @@
 #
 # Targets:
 #   make build                Build base + workspace + debian-tools + fedora-tools
-#                             for the native arch.
+#                             + agent + fake-services for the native arch.
 #   make build-base           Build just base.
 #   make build-workspace      Build just workspace.
 #   make build-debian-tools   Build just debian-tools (FROM ironmaint/base:0.1).
 #   make build-fedora-tools   Build just fedora-tools (FROM fedora:44, NOT base).
+#   make build-agent          Build just agent (FROM ironmaint/base:0.1).
+#   make build-fake-services  Build just fake-services (FROM ironmaint/base:0.1).
 #   make build-multi          Multi-arch build (arm64 + amd64), pushes to local
 #                             registry at localhost:5000. Requires the registry
 #                             running (see `make registry`).
 #   make smoke                Run smoke tests for base + workspace + debian-tools
-#                             + fedora-tools.
+#                             + fedora-tools + agent + fake-services.
 #   make smoke-base
 #   make smoke-workspace
 #   make smoke-debian-tools
 #   make smoke-fedora-tools
+#   make smoke-agent
+#   make smoke-fake-services
 #   make verify               Build + smoke, fail on any non-zero exit.
 #   make registry             Start a local registry:2 on :5000 (background).
 #   make inspect              Print image metadata.
@@ -27,6 +31,8 @@ BASE_TAG            ?= ironmaint/base:0.1
 WORKSPACE_TAG       ?= ironmaint/workspace:0.1
 DEBIAN_TOOLS_TAG    ?= ironmaint/debian-tools:0.1
 FEDORA_TOOLS_TAG    ?= ironmaint/fedora-tools:0.1
+AGENT_TAG           ?= ironmaint/agent:0.1
+FAKE_SERVICES_TAG   ?= ironmaint/fake-services:0.1
 NATIVE_ARCH    := $(shell docker buildx inspect default 2>/dev/null \
                     | awk -F'= ' '/Platforms/ {print $$2; exit}' \
                     | awk -F, '{print $$1}' \
@@ -44,7 +50,7 @@ DRIVER         := $(shell docker buildx inspect 2>/dev/null \
 
 # ---- build ----------------------------------------------------------------
 .PHONY: build
-build: build-base build-workspace build-debian-tools build-fedora-tools
+build: build-base build-workspace build-debian-tools build-fedora-tools build-agent build-fake-services
 
 .PHONY: build-base
 build-base:
@@ -85,6 +91,34 @@ build-fedora-tools:
 		--file containers/fedora-tools/Dockerfile \
 		containers/fedora-tools/
 
+.PHONY: build-agent
+build-agent: build-base
+	# Agent pulls a prebuilt ironclaw release tarball (no compilation,
+	# no Node toolchain, no Rust toolchain in this image). Spec §4.5:
+	# build conventions (pinned base digests, exec-form ENTRYPOINT,
+	# tini as PID 1), not the submodule's Railway deployment shape.
+	docker buildx build \
+		--platform linux/$(NATIVE_ARCH) \
+		--tag $(AGENT_TAG) \
+		--load \
+		--build-arg BASE_TAG=$(BASE_TAG) \
+		--file containers/agent/Dockerfile \
+		containers/agent/
+
+.PHONY: build-fake-services
+build-fake-services: build-base
+	# fake-services is a Python 3 stdlib HTTP server (~20MB final).
+	# Spec §4.6 — built despite the "Phase 1, specified not built"
+	# caveat because the integration-test surface for the privileged
+	# path needs to exist before the D-09 producer lands.
+	docker buildx build \
+		--platform linux/$(NATIVE_ARCH) \
+		--tag $(FAKE_SERVICES_TAG) \
+		--load \
+		--build-arg BASE_TAG=$(BASE_TAG) \
+		--file containers/fake-services/Dockerfile \
+		containers/fake-services/
+
 # ---- multi-arch ----------------------------------------------------------
 .PHONY: build-multi
 build-multi: registry
@@ -122,6 +156,22 @@ build-multi: registry
 		--push \
 		--file containers/fedora-tools/Dockerfile \
 		containers/fedora-tools/
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--tag $(REGISTRY)/$(AGENT_TAG) \
+		--tag $(REGISTRY)/ironmaint/agent:latest \
+		--push \
+		--build-arg BASE_TAG=$(BASE_TAG) \
+		--file containers/agent/Dockerfile \
+		containers/agent/
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--tag $(REGISTRY)/$(FAKE_SERVICES_TAG) \
+		--tag $(REGISTRY)/ironmaint/fake-services:latest \
+		--push \
+		--build-arg BASE_TAG=$(BASE_TAG) \
+		--file containers/fake-services/Dockerfile \
+		containers/fake-services/
 
 .PHONY: registry
 registry:
@@ -133,7 +183,7 @@ registry:
 
 # ---- smoke ---------------------------------------------------------------
 .PHONY: smoke
-smoke: smoke-base smoke-workspace smoke-debian-tools smoke-fedora-tools
+smoke: smoke-base smoke-workspace smoke-debian-tools smoke-fedora-tools smoke-agent smoke-fake-services
 
 .PHONY: smoke-base
 smoke-base: build-base
@@ -169,6 +219,28 @@ smoke-fedora-tools: build-fedora-tools
 		$(FEDORA_TOOLS_TAG) \
 		bash /usr/local/bin/smoke.sh
 
+.PHONY: smoke-agent
+smoke-agent: build-agent
+	# Agent smoke is just version + env + TLS — no real `ironclaw serve`
+	# against a postgres sidecar (that's a Phase 1 acceptance gate,
+	# spec §4.5). No bind mount needed because the smoke doesn't read
+	# the repo.
+	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		$(AGENT_TAG) \
+		bash /usr/local/bin/smoke.sh
+
+.PHONY: smoke-fake-services
+smoke-fake-services: build-fake-services
+	# The smoke starts the server in the background and exercises each
+	# of the 6 spec endpoints in turn. No bind mount, no port publish
+	# to the host — the smoke listens on 127.0.0.1 inside the container.
+	# Disable partial failure in smoke (the 5% 502 rate is for realism,
+	# not for an audit-time smoke check).
+	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-e FAKE_SERVICES_PARTIAL_FAILURE_RATE=0.0 \
+		$(FAKE_SERVICES_TAG) \
+		bash /usr/local/bin/smoke.sh
+
 # ---- inspect / clean -----------------------------------------------------
 .PHONY: inspect
 inspect:
@@ -176,10 +248,12 @@ inspect:
 	docker buildx imagetools inspect $(WORKSPACE_TAG) || true
 	docker buildx imagetools inspect $(DEBIAN_TOOLS_TAG) || true
 	docker buildx imagetools inspect $(FEDORA_TOOLS_TAG) || true
+	docker buildx imagetools inspect $(AGENT_TAG) || true
+	docker buildx imagetools inspect $(FAKE_SERVICES_TAG) || true
 
 .PHONY: clean
 clean:
-	-docker image rm -f $(BASE_TAG) $(WORKSPACE_TAG) $(DEBIAN_TOOLS_TAG) $(FEDORA_TOOLS_TAG) 2>/dev/null
+	-docker image rm -f $(BASE_TAG) $(WORKSPACE_TAG) $(DEBIAN_TOOLS_TAG) $(FEDORA_TOOLS_TAG) $(AGENT_TAG) $(FAKE_SERVICES_TAG) 2>/dev/null
 	-docker buildx stop ironmaint-multi 2>/dev/null
 	-docker buildx rm ironmaint-multi 2>/dev/null
 	-docker container rm -f ironmaint-registry 2>/dev/null

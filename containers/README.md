@@ -22,8 +22,15 @@ containers/
 ├── debian-tools/  ← ironmaint/debian-tools:0.1
 │   ├── Dockerfile
 │   └── smoke.sh
-└── fedora-tools/  ← ironmaint/fedora-tools:0.1
+├── fedora-tools/  ← ironmaint/fedora-tools:0.1
+│   ├── Dockerfile
+│   └── smoke.sh
+├── agent/         ← ironmaint/agent:0.1
+│   ├── Dockerfile
+│   └── smoke.sh
+└── fake-services/ ← ironmaint/fake-services:0.1
     ├── Dockerfile
+    ├── fake-services.py
     └── smoke.sh
 ```
 
@@ -33,13 +40,12 @@ containers/
 debian:trixie-slim ────────▶ ironmaint/base:0.1     (substrate; uid 1000; tini; apt: ca-certificates, git, bash, curl, python3)
                               │
                               ├──▶ ironmaint/debian-tools:0.1   (apt: sbuild, lintian, autopkgtest, dpkg-dev, debhelper, gbp, devscripts, diffoscope, reprotest, piuparts, uidmap)
-                              └──▶ (future) ironmaint/fake-services:0.1
+                              ├──▶ ironmaint/agent:0.1           (prebuilt ironclaw 1.4.1 release tarball, sha256-pinned)
+                              └──▶ ironmaint/fake-services:0.1  (Python 3 stdlib HTTP server; 6 endpoint ops; 401/429/202)
 
 rust:1.94.0-bookworm ──────▶ ironmaint/workspace:0.1   (Rust 1.94.0 pinned; + build-essential, ca-certificates, python3; USER rust)
 
 fedora:44 ─────────────────▶ ironmaint/fedora-tools:0.1   (dnf: mock, rpmlint, rpm-build, tmt, fedpkg, koji, bodhi-client, packit; uid 1000)
-
-rust:1.98.0-bookworm ──────▶ (future) ironmaint/agent:0.1
 ```
 
 `workspace` derives from `rust:1.94.0-bookworm` directly, **not** from
@@ -142,6 +148,8 @@ make -C containers smoke-base
 make -C containers smoke-workspace
 make -C containers smoke-debian-tools
 make -C containers smoke-fedora-tools
+make -C containers smoke-agent
+make -C containers smoke-fake-services
 make -C containers smoke
 ```
 
@@ -181,6 +189,51 @@ The `smoke-fedora-tools` target runs the version-and-TLS smoke, which doesn't
 need privileges; the `mock -r fedora-44-aarch64 --init` and trivial-build gate
 lives in `scripts/fedora-tools-build-smoke.sh` and is invoked separately with
 `--privileged`. Spec §4.4.
+
+## `agent` — prebuilt binary, no toolchain
+
+The spec (§4.5) says *"`agent` is exception: does not inherit `base`,
+needs Rust 1.98.0 and `workspace` needs 1.88.0, two cannot coexist in one
+rustup toolchain directory without `--force` gymnastics."* But the
+submodule's own release pipeline
+(`https://github.com/nearai/ironclaw/releases/tag/ironclaw-v1.4.1`) ships
+glibc tarballs for both `aarch64-unknown-linux-gnu` and
+`x86_64-unknown-linux-gnu`, SHA256-checked. The `agent` image pulls the
+right tarball, verifies it, installs to `/usr/local/bin/ironclaw`, and
+ships a thin runtime — no Rust toolchain, no Node, no WebUI. End image
+is ~80MB instead of the submodule's ~1.5GB Railway deployment image.
+
+`MINIMAX_API_KEY` and `IRONCLAW_REBORN_SECRET_MASTER_KEY` are NOT baked.
+Pass them at run time (`docker run -e MINIMAX_API_KEY=…` or via compose
+`env_file`). The smoke explicitly refuses to load if either is set in
+the image — that would be a supply-chain defect.
+
+## `fake-services` — six privileged endpoints, four services
+
+Spec §4.6 says this image is "specified, not built" because no
+`PrivilegedOperation` producer exists in the tree yet (D-09). Built
+anyway so the integration-test surface exists when the producer does
+land. Python 3 stdlib HTTP server — single file, ~20MB final image.
+
+Six endpoint operations (spec §4.6 paragraph 1):
+
+| HTTP | Path | Operation |
+|---|---|---|
+| GET    | /issues/debian-bts/{id}        | provider read (`IssueCapability::provider_id = debian-bts`) |
+| GET    | /issues/redhat-bugzilla/{id}   | provider read (`IssueCapability::provider_id = redhat-bugzilla`) |
+| POST   | /issues/{provider}/{id}/mutate | `IssueTrackerMutation` (covers both providers) |
+| POST   | /release/debian/canonical-push | `CanonicalRepositoryPush` (Debian) |
+| POST   | /release/fedora/koji-build     | `RemoteBuildSubmission` (Fedora) |
+| POST   | /release/fedora/bodhi-update   | `DistributionUpdateCreation` (Fedora) |
+
+Default: `401` without `Bearer` auth, `429` once an IP blows
+`FAKE_SERVICES_RATE_LIMIT` (default 60/min),
+`FAKE_SERVICES_PARTIAL_FAILURE_RATE` (default 5%) chance of `502`. A
+fake that always returned 200 would be worse than no fake — the spec
+is explicit that failure shape must match reality.
+
+Signing is intentionally not exposed — spec §4.6 constraint #3.
+There is no `/sign` endpoint; the smoke asserts its absence.
 
 ## Cleanup
 
