@@ -59,6 +59,11 @@ const ALLOWLIST: &[(&str, &str)] = &[
          exist yet; sbuild runs in the container that §4.3 specifies.",
     ),
     (
+        "debian.qa.lintian",
+        "Phase 1 — same image as `debian.build.sbuild`. Lintian runs against \
+         the built package, so it cannot ship before the build image does.",
+    ),
+    (
         "debian.qa.piuparts",
         "Phase 1 — piuparts exercises the *source* package, so unlike lintian \
          it does not need the build image; it needs the checkout, which the \
@@ -138,35 +143,44 @@ fn planned_capabilities(adapter: &dyn DistributionAdapter) -> BTreeSet<String> {
 fn assert_capabilities_resolve(label: &str, planned: BTreeSet<String>, registry: &ToolRegistry) {
     let allowlisted: BTreeSet<&str> = ALLOWLIST.iter().map(|(k, _)| *k).collect();
 
-    for key in &planned {
-        let registered = ToolCapabilityKey::new(key)
-            .map(|k| registry.get(&k).is_some())
-            .unwrap_or(false);
+    // Collect rather than panic on the first. A new stub arriving with
+    // three unowned capabilities should get one message naming three,
+    // not three rounds of one.
+    let unresolved: Vec<&String> = planned
+        .iter()
+        .filter(|key| {
+            let registered = ToolCapabilityKey::new(key.as_str())
+                .map(|k| registry.get(&k).is_some())
+                .unwrap_or(false);
+            !registered && !allowlisted.contains(key.as_str())
+        })
+        .collect();
 
-        if registered || allowlisted.contains(key.as_str()) {
-            continue;
-        }
-
-        // The failure has to name the two ways out, because "add a
-        // tool or add a reason" is only useful if both are visible.
-        let reasons: Vec<&str> = ALLOWLIST
-            .iter()
-            .filter(|(k, _)| *k == key)
-            .map(|(_, r)| *r)
-            .collect();
-        panic!(
-            "{label} plans the capability `{key}`, which has no registered \
-             tool and no allowlist entry.\n\n\
-             Either the tool exists and the daemon does not register it -- \
-             add it to `bins/ironmaintd`'s tool set and this test will \
-             resolve the key on its own -- or it does not exist, in which \
-             case add it to `ALLOWLIST` with a reason naming the phase \
-             that will supply it.\n\
-             (A reason that cannot name a phase is not a plan; file it in \
-             `doc/DEBT.md` instead. Allowlist entries for other keys: \
-             {reasons:?})"
-        );
+    if unresolved.is_empty() {
+        return;
     }
+
+    // The failure has to name the two ways out, because "add a tool or
+    // add a reason" is only useful if both are visible.
+    panic!(
+        "{label} plans {} capabilit{} with no registered tool and no \
+         allowlist entry:\n  {}\n\n\
+         For each, one of two things is true.\n\n  \
+         The tool exists and the daemon does not register it -- add it \
+         to `bins/ironmaintd`'s tool set, and this test resolves the key \
+         on its own with no list edit.\n  \
+         The tool does not exist -- add it to `ALLOWLIST` with a reason \
+         naming the phase that will supply it.\n\n\
+         A reason that cannot name a phase is not a plan; file it in \
+         `doc/DEBT.md` instead.",
+        unresolved.len(),
+        if unresolved.len() == 1 { "y" } else { "ies" },
+        unresolved
+            .iter()
+            .map(|k| k.as_str())
+            .collect::<Vec<_>>()
+            .join("\n  "),
+    );
 }
 
 #[test]
