@@ -329,6 +329,12 @@ yet, so "rebuild everything" is a shell loop over known ids.
 > for two separately-verified defects in the §36 escape hatch, and the first
 > tests in that crate to put a real job in front of the tool rather than
 > exercising the no-events path.
+>
+> **Amended 2026-10-02**, at `ffccbd7`: **916** unit and **925** with
+> `--features integration`, both green, and now **five** verifiers — `verify-seams`
+> joined the §97 set. The +76 is the container and in-container work
+> (`41682b2`, `13bf829`, `500e37c`) and the seam checker itself (`ffccbd7`).
+> Every count above this line is kept as written; §21 records what changed.
 
 All §97 commands green at `bf11da7` (0B.9 C6):
 
@@ -441,6 +447,22 @@ Specifically enforced and holding on this branch:
   `if family == "debian"` branching exists in any core crate.
 - `ironmaint-mcp` depends on `ironmaint-runtime` (dispatcher → service), not
   the reverse.
+
+**A second verifier now guards the seams rather than the dependency graph.**
+`cargo run -p xtask -- verify-seams` (`ffccbd7`) is the fifth §97 command. It
+carries four static checks — S1 (every `RuntimeCommand` variant is *constructed*
+outside tests, not merely mentioned), S2 (every name `tool_for_action` returns
+is a registered tool), S4 (every `JobEvent` has an arm in `ProjectionApply::apply`
+and seed selection is decided in exactly one place), S5 (both store backends
+implement the same supertrait). Three behavioural checks — S3, S8, S9 — are
+specified in `doc/SEAM-VERIFICATION.md` and **not yet built**; §21 says what
+that leaves uncovered.
+
+Worth knowing before reading a green result: the check's first run reported six
+violations and **five were bugs in the check**, because its test module had
+never been compiled — `cargo test -p xtask` had not been run, and twelve of its
+thirty-four tests failed. The lesson is written into the module's own doc
+comment rather than left here.
 
 ## 15. Schema verification result
 
@@ -1207,3 +1229,111 @@ and no test in the workspace capable of finding it.
 binary is present, so a green run of *it* proves the server and not the agent.
 Row 30 is unaffected: the agent loop and the extension manifest still have not
 been exercised, and D-15's repro steps still stand.
+
+---
+
+## 21. Post-0B.10 amendment — 2026-10-02
+
+Everything above this line is accurate as of the commit named in each section,
+which for §20 is `8b95884`. This section records the five sub-phases that have
+landed since, and — more to the point for a Phase 1 reader — what they changed
+about the handoff.
+
+### 21.1 What landed
+
+| Commit | PR | What |
+|---|---|---|
+| `13bf829` | #34 | `ironmaint/base:0.1` and `ironmaint/workspace:0.1` images, Dockerfiles, Makefile, per-image smoke tests (D-17) |
+| `41682b2` | #35 | the four remaining images: `debian-tools`, `fedora-tools`, `agent`, `fake-services` |
+| `500e37c` | #36 | D-18 — one symptom, two independent causes, and a third found while verifying. In-container §97 green for the first time |
+| `79a7a2a` | #37 | daemon teardown in tests: `kill_on_drop`, an awaited `shutdown()`, and a test that pins the reap (D-19's found half) |
+| `ffccbd7` | #38 | `verify-seams` — static checks S1, S2, S4, S5, in the §97 set |
+
+§97 on that tree: **916** unit, **925** integration, five verifiers, `fmt` and
+clippy `-D warnings` clean.
+
+### 21.2 The register, and who owns each open row
+
+`doc/DEBT.md` carries twenty rows; ten were closed by those five commits and
+their predecessors. The remaining ten now each open with a tag saying **who
+decides**, because a flat list of "OPEN" rows mixed six different kinds of
+object. In summary: **two are architect decisions** (D-09's open half, and
+D-20 — the latter closed on 2026-10-02 by *posing* its question rather than
+coding it), **two are environment-blocked** (D-06 and D-15 — neither closable by
+writing code), **two are Phase 1 by design** (D-11, D-12), **one is a recorded
+non-decision** (D-10), **one is process** (D-13), and **two are real but
+bounded and not Phase 1's problem** (D-17 needs a CI owner; D-19's teardown
+defect is fixed and the unreproduced hang is not a blocker).
+
+**D-06 and D-15 are the only two that stop a claim from being verified rather
+than a capability from existing.** Neither will be closed by Phase 1 writing
+code; both close on a machine with an `ironclaw` binary.
+
+### 21.3 Phase 1 landmines
+
+Four things an adapter author will hit. Only the first is a live defect; the
+rest are decisions the code is currently making by omission.
+
+**1. `MockStore` and SQLite disagree on duplicate fingerprints, and the
+disagreement is not registered.** `MockStore::put_source_candidate`
+(`crates/ironmaint-store/src/mock.rs:223`) does `source_by_fp.insert(fp, id)`
+unconditionally, so a second candidate carrying a duplicate fingerprint
+silently overwrites the index. Real SQLite rejects it —
+`migrations/0001_initial.sql:65` is `fingerprint TEXT NOT NULL UNIQUE`.
+
+*This one is mitigated, not fixed.* `crates/ironmaint-workspace/src/capture.rs:125–133`
+looks the fingerprint up before inserting, and the comment at 107–124 names
+`MockStore` as the reason the original bug was invisible to every test. The
+guard shipped with the fix. **But the store-level divergence remains**, and any
+*new* caller of `put_source_candidate` — which is exactly what a real adapter
+brings — re-exposes it with no test able to see the difference. The two capture
+tests that motivated it are D-09-era instances 9 and 11. The `verify-seams` work
+in flight adds the store-parity script (S9) that would catch this; it is not in
+the tree yet.
+
+**2. Nothing escalates a job to `HumanReviewRequired` in production**, so the
+registered `job.resume` tool cannot succeed on any job a real agent can reach.
+`EnterHumanReview` is implemented, dispatched, and works — its only
+construction site is `crates/ironmaint-mcp/tests/dispatcher.rs:236`. Same
+shape as the `InfrastructureBlocked` entry in D-09. **Both are posed as
+[§17 question 8](#17-questions-requiring-review-before-real-debian-integration)
+above, with three candidate answers.** Nothing is broken; the decision is
+simply unmade, and state ownership is on §106's do-not-redesign list.
+
+**3. The stubs' plans are real and unwired.** `adapters/debian-stub` and
+`adapters/fedora-stub` return distribution-distinct plans —
+`debian.build.sbuild`, `debian.qa.lintian`, `fedora.build.mock`,
+`fedora.qa.rpmlint` — and both pass the shared conformance suite. **Their only
+caller is that conformance suite.** Wiring `build_plan()`/`qa_plan()` into a
+production flow is Phase 1's first task, and §17 question 7 already settled that
+the first real adapter must activate its candidate or it is not exercising what
+it claims to.
+
+**4. Six of the fourteen wrong-guard defects are out of reach of any verifier
+shipped so far.** `reconcile`'s `never_loop`, `SetActiveCandidate`'s state
+guard, `attach_obligation_state`'s read-before-check, `next_actions` omitting an
+obligation. The link exists, has a caller, and does the wrong thing. A "is this
+called" check sees a called function and has nothing to say. This is recorded so
+those six are not later re-attributed to `verify-seams`, and so **a green
+`verify-seams` is never read as "no missing seams."**
+
+### 21.4 What Phase 0A left behind
+
+There is no `PHASE-0A-COMPLETION.md`. Phase 0A's six sub-phases landed as
+`47ceb6e` (0A.1), `feature/phase-0a-domain-model` (0A.2–0A.3), PR #7 (0A.4),
+`a514686` (0A.5), and PR #9 (0A.6). Their spec sections are
+`doc/phases/PHASE-0A.md` §§76–81. The one post-condition that slipped — 0A.6
+promoting the panic-policy lints — landed later under D-04 in 0B.10, not in
+0A.6.
+
+### 21.5 What is still claimed rather than shown
+
+Two, both unchanged since 0B.10 and both recorded above:
+
+- **§102 row 30** — an actual IronClaw agent completing the synthetic repair
+  workflow. Environment-blocked (D-15). The workflow is proven agent-drivable;
+  the specific agent the spec names has not been run against it.
+- **The §36 operator escape hatch** — driven by hand, not by
+  `scripts/ironclaw-e2e.sh`, whose IronClaw half skips with a notice when no
+  binary is present. A green run of *that* script proves the server, not the
+  agent.
