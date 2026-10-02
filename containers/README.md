@@ -16,7 +16,10 @@ containers/
 ├── base/          ← ironmaint/base:0.1
 │   ├── Dockerfile
 │   └── smoke.sh
-└── workspace/     ← ironmaint/workspace:0.1
+├── workspace/     ← ironmaint/workspace:0.1
+│   ├── Dockerfile
+│   └── smoke.sh
+└── debian-tools/  ← ironmaint/debian-tools:0.1
     ├── Dockerfile
     └── smoke.sh
 ```
@@ -26,7 +29,7 @@ containers/
 ```
 debian:trixie-slim ────────▶ ironmaint/base:0.1     (substrate; uid 1000; tini; apt: ca-certificates, git, bash, curl, python3)
                               │
-                              └──▶ (future) ironmaint/debian-tools:0.1
+                              ├──▶ ironmaint/debian-tools:0.1   (apt: sbuild, lintian, autopkgtest, dpkg-dev, debhelper, gbp, devscripts, diffoscope, reprotest, piuparts, uidmap)
                               └──▶ (future) ironmaint/fake-services:0.1
 
 rust:1.94.0-bookworm ──────▶ ironmaint/workspace:0.1   (Rust 1.94.0 pinned; + build-essential, ca-certificates, python3; USER rust)
@@ -133,8 +136,35 @@ test."* Run them individually or all together:
 ```sh
 make -C containers smoke-base
 make -C containers smoke-workspace
+make -C containers smoke-debian-tools
 make -C containers smoke
 ```
+
+## `debian-tools` — sandbox requirement
+
+`sbuild` creates its schroot via `sbuild-debootstrap`, which needs to mount
+filesystems and use namespaces. Docker's default seccomp profile blocks both,
+so the container must run with one of:
+
+```sh
+# Preferred: unprivileged user namespaces (no root, no host risk)
+docker run --rm --security-opt seccomp=unconfined \
+  --security-opt apparmor=unconfined \
+  -v "$(pwd)":/work -w /work \
+  ironmaint/debian-tools:0.1 sbuild --version
+
+# Fallback: privileged mode (full root in the container)
+docker run --rm --privileged \
+  -v "$(pwd)":/work -w /work \
+  ironmaint/debian-tools:0.1 sbuild --version
+```
+
+Spec §4.3: *"`--privileged` on a machine that also runs an agent with API
+keys is a real risk and not a theoretical one."* Prefer user namespaces;
+fall back to `--privileged` only when the alternative doesn't work on your
+Docker runtime. The compose service is not configured for `debian-tools` —
+the sbuild-gated jobs are invoked ad-hoc from a developer machine, not from
+the §97 build loop.
 
 ## Cleanup
 

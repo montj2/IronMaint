@@ -1,24 +1,27 @@
 # containers/Makefile — build, test, and clean the IronMaint image set.
 #
 # Targets:
-#   make build            Build base and workspace for the native arch.
-#   make build-base       Build just base.
-#   make build-workspace  Build just workspace.
-#   make build-multi      Multi-arch build (arm64 + amd64), pushes to local
-#                         registry at localhost:5000. Requires the registry
-#                         running (see `make registry`).
-#   make smoke            Run smoke tests for base and workspace.
+#   make build                Build base + workspace + debian-tools for native arch.
+#   make build-base           Build just base.
+#   make build-workspace      Build just workspace.
+#   make build-debian-tools   Build just debian-tools (FROM ironmaint/base:0.1).
+#   make build-multi          Multi-arch build (arm64 + amd64), pushes to local
+#                             registry at localhost:5000. Requires the registry
+#                             running (see `make registry`).
+#   make smoke                Run smoke tests for base + workspace + debian-tools.
 #   make smoke-base
 #   make smoke-workspace
-#   make verify           Build + smoke, fail on any non-zero exit.
-#   make registry         Start a local registry:2 on :5000 (background).
-#   make inspect          Print image metadata.
-#   make clean            Remove locally-loaded images.
-#   make clean-volumes    Also drop the compose-managed named volumes.
+#   make smoke-debian-tools
+#   make verify               Build + smoke, fail on any non-zero exit.
+#   make registry             Start a local registry:2 on :5000 (background).
+#   make inspect              Print image metadata.
+#   make clean                Remove locally-loaded images.
+#   make clean-volumes        Also drop the compose-managed named volumes.
 
-REGISTRY       ?= localhost:5000
-BASE_TAG       ?= ironmaint/base:0.1
-WORKSPACE_TAG  ?= ironmaint/workspace:0.1
+REGISTRY            ?= localhost:5000
+BASE_TAG            ?= ironmaint/base:0.1
+WORKSPACE_TAG       ?= ironmaint/workspace:0.1
+DEBIAN_TOOLS_TAG    ?= ironmaint/debian-tools:0.1
 NATIVE_ARCH    := $(shell docker buildx inspect default 2>/dev/null \
                     | awk -F'= ' '/Platforms/ {print $$2; exit}' \
                     | awk -F, '{print $$1}' \
@@ -36,7 +39,7 @@ DRIVER         := $(shell docker buildx inspect 2>/dev/null \
 
 # ---- build ----------------------------------------------------------------
 .PHONY: build
-build: build-base build-workspace
+build: build-base build-workspace build-debian-tools
 
 .PHONY: build-base
 build-base:
@@ -55,6 +58,16 @@ build-workspace:
 		--load \
 		--file containers/workspace/Dockerfile \
 		containers/workspace/
+
+.PHONY: build-debian-tools
+build-debian-tools: build-base
+	docker buildx build \
+		--platform linux/$(NATIVE_ARCH) \
+		--tag $(DEBIAN_TOOLS_TAG) \
+		--load \
+		--build-arg BASE_TAG=$(BASE_TAG) \
+		--file containers/debian-tools/Dockerfile \
+		containers/debian-tools/
 
 # ---- multi-arch ----------------------------------------------------------
 .PHONY: build-multi
@@ -78,6 +91,14 @@ build-multi: registry
 		--push \
 		--file containers/workspace/Dockerfile \
 		containers/workspace/
+	docker buildx build \
+		--platform $(PLATFORMS) \
+		--tag $(REGISTRY)/$(DEBIAN_TOOLS_TAG) \
+		--tag $(REGISTRY)/ironmaint/debian-tools:latest \
+		--push \
+		--build-arg BASE_TAG=$(BASE_TAG) \
+		--file containers/debian-tools/Dockerfile \
+		containers/debian-tools/
 
 .PHONY: registry
 registry:
@@ -89,7 +110,7 @@ registry:
 
 # ---- smoke ---------------------------------------------------------------
 .PHONY: smoke
-smoke: smoke-base smoke-workspace
+smoke: smoke-base smoke-workspace smoke-debian-tools
 
 .PHONY: smoke-base
 smoke-base: build-base
@@ -105,15 +126,24 @@ smoke-workspace: build-workspace
 		$(WORKSPACE_TAG) \
 		bash /usr/local/bin/smoke.sh
 
+.PHONY: smoke-debian-tools
+smoke-debian-tools: build-debian-tools
+	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-v "$(PWD)":/work \
+		-w /work \
+		$(DEBIAN_TOOLS_TAG) \
+		bash /usr/local/bin/smoke.sh
+
 # ---- inspect / clean -----------------------------------------------------
 .PHONY: inspect
 inspect:
 	docker buildx imagetools inspect $(BASE_TAG) || true
 	docker buildx imagetools inspect $(WORKSPACE_TAG) || true
+	docker buildx imagetools inspect $(DEBIAN_TOOLS_TAG) || true
 
 .PHONY: clean
 clean:
-	-docker image rm -f $(BASE_TAG) $(WORKSPACE_TAG) 2>/dev/null
+	-docker image rm -f $(BASE_TAG) $(WORKSPACE_TAG) $(DEBIAN_TOOLS_TAG) 2>/dev/null
 	-docker buildx stop ironmaint-multi 2>/dev/null
 	-docker buildx rm ironmaint-multi 2>/dev/null
 	-docker container rm -f ironmaint-registry 2>/dev/null
