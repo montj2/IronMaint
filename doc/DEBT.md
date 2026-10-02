@@ -132,6 +132,8 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-17 | LOW | Container images not built in CI. `ironmaint/base:0.1` and `ironmaint/workspace:0.1` ship as Dockerfiles + a Makefile + per-image smoke tests; nothing builds them on every push. Spec §10 is explicit that adding CI is a separate decision with a separate owner. The smoke tests have teeth (D-14 lesson applied) but a digest bump or FROM-tag drift would not be caught automatically. | OPEN |
 | D-18 | MEDIUM | One symptom — 7 of 10 `process_exit_codes` tests failing with `exit_code: 127` in the container — with **two independent causes**, plus a third found while verifying. Six tests were a harness defect (three sites resolved the `ironmaint-fixture` binary by walking to `target/` and guarding with `path.exists()`); one was a **production** defect (on Linux `posix_spawn` reports a failed `exec` as a child exiting 127, so a missing tool was recorded as a tool that ran) | **CLOSED 2026-10-02** — the original entry's hypothesis was *half* right and the first correction was *half* wrong: both halves shared the exit code 127, which is why the 7/10 never identified a single cause. Four fixes: `67fedbc` one loadability-checking resolver, `3e30002` a fourth call site, `c0e551b` a pre-spawn launchability check, `29c8e23`/`02ee489` the container build dir and the verifier that read it. In-container §97 is green for the first time (877/886). Raised LOW → **MEDIUM** on the production half. See the long-form entry below |
 | D-19 | MEDIUM | A §97 container run hung in `startup_shutdown.rs` and the cause is **not known**. One confirmed defect found while investigating: `Drop for Daemon` signalled SIGKILL but never reaped, so 11 of the 15 tests in that file depended on tokio's SIGCHLD orphan handler to collect their own children — and a live `ironmaintd` from a killed run survived on the host for two days | **PARTLY FIXED** — `kill_on_drop(true)`, an awaited `shutdown()` that escalates, and a test that pins the reap. The **hang itself is OPEN**: see the entry for what is ruled out, what is not, and what would settle it |
+||||||| parent of a3040fc (Correct S1's allowlist, and record D-20: five are decisions, two are stale docs)
+| D-20 | LOW | S1 in `verify-seams` found that **7 of 12 `RuntimeCommand` variants have no production construction site.** `handle_command` has twelve arms, all patterns; the five constructions are all in `crates/ironmaint-mcp/src/dispatch.rs`. Five of the seven are decisions with the reason written down at the call site. The two that are not: **`RequestApproval`'s doc makes a claim that is false**, and **`job.resume` cannot succeed in production** because the only `ResumeRecorded` writer is itself unreachable | **OPEN, two parts, both documentation-shaped** — no capability is missing from the runtime, and neither part is a bug to fix so much as a comment that will mislead. Part 1: `RequestApproval`'s doc says `next_actions` advertises it and that following it reaches the refusal; `ReadyForApproval` emits `allowed: vec![]` / `requires_human: ApproveRelease` and `RequestApproval` is not an `AllowedAction`. Part 2: the two `next_actions` docs describing `ResumeJob` and `ReviewEscalation` describe a state production cannot reach. See the long-form entry below |
 
 ---
 
@@ -1903,6 +1905,101 @@ early: 0B.10 C5's `mcp_acceptance_scenario.rs` meets the criterion as written, s
 it is a **regression test for Phase 1's premise** rather than a Phase 1
 deliverable — if a Phase 1 adapter cannot be driven through the same surface, the
 change that broke it fails a test that already exists.
+
+---
+
+## D-20 — seven of twelve commands are constructed by nobody, and five of the seven are fine (LOW)
+
+**Severity rationale:** LOW. Nothing in the runtime is missing a capability, and
+nothing computes a wrong answer. Both parts of this entry are a comment that
+will mislead a future reader, which is real but is not a defect in behaviour.
+It is filed at all because the two comments are *load-bearing*: each is the
+justification a future implementer would rely on, and each justifies a design
+that is not the design.
+
+**How it was found.** S1 in `verify-seams`, on its first honest run. The check
+counts `Expr::Struct` — a construction — rather than occurrences of
+`VariantName {`, because a `match` arm and a struct literal are the same `syn`
+node separated only by a `=>`. A text search finds all twelve arms of
+`handle_command` and reports the seam as closed when it is wide open. Seven
+variants have no construction site outside tests.
+
+### Evidence
+
+| Variant | Reached by | Verdict |
+|---|---|---|
+| `MaterializeChecks` | `handle_capture_candidate` → `handle_materialize_checks` (service.rs:1622) | decision, reason at the call site |
+| `SetActiveCandidate` | `handle_capture_candidate` → `handle_set_active_candidate` (service.rs:1712) | decision; D-16's event makes the binding durable |
+| `RecordCheckEvidence` | `handle_run_check` writes the gate result inline (service.rs:2417) | decision, and §53 is the reason |
+| `RecordObligationOutcome` | `handle_run_check` → `derive_obligation_verdicts` (service.rs:2431) | decision, and the comment says why |
+| `Reconcile` | MCP dispatcher calls `RuntimeService::reconcile` directly (mcp/src/dispatch.rs:214) | decision; §41 is per-call, no loop |
+| `EnterHumanReview` | tests only | **deliberate, and said so twice** |
+| `RequestApproval` | nothing | **the refusal is correct; its doc is wrong** |
+
+The two that are not decisions are described below.
+
+### Part 1 — `RequestApproval`'s doc describes a design that no longer exists
+
+The variant's own doc (`crates/ironmaint-runtime/src/command.rs:125-132`) says:
+
+> *"`next_actions` still advertises `RequestApproval` at that state, and that is
+> not a contradiction … An agent that follows `next_actions`, calls this, and
+> reads the refusal has learned it must hand off to a person — which is the exit
+> checkpoint in `SKILL.md` made executable rather than implied."*
+
+Both halves of that are false today. `RequestApproval` is not a variant of
+`AllowedAction` at all — that enum has four (`CaptureCandidate`, `RunCheck`,
+`ApplyPatch`, `ResumeJob`), and S2 confirms all four map to registered tools.
+`ReadyForApproval` emits `allowed: vec![]` with
+`requires_human: Some(HumanAction::ApproveRelease)` (service.rs:2706).
+
+So the agent never calls it, and the exit checkpoint is exactly as *implied* as
+the doc says it is not. **The refusal is not the problem.** 0B shipping no
+approval principal, no delivery channel and no durable `ApprovalStore` is a
+deliberate boundary, and recording a decision nobody made would be worse. What
+is wrong is the doc: it claims a reachable path to the refusal, and a future
+implementer reading it would add an MCP tool to satisfy a contract that the
+handler already satisfies by refusing.
+
+**Fix:** correct the doc to describe the two `next_actions` fields as they are —
+`requires_human: ApproveRelease` is the advertised move, and the refusal is what
+a caller gets if it constructs the command anyway.
+
+### Part 2 — `job.resume` is a registered tool that cannot succeed
+
+`EnterHumanReview` being unreachable is a decision, written down twice:
+*"escalation is an orchestration decision, and an agent that could raise it
+against itself could also strand itself"* (mcp/tests/dispatcher.rs:204) and
+*"0A §21 gives it no entry point, so the runtime cannot yet produce this
+projection"* (next_actions.rs, on the `HumanReviewRequired` arm).
+
+What nobody wrote down is the consequence. The only `ResumeRecorded` writer in
+the workspace is `handle_enter_human_review` (service.rs:1037). `attach_resume_action`
+only advertises `AllowedAction::ResumeJob` when such a record exists. Therefore
+in production no record is ever written, the action is never advertised, and
+`job.resume` — registered, mapped, and dispatchable — cannot succeed against any
+job the daemon can actually reach.
+
+Two docs then describe the state as though it were reachable:
+`HumanAction::ReviewEscalation` says *"The same job also lists
+`AllowedAction::ResumeJob`, because a tool for it exists"*, and
+`AllowedAction::ResumeJob` says it is emitted when a record exists. Both are
+true of the code and unreachable in practice.
+
+**This is not a bug to fix.** The escalation entry point belongs to whichever
+phase supplies an operator surface, and the consequence is exactly what that
+phase needs to know. It is recorded so that the eventual implementer of the
+entry point sees the other half of the contract, and so that a future audit
+does not read `job.resume` being registered as evidence that the review loop
+works.
+
+**Why LOW and not higher.** S8 — "reachable only from a test" — is the check
+that would treat part 2 as a defect, and S8 is deferred to the behavioural PR.
+What S1 could report here is the weaker, truer statement: a variant nobody
+constructs. That statement is accurate and is worth a register entry, but on its
+own it does not distinguish the five decisions from the two comment defects.
+Distinguishing them required reading every call site, which is what the
+allowlist reasons are for.
 
 ## Decisions taken 2026-10-01
 

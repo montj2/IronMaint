@@ -1,5 +1,5 @@
-//! **S4 — every event variant is handled by every replay implementation, and
-//! seed selection is decided in exactly one place.**
+//! **S4 — a replay enumerates every `JobEvent`, and the seed decision is
+//! decided in exactly one place.**
 //!
 //! ## Why the match arms are not the interesting half
 //!
@@ -9,6 +9,27 @@
 //! re-introduces exactly the defect this check exists to catch: a variant
 //! that is *accepted* and *ignored*. So the check counts arms and rejects a
 //! wildcard.
+//!
+//! ## What "a replay" means, and why it is not "any match in the tree"
+//!
+//! Two scoping decisions, both forced by code that is correct and that a
+//! broader rule reports as a defect:
+//!
+//! - **`load_resume_record`** (`service.rs:966`) is a `find_map` over the
+//!   event log with `_ => None`, scanning for one specific variant. Its
+//!   wildcard is the correct code. A `match` on `JobEvent` is a *dispatcher*
+//!   only when something dispatches an event, so the coverage rule applies to
+//!   replay bodies and not to every `match` in the workspace.
+//! - **`SqliteStore::rebuild_projection`** is a one-line forward into
+//!   `ops::projections::rebuild`, and *that* is where the seed is chosen.
+//!   Judging the method alone reports a second copy of a decision the code
+//!   makes exactly once, which is the D-14 shape appearing as a false
+//!   positive. So the seed rule is about the delegation *chain*: a body that
+//!   is nothing but a call forwards its verdict to whatever it calls.
+//!
+//! The first version of this check made both mistakes and reported seven
+//! violations against correct code. Scoping a check to "the code this rule is
+//! actually about" is the work; finding the rule was the easy half.
 //!
 //! ## Why the seeds are the interesting half
 //!
@@ -22,9 +43,7 @@
 //! A replay that re-derives the decision is not wrong today. It is wrong the
 //! first time the decision changes, and nothing will say so.
 
-use std::collections::BTreeSet;
-
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use syn::visit::Visit;
 
@@ -79,11 +98,10 @@ impl EventsCheck {
                         violations.push(SeamViolation {
                             check: "S4",
                             subject: format!("{ENUM}::{v} at {owner}"),
-                            detail: format!(
-                                "no explicit arm in a replay. A wildcard would compile \
-                                 and would silently drop the event, which is the D-14 \
-                                 defect."
-                            ),
+                            detail: "no explicit arm in a replay. A wildcard would \
+                                      compile and would silently drop the event, which \
+                                      is the D-14 defect."
+                                .to_owned(),
                         });
                     }
                 }
@@ -502,11 +520,12 @@ impl<'ast> Visit<'ast> for DefinitionVisitor<'_> {
     /// A trait method's declaration. Counted so that a default body added to
     /// the trait is visible to the check rather than invisible to it.
     fn visit_trait_item_fn(&mut self, node: &syn::TraitItemFn) {
-        if let Some(block) = &node.default {
-            if node.sig.ident == self.name {
-                self.record(block, node.sig.ident.span());
-            }
+        if let Some(block) = &node.default
+            && node.sig.ident == self.name
+        {
+            self.record(block, node.sig.ident.span());
         }
+
         syn::visit::visit_trait_item_fn(self, node);
     }
 }
@@ -525,10 +544,10 @@ struct SeedCallFinder {
 
 impl<'ast> Visit<'ast> for SeedCallFinder {
     fn visit_expr_call(&mut self, node: &syn::ExprCall) {
-        if let syn::Expr::Path(p) = &*node.func {
-            if p.path.segments.last().is_some_and(|s| s.ident == SEED) {
-                self.called = true;
-            }
+        if let syn::Expr::Path(p) = &*node.func
+            && p.path.segments.last().is_some_and(|s| s.ident == SEED)
+        {
+            self.called = true;
         }
         syn::visit::visit_expr_call(self, node);
     }
@@ -560,7 +579,7 @@ fn variant_under<'p>(path: &'p syn::Path, enum_name: &str) -> Option<&'p syn::Id
         .iter()
         .take(path.segments.len().saturating_sub(1))
         .any(|s| s.ident == enum_name);
-    under.then(|| &last.ident)
+    under.then_some(&last.ident)
 }
 
 #[cfg(test)]
@@ -650,7 +669,7 @@ mod tests {
     #[test]
     fn a_replay_that_re_derives_the_decision_is_recognised_as_one_that_does_not() {
         let f = file("fn rebuild_projection() { let p = decide_myself(e); }");
-        assert_eq!(EventsCheck::definitions(&f, REPLAY)[0].1, false);
+        assert!(!EventsCheck::definitions(&f, REPLAY)[0].1);
     }
 
     #[test]
@@ -685,7 +704,7 @@ mod tests {
         let files = [src("t", f)];
         let bodies = ReplayBodies::collect(&files);
         let chain = &bodies.chains[0];
-        assert!(chain.reaches_seed);
+        assert!(chain.reaches_seed, "{:?}", chain.path);
         assert_eq!(chain.bodies.len(), 2);
     }
 

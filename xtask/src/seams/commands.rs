@@ -56,29 +56,15 @@ const ALLOWLIST: &[(&str, &str)] = &[
     ),
     (
         "RecordCheckEvidence",
-        "**D-20, a defect rather than a decision.** The handler is called from \
-         exactly one place — its own `handle_command` arm — so with the command \
-         unconstructed the operation is unreachable in production. §30 wants \
-         evidence recorded against a gate; that recording happens only in tests.",
+        "A decision, recorded at the call site rather than here. The recording          does happen in production — `handle_run_check` writes the gate result          itself (service.rs:2417) — but it does so inline, and the reason is          written down where the code is: \"There is deliberately no MCP tool          for this: §53 forbids `ironmaint_obligation_set_pass`\". The command          is the interface; the flow calls the handler directly. A settable          command here would be the forbidden tool with an extra hop.",
     ),
     (
         "RecordObligationOutcome",
-        "**D-20, a defect rather than a decision.** Same shape as \
-         `RecordCheckEvidence`. This one is the more serious half: the \
-         variant's own doc justifies its existence by making a `Fail` or \
-         `RequiresReview` verdict 'representable in production', and §34 blocks \
-         the transition on exactly those. If nothing constructs the command, \
-         the representability the doc claims is reachable only from tests.",
+        "As `RecordCheckEvidence`, and by the same reasoning:          `handle_run_check` derives the obligation verdict inline via          `derive_obligation_verdicts` (service.rs:2431), and the comment there          states the consequence of not doing so — \"Without this step a          mandatory obligation could only ever be `NotEvaluated` over the tool          surface, and a job could never reach `ReadyForApproval`\". So the          capability the variant exists to express is live; only the command          wrapper is unconstructed.",
     ),
     (
         "RequestApproval",
-        "A correct refusal, deliberately unreachable as a write (§0B 0B.10 C1 \
-         and the command's own doc): 0B ships no approval principal, no \
-         delivery channel and no durable `ApprovalStore`, so implementing the \
-         write would record a decision nobody made. The refusal is the honest \
-         answer. **But the refusal is also unreachable**, because no MCP tool \
-         constructs the command — see S8 and D-20, which is where the defect \
-         actually lives.",
+        "A correct refusal, deliberately unreachable as a write (§0B 0B.10 C1          and the command's own doc): 0B ships no approval principal, no          delivery channel and no durable `ApprovalStore`, so implementing the          write would record a decision nobody made. **D-20 is the command's          doc, not the refusal.** The doc claims `next_actions` advertises          `RequestApproval` and that an agent following it calls this and reads          the refusal. `ReadyForApproval` emits `allowed: vec![]` and          `requires_human: ApproveRelease` (service.rs:2706), and          `RequestApproval` is not an `AllowedAction` at all — so the doc          describes a design that no longer exists.",
     ),
     (
         "Reconcile",
@@ -89,12 +75,14 @@ const ALLOWLIST: &[(&str, &str)] = &[
     ),
     (
         "EnterHumanReview",
-        "**D-20, a defect rather than a decision.** Reachable only from tests \
-         (mcp/tests/dispatcher.rs, testkit/tests/replay_roundtrip.rs). The \
-         human-in-the-loop escape hatch therefore does not exist in \
-         production: a job can never enter `HumanReviewRequired`, and \
-         `ResumeJob` — which reads the `ResumeRecord` that entering writes — \
-         can never succeed. §21 and §101 step 18 are both unsatisfiable.",
+        "Deliberate, and said so twice: \"escalation is an orchestration \
+         decision, and an agent that could raise it against itself could also \
+         strand itself\" (mcp/tests/dispatcher.rs:204), and \"0A §21 gives it \
+         no entry point, so the runtime cannot yet produce this projection\" \
+         (next_actions.rs). **D-20 is the consequence, not the decision:** the \
+         only `ResumeRecorded` writer in the workspace is this handler, so no \
+         production path writes the record `attach_resume_action` needs — which \
+         makes the registered `job.resume` tool unable to succeed.",
     ),
 ];
 

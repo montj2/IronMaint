@@ -186,10 +186,10 @@ impl StoresCheck {
                 for bound in &t.supertraits {
                     // Lifetimes and `?Sized` carry no method set and
                     // contribute nothing to compare.
-                    if let syn::TypeParamBound::Trait(tb) = bound {
-                        if let Some(last) = tb.path.segments.last() {
-                            out.insert(last.ident.to_string());
-                        }
+                    if let syn::TypeParamBound::Trait(tb) = bound
+                        && let Some(last) = tb.path.segments.last()
+                    {
+                        out.insert(last.ident.to_string());
                     }
                 }
             }
@@ -206,7 +206,7 @@ impl StoresCheck {
             }
             for item in &file.syn.items {
                 let syn::Item::Impl(i) = item else { continue };
-                if i.trait_.is_some() || !self_type_name(&i.self_ty).is_some_and(|n| n == ty) {
+                if i.trait_.is_some() || self_type_name(&i.self_ty).is_none_or(|n| n != ty) {
                     continue;
                 }
                 for m in &i.items {

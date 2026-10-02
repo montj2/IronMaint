@@ -139,7 +139,7 @@ pub fn run() -> Result<Report, Box<dyn Error>> {
     // set) comes from the live MCP API rather than from the tree.
     let outcomes = [
         ("S1", CommandsCheck::run(&files)),
-        ("S2", ActionsCheck::run()),
+        ("S2", ActionsCheck::run(&files)),
         ("S4", EventsCheck::run(&files)),
         ("S5", StoresCheck::run(&files)),
     ];

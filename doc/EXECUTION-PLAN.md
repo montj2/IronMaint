@@ -150,10 +150,13 @@ the whole reason wave 5 exists.
 
 - [ ] Every open register row is CLOSED, or carries a recorded reason it is not
       closing, with a *changed* reason rather than a repeated "deferred to 0B.10"
-- [ ] `cargo run -p xtask -- verify-seams` is in the §97 set in `CLAUDE.md`
+- [x] `cargo run -p xtask -- verify-seams` is in the §97 set in `CLAUDE.md`
 - [x] S7's failing commit is in the history, before D-16's fix — `84af759`
 - [ ] `verify-seams` has been seen to fail on a deliberately introduced defect,
-      twice (S1 and S9), per `doc/SEAM-VERIFICATION.md` §4
+      twice (S1 and S9), per `doc/SEAM-VERIFICATION.md` §4. **S1: done** —
+      `530672f` builds the command by deserialising it, so `job.create` still
+      works and every test still passes, and `verify-seams` is the only thing
+      in the build that notices. S9 lands with the behavioural PR
 - [ ] §102 is 34 of 34, or the remaining gap is D-15 and D-15 says why
 
 ---

@@ -29,6 +29,7 @@ cargo run -p xtask -- verify-architecture     # dependency-direction guardrail
 cargo run -p xtask -- verify-schemas          # JSON schema snapshot check
 cargo run -p xtask -- verify-migrations       # SQLite migration snapshot check
 cargo run -p xtask -- verify-mcp-schemas      # MCP tool schema snapshot check
+cargo run -p xtask -- verify-seams           # S1/S2/S4/S5 seam checks
 cargo test --workspace --features integration   # integration suite (synthetic E2E)
 ```
 

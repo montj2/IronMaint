@@ -32,8 +32,13 @@ use super::{CheckOutcome, CheckSummary, SeamViolation, SourceFile, is_test_path}
 /// The function that maps an action to a tool name.
 const MAPPER: &str = "tool_for_action";
 
-/// A mapping the daemon cannot honour.
-pub struct Unregistered {
+/// One `AllowedAction` → tool-name mapping, as written in the source.
+///
+/// Named for what it is rather than for what it will become: every arm is
+/// collected here, and whether the daemon can honour it is decided later
+/// against the live registry. A name that said "unregistered" would mean the
+/// opposite of what the type holds.
+pub struct Mapping {
     pub action: String,
     pub tool: String,
     pub loc: String,
@@ -47,7 +52,7 @@ impl ActionsCheck {
     /// Split from [`ActionsCheck::run`] so the extraction is testable without a
     /// workspace on disk — the workspace-walking is plumbing, and the parsing
     /// is the part with edge cases.
-    pub fn mappings_in(files: &[SourceFile]) -> Vec<Unregistered> {
+    pub fn mappings_in(files: &[SourceFile]) -> Vec<Mapping> {
         let mut found = Vec::new();
         for file in files {
             if is_test_path(&file.path) {
@@ -87,7 +92,7 @@ impl ActionsCheck {
                     // such rather than skipped. The dangerous failure here is
                     // silence: an arm that stops being a literal must not
                     // quietly leave the checked set.
-                    found.push(Unregistered {
+                    found.push(Mapping {
                         action: action.ident.to_string(),
                         tool: literal_str(&arm.body)
                             .unwrap_or_else(|| "<not a string literal>".to_owned()),
@@ -100,32 +105,19 @@ impl ActionsCheck {
     }
 }
 
-/// Everything `run` needs, resolved once.
-fn load() -> Result<(BTreeSet<String>, Vec<Unregistered>), Box<dyn std::error::Error>> {
-    let root = super::workspace_root()?;
-    let files = super::collect_source_files(&root)?;
-    let registered = ironmaint_mcp::schema::generate_all_schemas()
-        .keys()
-        .map(|k| k.0.clone())
-        .collect();
-    Ok((registered, ActionsCheck::mappings_in(&files)))
-}
-
 impl ActionsCheck {
-    pub fn run() -> CheckOutcome {
-        let (registered, mappings) = match load() {
-            Ok(v) => v,
-            Err(e) => {
-                return CheckOutcome {
-                    summary: CheckSummary::default(),
-                    violations: vec![SeamViolation {
-                        check: "S2",
-                        subject: "loading sources".to_owned(),
-                        detail: e.to_string(),
-                    }],
-                };
-            }
-        };
+    /// `files` is the walk every other check already made. S2 does not
+    /// re-walk the tree: parsing 232 files twice to answer four questions is
+    /// a cost paid on every §97 run, and the sources are the same files.
+    pub fn run(files: &[SourceFile]) -> CheckOutcome {
+        // Asked of the live MCP API rather than a second source of truth,
+        // which is the difference between this check and the drift it exists
+        // to catch.
+        let registered: BTreeSet<String> = ironmaint_mcp::schema::generate_all_schemas()
+            .keys()
+            .map(|k| k.0.clone())
+            .collect();
+        let mappings = ActionsCheck::mappings_in(files);
 
         let mut violations = Vec::new();
         if registered.is_empty() {
@@ -205,7 +197,7 @@ mod tests {
         }]
     }
 
-    fn tools(m: &[Unregistered]) -> Vec<(&str, &str)> {
+    fn tools(m: &[Mapping]) -> Vec<(&str, &str)> {
         m.iter()
             .map(|u| (u.action.as_str(), u.tool.as_str()))
             .collect()
