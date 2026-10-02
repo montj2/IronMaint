@@ -1,0 +1,89 @@
+# compose.yml — local development orchestration for IronMaint.
+#
+# This file is intentionally MINIMAL. The workspace image is a toolchain;
+# it doesn't have a long-running default process. You use it via
+# `compose run --rm workspace <command>`:
+#
+#   docker compose run --rm workspace cargo test --workspace
+#   docker compose run --rm workspace cargo fmt --check
+#   docker compose run --rm workspace cargo clippy --workspace \
+#       --all-targets --all-features -- -D warnings
+#   docker compose run --rm workspace cargo run -p xtask -- verify-architecture
+#   docker compose run --rm workspace cargo run -p xtask -- verify-schemas
+#   docker compose run --rm workspace cargo run -p xtask -- verify-migrations
+#   docker compose run --rm workspace cargo run -p xtask -- verify-mcp-schemas
+#
+# To run ironmaintd itself (the §97 gate is offline-only; ironmaintd is
+# interactive):
+#
+#   echo "test-token-1234" > /tmp/ironmaint-token
+#   docker compose run --rm \
+#     -v /tmp/ironmaint-token:/run/secrets/token:ro \
+#     workspace ironmaintd \
+#       --state-dir /work/.ironmaint \
+#       --migrations-dir /work/migrations \
+#       --token-file /run/secrets/token
+#
+# Note on platforms: the `platform: linux/arm64` pin below assumes the
+# dev machine is aarch64 macOS (verified: spec §8). Override on linux/amd64
+# hosts with `COMPOSE_PLATFORM=linux/amd64 docker compose run …` or by
+# editing this file. The Makefile picks the right platform automatically.
+
+name: ironmaint
+
+services:
+  workspace:
+    build:
+      context: .
+      dockerfile: containers/workspace/Dockerfile
+      args:
+        # BuildKit is required for the Dockerfile 1.7 syntax. Explicit so a
+        # CI run on a vanilla buildx without BUILDKIT_INLINE_CACHE=1 still works.
+        BUILDKIT_INLINE_CACHE: "1"
+    image: ironmaint/workspace:0.1
+    platform: linux/arm64
+    init: true                # Compose equivalent of `docker run --init`; uses tini
+    working_dir: /work
+    environment:
+      # Forwarded from the host, so a developer's local IRONMAINT_LOG carries
+      # over (e.g. for `IRONMAINT_LOG=ironmaintd=debug` runs).
+      IRONMAINT_LOG: ${IRONMAINT_LOG:-info}
+      # Cargo config — keep caches in the named volume.
+      CARGO_HOME: /cargo
+      CARGO_TERM_COLOR: always
+      # Backtraces on panic, because the §97 gate is allowed to fail loud.
+      RUST_BACKTRACE: "1"
+      # Don't make Cargo use the git CLI's stored credentials; we don't have any.
+      CARGO_NET_GIT_FETCH_WITH_CLI: "false"
+    volumes:
+      # Source — bind mount, not COPY, so editing on the host works.
+      # `cached` propagation is a hint to Docker Desktop to use the
+      # osxfs cache-friendly path; harmless on Linux. See README.
+      - type: bind
+        source: .
+        target: /work
+        bind:
+          propagation: cached
+      # target/ on a named volume: survives `run --rm`, shared across
+      # invocations. This is the dev iteration strategy spec §2.1 calls for.
+      - type: volume
+        source: target
+        target: /work/target
+      # cargo registry + git index caches — shared across projects.
+      - type: volume
+        source: cargo-registry
+        target: /usr/local/cargo/registry
+      - type: volume
+        source: cargo-git
+        target: /usr/local/cargo/git
+      # IronMaint state — sqlite db, single-daemon lock, workspace + artifacts.
+      # Defaults match config.rs (./.ironmaint).
+      - type: volume
+        source: ironmaint-state
+        target: /work/.ironmaint
+
+volumes:
+  target:
+  cargo-registry:
+  cargo-git:
+  ironmaint-state:
