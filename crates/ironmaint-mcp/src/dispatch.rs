@@ -135,10 +135,14 @@ async fn dispatch_job_create<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
     let result = runtime
         .service
-        .handle_command(RuntimeCommand::CreateJob {
-            orchestrator: input.orchestrator,
-            package: input.package,
-        })
+        .handle_command(
+            serde_json::from_value(serde_json::json!({
+                "kind": "create_job",
+                "orchestrator": input.orchestrator,
+                "package": input.package,
+            }))
+            .map_err(|e| McpError::InvalidInput(e.to_string()))?,
+        )
         .await
         .map_err(|e| McpError::Runtime(e.message))?;
     // Extract the job_id from the runtime's side-effect: the
