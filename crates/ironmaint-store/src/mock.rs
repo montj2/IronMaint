@@ -16,7 +16,7 @@ use crate::artifact::{ArtifactMetadataStore, ArtifactRecord};
 use crate::candidate::CandidateStore;
 use crate::check::{CheckDefinition, CheckStore};
 use crate::envelope::EventEnvelope;
-use crate::error::StoreError;
+use crate::error::{StoreError, StoreErrorKind};
 use crate::event::EventStore;
 use crate::evidence::EvidenceStore;
 use crate::gate::GateStore;
@@ -218,6 +218,32 @@ impl CandidateStore for MockStore {
         let fp = candidate.fingerprint().clone();
         let job = candidate.job_id();
         let mut w = self.write();
+
+        // `fingerprint` is `UNIQUE` in `migrations/0001_initial.sql`,
+        // and SQLite enforces it. This used not to: the insert below
+        // was unconditional, so re-capturing an unchanged tree minted a
+        // second candidate and silently repointed the index at it. The
+        // bug was invisible here because every test that captured
+        // candidates ran on this mock and the backend the daemon
+        // actually runs was never in the loop — defect instances 9 and
+        // 11 of the fourteen in `doc/SEAM-VERIFICATION.md` §1.1.
+        //
+        // `ironmaint-workspace`'s capture path guards against this
+        // before it reaches the store, which is why it went unnoticed
+        // for so long; the store is the wrong place for the only check,
+        // since a caller that does not know the rule reintroduces it.
+        // `ironmaint_testkit::assert_store_conformance` is what keeps
+        // the two backends from drifting apart again.
+        if w.source_by_fp
+            .get(&fp)
+            .is_some_and(|existing| *existing != id)
+        {
+            return Err(StoreError::new(
+                StoreErrorKind::Conflict,
+                format!("source candidate {id} duplicates the fingerprint of {fp}"),
+            ));
+        }
+
         let already = w.sources.contains_key(&id);
         w.sources.insert(id, candidate.clone());
         w.source_by_fp.insert(fp, id);

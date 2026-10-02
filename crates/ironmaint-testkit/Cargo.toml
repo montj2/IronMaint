@@ -78,3 +78,13 @@ required-features = ["integration"]
 [[test]]
 name = "replay_roundtrip"
 path = "tests/replay_roundtrip.rs"
+
+# S9 (`doc/SEAM-VERIFICATION.md` §2). Two drivers rather than one
+# combined binary, so a failure names the backend that broke.
+[[test]]
+name = "store_parity"
+path = "tests/store_parity.rs"
+
+[[test]]
+name = "store_parity_sqlite"
+path = "tests/store_parity_sqlite.rs"
