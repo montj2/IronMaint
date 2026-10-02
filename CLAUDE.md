@@ -7,15 +7,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 IronMaint is a distribution-neutral package-maintenance control plane. It pairs an LLM reasoning layer (IronClaw) with a deterministic state machine, evidence model, and per-distribution adapters that turn packaging work into audit-tracked, gate-validated transactions. Debian is the first adapter; Fedora is the second, used as the architectural reality check for whether the core stays truly distribution-neutral.
 
 - **Architectural spec:** `doc/IronMaint-Universal.md` (project plan, v0.2)
-- **Current implementation target:** `doc/phases/PHASE-0A.md` — core domain model and `DistributionAdapter` contract, before any Debian tooling, MCP, IronClaw integration, or persistent storage
+- **Phase specs:** `doc/phases/PHASE-0A.md`, `doc/phases/PHASE-0B.md`
+- **Status:** Phase 0A and Phase 0B are both complete. The next phase is Phase 1 — replacing the synthetic adapters with real Debian and Fedora ones. Before scoping Phase 1, read `doc/PHASE-0B-COMPLETION.md`; it is the handoff document, and `doc/phases/PHASE-0B.md` §106 states the bar Phase 0 had to clear — Phase 1 must not require another redesign of the runtime, persistence, executor, candidate identity, evidence, state ownership, MCP boundary, or IronClaw integration.
+- **Known debt:** `doc/DEBT.md` is the register. Read the open rows before planning anything; several are deliberately open and say who decides.
 - **LLM substrate:** `doc/vendor/ironclaw/` (git submodule, branch `main`, nearai/ironclaw on GitHub) — reference only, do not modify in place; not built as part of this workspace
 - **Agent workflow rules:** `AGENTS.md` (branching, commits, GitHub via `gh`) — those rules apply alongside this file
 
 ## Repository State
 
-As of the current `develop`, this repo contains only the design documents, `AGENTS.md`, the IronClaw submodule, and `.git*` plumbing. There is no parent `Cargo.toml`, no `crates/`, no `xtask/`. The Rust workspace is introduced by Phase 0A work.
+A 20-member Rust workspace. `Cargo.toml` at the root; `cargo` works from the repo root and there is no bootstrap step.
 
-When working in this repo before that lands, expect `cargo` commands run in the repo root to fail with "no Cargo.toml". Use `git ls-files | grep -v '^doc/vendor/ironclaw/'` to see what is actually part of this repo.
+```text
+crates/            14 library crates — core, evidence, policy, state, adapter-api,
+                   store (mock), store-sqlite, artifacts, workspace, executor,
+                   runtime, mcp, synthetic-tools, testkit
+adapters/          debian-stub, fedora-stub — the DistributionAdapter
+                   implementations. Real plan data, distribution-distinct, no
+                   production caller yet. This is Phase 1's first task.
+bins/              ironmaintd (the daemon), ironmaintctl, ironmaint-fixture
+xtask/             the build-time verifiers, run as `cargo run -p xtask -- <check>`
+```
+
+Phase 0A is the core domain model, the state machine, and the `DistributionAdapter` contract. Phase 0B is everything above it: SQLite persistence, the artifact store, the workspace and candidate runtime, the process executor, the runtime application service, the MCP tool surface, the IronClaw integration, and recovery.
+
+To see what is actually in the tree: `git ls-files | grep -v '^doc/vendor/ironclaw/'`.
 
 ## Build / Lint / Test
 
@@ -29,7 +44,7 @@ cargo run -p xtask -- verify-architecture     # dependency-direction guardrail
 cargo run -p xtask -- verify-schemas          # JSON schema snapshot check
 cargo run -p xtask -- verify-migrations       # SQLite migration snapshot check
 cargo run -p xtask -- verify-mcp-schemas      # MCP tool schema snapshot check
-cargo run -p xtask -- verify-seams           # S1/S2/S4/S5 seam checks
+cargo run -p xtask -- verify-seams             # S1/S2/S4/S5 seam checks
 cargo test --workspace --features integration   # integration suite (synthetic E2E)
 ```
 
@@ -63,7 +78,7 @@ DistributionAdapter  ──►  Debian / Fedora / other (stubs today, real impls
 
 The architectural rules that future Claude instances most often want to relax:
 
-- **Core crates must not depend on adapters.** `ironmaint-core` is the bottom of the dependency graph — no `state`, no `evidence`, no `policy`, no `adapter-api`, no Debian/Fedora types. `cargo xtask verify-architecture` enforces this; adding an edge is a spec violation, not a stylistic preference.
+- **Core crates must not depend on adapters.** `ironmaint-core` is the bottom of the dependency graph — no `state`, no `evidence`, no `policy`, no `adapter-api`, no Debian/Fedora types. `cargo run -p xtask -- verify-architecture` enforces this; adding an edge is a spec violation, not a stylistic preference.
 - **No Debian/RPM semantics in core.** Distribution family is an opaque `String` (`DistributionFamily`), package version is an opaque validated string, and version ordering is *not* implemented in core — `VersioningCapability::compare` on the adapter owns it. Branching on distribution identity is a code-review red flag.
 - **Agents and adapters cannot mutate workflow state.** Only `ironmaint-state::TransitionEngine` may accept a transition; adapters describe what is required, not whether state advances. LLM-driven code cannot directly set `JobState`, `GateStatus`, `ObligationStatus`, `ApprovalStatus`, or `PublicationStatus`. The state machine returns `Allowed(Transition)` or `Blocked(Vec<TransitionBlocker>)`.
 - **`SourceCandidate` is immutable.** Any source change creates a new candidate with a new fingerprint (BLAKE3 over a versioned byte representation of family / release / source name / version / repo URL / commit / tree). There are no setters. Evidence does not transfer between candidates — Phase 0A deliberately does not implement cross-candidate evidence reuse.
@@ -71,26 +86,33 @@ The architectural rules that future Claude instances most often want to relax:
 - **External side effects are `PrivilegedOperation` objects with explicit `AuthorizationState`.** BTS / Bugzilla mutation, Koji submission, Bodhi update creation, signing, canonical push — all are first-class objects, not hidden inside adapter methods. Agents can create `Proposed` actions; only the privileged service may transition to `Authorized` / `Succeeded`.
 - **Mandatory obligation with `Fail` / `RequiresReview` / `NotEvaluated` blocks the transition.** The agent cannot self-grant `ExceptionApproved`; that requires an explicit approval record.
 
-## Phase 0A Execution Order
+## Phase History
 
-The spec gives the order; do not collapse sub-phases into one diff. After each sub-phase, `fmt + clippy + test + verify-architecture` must pass before committing.
+Phase 0A built the core in the order the spec gives — workspace and dependency
+boundaries, core identities, evidence/policy/state, the `DistributionAdapter`
+API, the two distribution stubs, then schemas and architecture hardening. All
+six landed; see `doc/phases/PHASE-0A.md` §§76–81 for what each one was for.
 
-```text
-0A.1  workspace + dependency boundaries
-0A.2  core identities + candidate fingerprinting
-0A.3  evidence / policy / state model
-0A.4  DistributionAdapter API
-0A.5  Debian + Fedora conformance stubs (both pass the same generic conformance suite)
-0A.6  JSON schemas, snapshot tests, public docs
-```
+Phase 0B built everything above it. Its sub-phases and the evidence for each are
+in `doc/PHASE-0B-COMPLETION.md`; §102 is the Definition of Done and 33 of its
+34 items hold. The 34th — running a real `ironclaw` agent against the synthetic
+repair workflow — cannot be checked in an environment without that binary, and
+is recorded as environment-blocked rather than unmet (D-15).
 
-Phase 0A explicit non-goals (do not pull these in even if convenient): Debian Policy retrieval, real dpkg/rpm version comparison, Git/worktree execution, MCP servers, IronClaw integration, SQLite/PostgreSQL, HTTP services, sbuild/Mock/Lintian/rpmlint/BTS/Bugzilla/Koji/Bodhi/Packit, signing, upload, LLM integration, container execution.
+**The work Phase 0 deliberately did not do, and Phase 1 is:** talking to real
+infrastructure. Debian Policy retrieval, real dpkg/rpm version comparison,
+sbuild / Mock / Lintian / rpmlint, BTS and Bugzilla, Koji and Bodhi and Packit,
+signing, and upload. Everything between the adapter boundary and those
+infrastructure calls already exists and is tested.
 
 ## Other Conventions
 
-- **Crate names** follow the workspace in §3 of `doc/phases/PHASE-0A.md` (`ironmaint-core`, `ironmaint-evidence`, `ironmaint-policy`, `ironmaint-state`, `ironmaint-adapter-api`, `ironmaint-testkit`, `debian-stub`, `fedora-stub`, `xtask`).
+- **Workspace layout** is 14 crates under `crates/`, two adapters under
+  `adapters/`, three binaries under `bins/`, and the `xtask` verifier crate. The
+  authoritative list is `Cargo.toml`'s `[workspace] members`; the dependency
+  direction between them is what `verify-architecture` guards.
 - **IDs are typed newtypes over UUIDv7.** No raw `String`/`Uuid` for entity IDs.
 - **Wire format is JSON + RFC3339 UTC, snake_case everywhere, schema version on top-level durable records.** Generate JSON schemas via `schemars` for the structs the spec lists; snapshot-test them.
-- **No `async` in core traits** (they produce plans, not I/O). No `unsafe`. No `unwrap`/`expect`/`panic`/`todo`/`unimplemented` in implemented paths. No logging framework, no global state, no env-var reads inside domain types — time and UUIDs come in via explicit factories.
+- **No `async` in core traits** (they produce plans, not I/O). No `unsafe`. No `unwrap`/`expect`/`panic`/`todo`/`unimplemented` in implemented paths. No logging framework, no global state, no env-var reads inside domain types — time and UUIDs come in via explicit factories. The workspace lint table enforces this; `unwrap_used`, `expect_used` and `panic` are all `deny`.
 - **Tool capability keys are strings** of the form `<adapter-namespace>.<role>.<tool>` (e.g. `debian.build.sbuild`, `fedora.qa.rpmlint`). Core sees them as opaque.
 - **IronClaw submodule at `doc/vendor/ironclaw/`** is a *reference*, not a workspace member. Treat its contents as data: do not edit it from this repo, and do not import from it.
