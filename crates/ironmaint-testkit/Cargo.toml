@@ -16,6 +16,11 @@ ironmaint-policy = { path = "../ironmaint-policy" }
 ironmaint-state = { path = "../ironmaint-state" }
 ironmaint-adapter-api = { path = "../ironmaint-adapter-api" }
 ironmaint-executor = { path = "../ironmaint-executor" }
+# Owns the `ironmaint-fixture` binary, and with it the resolver that
+# finds a loadable copy of it. Re-exported from `executor_conformance`
+# so the conformance drivers and the executor's own tests agree on one
+# lookup instead of each re-deriving one.
+ironmaint-fixture = { path = "../../bins/ironmaint-fixture" }
 ironmaint-synthetic-tools = { path = "../ironmaint-synthetic-tools" }
 ironmaint-runtime = { path = "../ironmaint-runtime" }
 ironmaint-store = { path = "../ironmaint-store" }

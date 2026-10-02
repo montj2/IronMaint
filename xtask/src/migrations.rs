@@ -175,18 +175,33 @@ async fn run_async(write: bool) -> Result<MigrationReport, Box<dyn Error>> {
     })
 }
 
+/// The workspace root, derived from this crate's manifest directory.
+///
+/// Deliberately *not* from `current_exe`. The executable lives wherever
+/// cargo put it, which is under `CARGO_TARGET_DIR` — and
+/// `containers/compose.yml` points that at a named volume outside the
+/// bind mount, so the walk upwards from the binary reaches `/var` and
+/// finds no `Cargo.toml`. It worked only because `target/` used to sit
+/// inside the workspace.
+///
+/// This is the same mistake as the fixture-binary resolver, one layer
+/// up: assuming a build artefact's location tells you where the source
+/// tree is. `CARGO_MANIFEST_DIR` is resolved at compile time and is a
+/// property of the crate, not of the build layout.
 fn workspace_root() -> Result<PathBuf, Box<dyn Error>> {
-    let exe = std::env::current_exe()?;
-    let mut p = exe.as_path();
-    while let Some(parent) = p.parent() {
-        if parent.join("Cargo.toml").is_file() && parent.join("migrations").is_dir() {
-            return Ok(parent.to_path_buf());
-        }
-        p = parent;
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    // xtask/ sits directly below the workspace root.
+    let root = manifest_dir
+        .parent()
+        .ok_or("verify-migrations: CARGO_MANIFEST_DIR has no parent")?
+        .to_path_buf();
+
+    if root.join("Cargo.toml").is_file() && root.join("migrations").is_dir() {
+        return Ok(root);
     }
     Err(format!(
-        "verify-migrations: workspace root not found (no Cargo.toml/migrations above {})",
-        exe.display()
+        "verify-migrations: {} is not a workspace root (no Cargo.toml/migrations)",
+        root.display()
     )
     .into())
 }

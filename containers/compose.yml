@@ -53,18 +53,37 @@ services:
       # Forwarded from the host, so a developer's local IRONMAINT_LOG carries
       # over (e.g. for `IRONMAINT_LOG=ironmaintd=debug` runs).
       IRONMAINT_LOG: ${IRONMAINT_LOG:-info}
-      # Cargo config — keep caches in the named volumes mounted outside the
-      # bind mount at /work (named volumes under a bind mount come up
-      # root-owned regardless of `:U`).
+      # Cargo config — keep caches and build output in named volumes
+      # mounted outside the bind mount at /work (named volumes under a
+      # bind mount come up root-owned regardless of `:U`).
       #
-      # CARGO_TARGET_DIR is unset so cargo writes to /work/target — the
-      # same path that integration tests hardcode in their fixture-binary
-      # lookup (see crates/ironmaint-executor/tests/process_exit_codes.rs
-      # fixture_bin()). /work/target lives on the bind mount at /work, so
-      # it persists across `run --rm` naturally without needing a named
-      # volume; files appear owned by uid 1000 on the host (harmless;
-      # `make clean` removes them).
+      # CARGO_TARGET_DIR points at a named volume, not at /work/target on
+      # the bind mount. Two reasons, and the second is the one that used
+      # to be load-bearing:
+      #
+      # 1. Build throughput. /work is a bind mount through the Docker
+      #    VM's filesystem. rustc writes thousands of small files there
+      #    and contends badly; a cold workspace build took >20 minutes
+      #    with a dozen rustc processes fighting over it. A named
+      #    volume is a normal Linux filesystem and does not.
+      #
+      # 2. Cross-platform contamination. /work/target on the bind mount
+      #    is the HOST's target dir, so a macOS Mach-O binary sits at
+      #    /work/target/debug/ironmaint-fixture. It exists, so a
+      #    `path.exists()`-guarded lookup accepts it, the Linux fork
+      #    succeeds, exec fails ENOEXEC, and the child exits 127 —
+      #    indistinguishable from "command not found". That is the
+      #    whole of register entry D-18, which blamed
+      #    `ProcessExecutor::spawn` for a full audit cycle.
+      #
+      # The old comment here said the bind mount was required because
+      # "integration tests hardcode `workspace_dir.join("target")`".
+      # That stopped being true when the fixture binary stopped being
+      # resolved by walking to a hardcoded path: it is now resolved by
+      # ironmaint_fixture::fixture_binary_path(), which honours
+      # CARGO_TARGET_DIR because cargo re-exports it to test processes.
       CARGO_HOME: /var/cargo
+      CARGO_TARGET_DIR: /var/cargo-target
       CARGO_TERM_COLOR: always
       # Backtraces on panic, because the §97 gate is allowed to fail loud.
       RUST_BACKTRACE: "1"
@@ -82,19 +101,20 @@ services:
       # points cargo here.
       - cargo-registry:/var/cargo/registry:U
       - cargo-git:/var/cargo/git:U
+      # Build output — mounted OUTSIDE the bind mount for the same
+      # reason as the caches above, and mounted at the path
+      # CARGO_TARGET_DIR points to rather than at /work/target. Keeps
+      # the container's Linux build output away from the host's macOS
+      # `target/`, which is what made a foreign binary visible at the
+      # path the fixture resolver reads (register entry D-18).
+      - cargo-target:/var/cargo-target:U
       # IronMaint state — sqlite db, single-daemon lock, workspace + artifacts.
       # Mounted OUTSIDE the bind mount at the same reason; the daemon is
       # passed `--state-dir=/var/ironmaint-state` at run time.
       - ironmaint-state:/var/ironmaint-state:U
-      # NOTE: target/ is NOT a named volume — it lives on the bind mount
-      # at /work. Cargo writes there as uid 1000 (rust); the host sees
-      # target/ owned by uid 1000, which is harmless. A named volume
-      # here would come up root-owned regardless of `:U`, and integration
-      # tests hardcode `workspace_dir.join("target")` in their
-      # fixture-binary lookup, so /work/target must be the build dir.
-      # Persists across `run --rm` because the bind mount survives.
 
 volumes:
   cargo-registry:
   cargo-git:
+  cargo-target:
   ironmaint-state:

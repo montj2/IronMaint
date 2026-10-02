@@ -130,7 +130,195 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-15 | LOW | §102 item 30 ("an actual IronClaw agent can complete the synthetic repair workflow") is **unverifiable in this environment** — not unmet, and not a code defect | **ENVIRONMENT-BLOCKED**, with repro steps at the bottom of the register. 33 of 34 DoD items are true; this is the one that cannot be checked here |
 | D-16 | MEDIUM | The event log did not record candidate activation — **or the version and timestamp that activation writes to the row** — so `rebuild-projections` could not rebuild any job that had captured a candidate, and writing the replay anyway would have dropped the §30 binding every gate verdict depends on | **CLOSED** — `JobEvent::CandidateActivated` makes activation replayable, and `rebuild-projections` rebuilds a captured job with its active candidate intact. No migration was needed (`event_type` is unconstrained `TEXT`); the JSON schema snapshot was regenerated. The refusal is **kept** as a legacy-data guard for rows written by the older binary, whose logs genuinely cannot justify their activation |
 | D-17 | LOW | Container images not built in CI. `ironmaint/base:0.1` and `ironmaint/workspace:0.1` ship as Dockerfiles + a Makefile + per-image smoke tests; nothing builds them on every push. Spec §10 is explicit that adding CI is a separate decision with a separate owner. The smoke tests have teeth (D-14 lesson applied) but a digest bump or FROM-tag drift would not be caught automatically. | OPEN |
-| D-18 | LOW | `missing_executable_is_infra_failure` (`crates/ironmaint-executor/tests/process_exit_codes.rs:177`) asserts the executor returns `Err(InfrastructureFailed)` for `/this/executable/does/not/exist/at/all`; the executor returns `Ok(ExecutionRecord { exit_code: 127, ... })` instead. Likely a real bug in `ProcessExecutor::spawn` (probably the missing-binary path is treated as "sh exited 127" rather than `ENOENT`). Surfaces only in container/CI Linux runs because host macOS `Command::new` fails the spawn earlier; no caller of `execute()` depends on the `Err` shape today, so the test is the only witness. Discovered while running the §97 gate inside the workspace container during the `feature/containers` PR; out of scope for that PR (workspace test logic, not container behaviour). | OPEN |
+| D-18 | MEDIUM | One symptom — 7 of 10 `process_exit_codes` tests failing with `exit_code: 127` in the container — with **two independent causes**, plus a third found while verifying. Six tests were a harness defect (three sites resolved the `ironmaint-fixture` binary by walking to `target/` and guarding with `path.exists()`); one was a **production** defect (on Linux `posix_spawn` reports a failed `exec` as a child exiting 127, so a missing tool was recorded as a tool that ran) | **CLOSED 2026-10-02** — the original entry's hypothesis was *half* right and the first correction was *half* wrong: both halves shared the exit code 127, which is why the 7/10 never identified a single cause. Four fixes: `67fedbc` one loadability-checking resolver, `3e30002` a fourth call site, `c0e551b` a pre-spawn launchability check, `29c8e23`/`02ee489` the container build dir and the verifier that read it. In-container §97 is green for the first time (877/886). Raised LOW → **MEDIUM** on the production half. See the long-form entry below |
+
+---
+
+## D-18 — one symptom, two causes, and a register entry that was half right (MEDIUM) — **CLOSED 2026-10-02**
+
+**Severity rationale:** MEDIUM, raised from the LOW it was filed as. The
+harness half is a test-only defect and was never more than LOW. The executor
+half is a production defect: on Linux, a tool that is not installed is recorded
+as a tool that ran and exited 127, which is the specific confusion the
+architecture exists to prevent — `GateResult::Fail` and `InfrastructureFailed`
+are separate types so an agent can react to them differently, and this made
+the executor report the second while the record claimed the first.
+
+**This entry was wrong twice, in opposite directions, and the correction is
+the point.** The original text said:
+
+> *"Likely a real bug in `ProcessExecutor::spawn` (probably the missing-binary
+> path is treated as 'sh exited 127' rather than `ENOENT`)."*
+
+An intermediate revision of this entry then concluded the opposite — that the
+executor was correct and the whole thing was a test-harness defect. **Both
+were partly wrong, and so was the 7/10 figure that seemed to settle it.**
+
+### Evidence
+
+Running the full suite in the Linux container: **7 of 10 failed, every one
+reporting `exit_code: 127`.** That number was read as one mechanism. It is
+two, and the composition is checkable from the test file rather than inferred:
+
+- **Six** failures were the harness defect. Seven of the ten tests register the
+  fixture binary and spawn it, but one of those seven,
+  `infra_fail_exit_maps_to_infrastructure_outcome`, asserts `exit_code == 127`
+  and so passes whether the binary runs or not. Six remain.
+- **One**, `missing_executable_is_infra_failure`, never touches the fixture. It
+  registers the literal path `/this/executable/does/not/exist/at/all`, so it
+  was failing for an unrelated reason that happened to share the exit code.
+
+7 = 6 + 1. The `127` was never evidence of a single cause; it was what two
+different causes have in common.
+
+The three that passed are the three that cannot fail this way, and the
+arithmetic only closes if all three are accounted for:
+`infra_fail_exit_maps_to_infrastructure_outcome` (127 either way),
+`unknown_capability_is_rejected` (registers no tool), and
+`privileged_external_class_is_rejected` (refused at registration, never
+spawned). `timeout_kills_child` asserts
+`Err(ToolFailed { timed_out: true })` rather than a bare 124, so it cannot
+appear in either failure set on the basis of an exit code.
+
+### Cause 1 — the harness resolved a binary by existence (6 tests)
+
+Three sites walked to the workspace `target/` and guarded the result with
+`path.exists()`:
+
+- `crates/ironmaint-executor/tests/process_exit_codes.rs`
+- `crates/ironmaint-executor/tests/artifact_spill.rs`
+- `crates/ironmaint-testkit/src/executor_conformance.rs`
+
+`containers/compose.yml` bind-mounted the repo — including `target/` — so at
+`target/debug/ironmaint-fixture` sat the **host's macOS Mach-O arm64 binary**.
+It exists, so the `target/release` fallback never fired, and Linux `fork`ed
+successfully while `exec` failed `ENOEXEC`. The child died 127.
+
+**Fix — `67fedbc`.** One resolver, in the crate that owns the binary, checking
+that a candidate is **loadable on this host**: format against the host OS, and
+for ELF the `e_machine` field, which catches a right-format / wrong-architecture
+binary that a magic-byte check cannot see. The testkit re-exports it, so its
+three call sites are unchanged.
+
+**A fourth site — `3e30002`.** `bins/ironmaintd/tests/startup_shutdown.rs`
+anchored on `CARGO_BIN_EXE_ironmaintd` and joined a sibling. The anchor was
+sound; the sibling was not, since `ironmaintd` does not depend on the fixture
+crate. Found by reading, not by the failing run — the receipt above covers the
+executor suite, which does not include this one.
+
+**Why four sites.** Cargo sets `CARGO_BIN_EXE_<name>` only for tests in the
+package that declares the `[[bin]]`. `ironmaint-executor` has none, so the
+variable is genuinely unset (verified: `env!` fails to compile,
+`std::env::var` returns `None`). The module doc on
+`bins/ironmaint-fixture/src/lib.rs` claimed the opposite, and that false belief
+is what made the other three feel justified.
+
+### Cause 2 — a missing executable was not an error on Linux (1 test, production)
+
+`ProcessExecutor::execute` treated a failed `cmd.spawn()` as
+`InfrastructureFailed`, which is correct — and on Linux it never saw one.
+std uses `posix_spawn` when a `Command` is eligible, and `posix_spawn` reports
+a failed `exec` by **exiting the child 127**. The parent gets `Ok(child)`.
+
+Measured, with the executor's exact `tokio::process::Command` configuration:
+
+| host | `Command::new("/nope/nothing")` |
+|---|---|
+| macOS (Darwin 25.5.0) | `Err(NotFound)` |
+| Linux (Debian bookworm, glibc 2.36) | `Ok`, status 32512 (127 << 8) |
+
+So the `Err` arm only ever fired for failures the parent can see, and "that
+tool is not installed" arrived as a successful run of a process that instantly
+died. It **cannot be repaired after the fact**: 127 is a legitimate exit code
+in this workspace — `synthetic.build.infra_fail` returns it deliberately and
+`process_exit_codes` asserts on it — so a post-hoc "exited 127 with no output"
+rule would relabel a real tool failure as a missing binary.
+
+**Fix — `c0e551b`.** A `stat` before the spawn. A `pre_exec` closure would force
+the `fork`+`exec` path that does surface `ENOENT`, but that is `unsafe` and the
+workspace sets `unsafe_code = "forbid"`. Bare names resolve against the
+executor's own sanitised `PATH` — the one the child would have been given — so
+the check cannot disagree with what the child would have found.
+
+### Cause 3 — the container's build output was the host's (found while verifying)
+
+`compose.yml` build-output comment cited a constraint that had already expired:
+"integration tests hardcode `workspace_dir.join("target")`". True when written,
+false once the fixture stopped being resolved by a hardcoded walk. The image had
+anticipated the change — the Dockerfile pre-creates `/var/cargo-target` and
+`clean-volumes` already removed `ironmaint_target` — so `compose.yml` was the
+last file still describing the old arrangement.
+
+**Fix — `29c8e23`.** `CARGO_TARGET_DIR` points at a named volume, and the
+resolver honours it. This also removed a >20-minute cold build: `target/` was a
+bind mount through the Docker VM's filesystem, and a dozen `rustc` processes
+contending on it was a throughput problem, not a hang.
+
+**Fix — `02ee489`.** Which exposed the same defect one layer up:
+`verify-migrations` derived the workspace root by walking up from `current_exe`,
+which only worked while the executable sat inside the tree. It now uses
+`CARGO_MANIFEST_DIR`. Worth recording how this surfaced: the container run was
+otherwise green and **this check printed nothing rather than failing loudly**,
+because a shell wrapper had already reported the results around it. A verifier
+that fails quietly is worth as little as one that is never run.
+
+### CLOSED 2026-10-02 — the receipt
+
+**In-container §97, which had never been green before:**
+
+```
+cargo fmt --check                                            OK
+cargo clippy --workspace --all-targets --all-features        OK
+cargo test --workspace                                       877 passed, 0 failed
+cargo test --workspace --features integration                886 passed, 0 failed
+verify-architecture / -schemas / -migrations / -mcp-schemas  OK
+```
+
+`process_exit_codes` goes **7/10 → 10/10**, and `artifact_spill` 8/8. The same
+§97 set is green on the host at the same counts. A cold workspace build in the
+container fell from >20 minutes (abandoned) to a few minutes.
+
+**Teeth-checked; four of the checks could not fail when first written.**
+
+For the resolver: a test asserting the *parser* reads two `e_machine` values
+apart says nothing about the *decision*; a test asserting through
+`is_loadable_here` never ran, because its `cfg!` is a compile-time constant and
+returned early on every non-Linux host — green on macOS and on every CI machine;
+and the resolver's rejection branch was unreachable through the real artifact,
+since on any host where the workspace's own build is loadable the first
+candidate always wins. The rejection is the resolver's only reason to exist, so
+`select()` is now driven with synthetic planted binaries.
+
+For the executor: a first probe **reimplemented** the target-dir resolution
+instead of calling the resolver, and breaking `target_dir()` left it green —
+the test was asserting on its own copy. The probe now calls the real function.
+Separately, dropping the `is_file` check survived the first mutation pass,
+because a directory exists, is traversable, and only `is_file` separates it; two
+directory tests were added. All three executor mutations — ignoring `PATH`,
+dropping the executable bit, dropping `is_file` — now each fail the one test
+that owns that branch.
+
+### Why the register was wrong — and then wrong again
+
+This is the **third** entry whose stated reasoning had to be corrected by
+running the code, after D-16's migration cost and D-05's `DaemonLock.file`
+verdict. The standing rule is unchanged and is the whole of the remedy: **an
+entry that has never been executed is a hypothesis**, and a hypothesis that
+names the wrong file is worse than one that names none, because it looks
+actionable.
+
+The part worth carrying forward is what happened next. Given the 7/10, the
+obvious correction was "the entry named the wrong crate" — the harness was
+fixed, the executor was exonerated, entry closed. That correction was also
+unchecked, and it was wrong: it exonerated the executor on the strength of a
+127 that two different causes shared, and would have closed a production defect
+as a test problem. The 127 was never evidence of a single cause.
+
+So the rule needs its companion: **a refutation is a hypothesis too, and
+"verified correct" deserves exactly as much scepticism as "probably broken."**
+The thing that caught it was not more reading — the same reading had been done
+twice. It was running the suite in the environment the register is about, and
+being surprised by a result the theory had already explained away.
 
 ---
 

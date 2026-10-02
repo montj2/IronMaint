@@ -40,21 +40,7 @@ use serde_json::json;
 // -----------------------------------------------------------------------------
 
 fn fixture_bin() -> PathBuf {
-    let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-    let workspace_dir = manifest_dir
-        .parent()
-        .and_then(|p| p.parent())
-        .expect("root");
-    for profile in ["debug", "release"] {
-        let path = workspace_dir
-            .join("target")
-            .join(profile)
-            .join("ironmaint-fixture");
-        if path.exists() {
-            return path;
-        }
-    }
-    panic!("ironmaint-fixture must be built before these tests run");
+    ironmaint_fixture::fixture_binary_path()
 }
 
 fn temp_store() -> (tempfile::TempDir, Arc<ArtifactStore>) {

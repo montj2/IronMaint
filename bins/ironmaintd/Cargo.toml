@@ -42,6 +42,11 @@ tracing-subscriber = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
+# Owns the `ironmaint-fixture` binary the daemon's `check.run`
+# executes. A dev-dep so cargo builds it alongside these tests —
+# without it, the fixture is whatever happens to be sitting in
+# `target/`, which may be another platform's build.
+ironmaint-fixture = { path = "../ironmaint-fixture" }
 # The daemon's own tests drive it over a real socket, for the
 # same reason the transport tests do: the claim under test is
 # about the wire, and an in-process call proves nothing.

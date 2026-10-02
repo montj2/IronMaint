@@ -260,7 +260,7 @@ clean:
 
 .PHONY: clean-volumes
 clean-volumes: clean
-	docker volume rm ironmaint_target ironmaint_cargo-registry \
+	docker volume rm ironmaint_cargo-target ironmaint_cargo-registry \
 		ironmaint_cargo-git ironmaint_ironmaint-state 2>/dev/null || true
 
 # ---- CI-style verification ----------------------------------------------
