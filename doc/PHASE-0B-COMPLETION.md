@@ -335,6 +335,12 @@ yet, so "rebuild everything" is a shell loop over known ids.
 > joined the §97 set. The +76 is the container and in-container work
 > (`41682b2`, `13bf829`, `500e37c`) and the seam checker itself (`ffccbd7`).
 > Every count above this line is kept as written; §21 records what changed.
+>
+> **Amended 2026-10-02**, at `50a6136`: **926** unit and **935** with
+> `--features integration`, both green, five verifiers clean, `fmt` and clippy
+> `-D warnings` clean. The +10 is this branch's three checks — S3's three
+> capability-inventory tests, the two store-conformance drivers plus the orphan
+> case S9 found, and S8's four xtask unit tests.
 
 All §97 commands green at `bf11da7` (0B.9 C6):
 
@@ -1254,8 +1260,10 @@ about the handoff.
 | this PR | — | S3 capability inventory — eight unregistered keys, each with the phase that supplies it |
 | this PR | — | S8 tool reachability — the direction S2 declined, plus `pub` dispatch helpers no arm reaches |
 
-§97 on that tree: **916** unit, **925** integration, five verifiers, `fmt` and
-clippy `-D warnings` clean.
+§97 on that tree: **926** unit, **935** integration, five verifiers, `fmt` and
+clippy `-D warnings` clean — walked end to end rather than inferred from the
+parts already green, because a gate assembled from earlier partial runs is not
+a gate.
 
 **The behavioural half of the seam work turned out to be the productive half.**
 S9's script found D-21 on its first run, and nothing in the register, the phase
