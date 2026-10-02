@@ -59,11 +59,6 @@ const ALLOWLIST: &[(&str, &str)] = &[
          exist yet; sbuild runs in the container that §4.3 specifies.",
     ),
     (
-        "debian.qa.lintian",
-        "Phase 1 — same image as `debian.build.sbuild`. Lintian runs against \
-         the built package, so it cannot ship before the build image does.",
-    ),
-    (
         "debian.qa.piuparts",
         "Phase 1 — piuparts exercises the *source* package, so unlike lintian \
          it does not need the build image; it needs the checkout, which the \
