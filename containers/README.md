@@ -29,13 +29,13 @@ debian:trixie-slim ────────▶ ironmaint/base:0.1     (substrate
                               └──▶ (future) ironmaint/debian-tools:0.1
                               └──▶ (future) ironmaint/fake-services:0.1
 
-rust:1.88.0-bookworm ──────▶ ironmaint/workspace:0.1   (Rust 1.88.0 pinned; + build-essential, ca-certificates, python3; USER rust)
+rust:1.94.0-bookworm ──────▶ ironmaint/workspace:0.1   (Rust 1.94.0 pinned; + build-essential, ca-certificates, python3; USER rust)
 
 fedora:44 ─────────────────▶ (future) ironmaint/fedora-tools:0.1
 rust:1.98.0-bookworm ──────▶ (future) ironmaint/agent:0.1
 ```
 
-`workspace` derives from `rust:1.88.0-bookworm` directly, **not** from
+`workspace` derives from `rust:1.94.0-bookworm` directly, **not** from
 `ironmaint/base`. Spec §4.2 is authoritative; `base` deliberately ships without
 a compiler (§4.1).
 
@@ -78,8 +78,9 @@ docker compose -f containers/compose.yml run --rm \
 
 ### uid considerations
 
-The `workspace` image runs as uid 1000 (`rust` user, inherited from the
-`rust:1.88.0-bookworm` upstream image). On macOS your uid is typically 501.
+The `workspace` image runs as uid 1000 (`rust` user, created in the Dockerfile
+— recent `rust:*` images no longer ship a non-root user, only root + sync).
+On macOS your uid is typically 501.
 Files written into named volumes (`target/`, `.ironmaint/`) appear owned by
 uid 1000 on the host. This is harmless for development. To reset:
 

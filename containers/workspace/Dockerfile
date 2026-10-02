@@ -1,11 +1,11 @@
 # syntax=docker/dockerfile:1.7
 #
-# ironmaint/workspace:0.1 — Rust 1.88.0 toolchain image.
+# ironmaint/workspace:0.1 — Rust 1.94.0 toolchain image.
 #
 # THIS IMAGE DOES NOT DERIVE FROM ironmaint/base.
-# Spec §3 is explicit: workspace derives from `rust:1.88.0-bookworm`
+# Spec §3 is explicit: workspace derives from `rust:1.94.0-bookworm`
 # directly, because the heavy Rust image shouldn't drag in the base
-# image's apt cache, and because 1.88.0 + the apt packages listed in
+# image's apt cache, and because 1.94.0 + the apt packages listed in
 # §4.1 are enough on their own. The future `agent` image (Rust 1.98.0)
 # also derives from `rust:*` directly for the same reason.
 #
@@ -16,9 +16,15 @@
 # converts an unenforced claim into an actively false one."
 
 # ---- rust base -----------------------------------------------------------
-# Manifest list digest for rust:1.88.0-bookworm verified on 2026-10-01
-# via `docker buildx imagetools inspect rust:1.88.0-bookworm`.
-FROM rust:1.88.0-bookworm@sha256:af306cfa71d987911a781c37b59d7d67d934f49684058f96cf72079c3626bfe0
+# Manifest list digest for rust:1.94.0-bookworm verified on 2026-10-01
+# via `docker buildx imagetools inspect rust:1.94.0-bookworm`. The pin
+# matches the MSRV floor declared by sqlx 0.9 (the runtime crate pinned
+# in Cargo.toml). rust-toolchain.toml at the repo root pins to the same
+# version; the smoke test asserts it. Spec §11.1 calls the toolchain
+# pin out as the single most likely thing to get wrong — "an image that
+# resolves to a newer toolchain is worse than no image, because it
+# converts an unenforced claim into an actively false one."
+FROM rust:1.94.0-bookworm@sha256:4673f78db88b71f09d5451bbc404734807918161241215ba0a50bbbe9b448117
 
 # ---- apt packages on top of the rust image ------------------------------
 # The `rust:*` images are based on debian-slim + rustup-installed toolchain.
@@ -43,12 +49,12 @@ RUN apt-get update \
         python3 \
  && rm -rf /var/lib/apt/lists/*
 
-# Confirm the rust image's rustup-managed toolchain is the pinned 1.88.0.
-# If a future `rust:1.88.0-bookworm` re-tag ever ships 1.88.1, the smoke
+# Confirm the rust image's rustup-managed toolchain is the pinned 1.94.0.
+# If a future `rust:1.94.0-bookworm` re-tag ever ships 1.94.1, the smoke
 # test catches it at run time; this line is the build-time guard.
 #
 # Also install the components needed by the §97 gate: clippy, rustfmt, and
-# rust-src. The upstream rust:1.88.0-bookworm image only ships cargo,
+# rust-src. The upstream rust:1.94.0-bookworm image only ships cargo,
 # rust-std, and rustc — verified by `rustup component list --installed`.
 # Without this, `cargo clippy` and `cargo fmt` would fail at first run.
 RUN rustc --version \
@@ -57,9 +63,9 @@ RUN rustc --version \
  && rustup component add clippy rustfmt rust-src
 
 # ---- non-root user -------------------------------------------------------
-# Older `rust:*` images shipped a `rust` user (uid 1000); the current
-# `rust:1.88.0-bookworm` does NOT — it ships only root + sync. cargo
-# refuses to run as root and that's correct, so we create the user.
+# Older `rust:*` images shipped a `rust` user (uid 1000); recent
+# `rust:1.94.0-bookworm` builds do NOT — they ship only root + sync.
+# cargo refuses to run as root and that's correct, so we create the user.
 # uid/gid 1000 matches the ironmaint/base image, so bind mounts behave
 # predictably in compose (the same uid owns target/, .ironmaint/, and the
 # bind-mounted source tree from the host's perspective).
@@ -68,8 +74,20 @@ RUN groupadd --system --gid 1000 rust \
               --no-create-home --shell /bin/bash \
               --comment "Rust toolchain user" rust
 WORKDIR /work
-RUN mkdir -p /work && chown -R rust:rust /work \
- && mkdir -p /usr/local/cargo && chown -R rust:rust /usr/local/cargo
+# Pre-create the path layout compose.yml mounts named volumes under. Docker
+# creates non-existent mount-point parents as root at run time, so we make
+# these here while we still have root in the image, then chown to rust.
+# Named volumes must live OUTSIDE the bind-mounted /work because named
+# volumes mounted under a bind mount come up root-owned regardless of
+# Compose's `:U` chown — the bind mount's filesystem wins.
+# /work             — bind mount source (host)
+# /var/cargo        — CARGO_HOME (cargo-registry + cargo-git named volumes)
+# /var/cargo-target — CARGO_TARGET_DIR (target named volume)
+# /var/ironmaint-state — daemon state; compose.yml passes
+#                       --state-dir=/var/ironmaint-state so the daemon
+#                       uses this path instead of its default ./ironmaint.
+RUN mkdir -p /work /var/cargo/registry /var/cargo/git /var/cargo-target /var/ironmaint-state \
+ && chown -R rust:rust /work /var/cargo /var/cargo-target /var/ironmaint-state
 
 # ---- workspace inside the container --------------------------------------
 # Source is bind-mounted at runtime (compose.yml); this image does NOT
@@ -101,7 +119,7 @@ COPY --chmod=0755 smoke.sh /usr/local/bin/smoke.sh
 
 # ---- labels --------------------------------------------------------------
 LABEL org.opencontainers.image.title="ironmaint/workspace" \
-      org.opencontainers.image.description="Rust 1.88.0 toolchain for the IronMaint workspace. Matches rust-toolchain.toml exactly. No source baked in; bind-mount at runtime." \
+      org.opencontainers.image.description="Rust 1.94.0 toolchain for the IronMaint workspace. Matches rust-toolchain.toml exactly. No source baked in; bind-mount at runtime." \
       org.opencontainers.image.source="https://github.com/montj2/IronMaint" \
       org.opencontainers.image.documentation="https://github.com/montj2/IronMaint/blob/develop/doc/CONTAINER-IMAGES.md" \
       org.opencontainers.image.licenses="(see repo LICENSE)" \

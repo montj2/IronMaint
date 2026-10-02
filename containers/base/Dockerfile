@@ -5,7 +5,7 @@
 # The packages here are the common floor for every other image in the set.
 # Do not add tools here that belong to one distribution (those go in
 # debian-tools / fedora-tools). Do not add a Rust toolchain here
-# (workspace derives from rust:1.88.0-bookworm directly; see
+# (workspace derives from rust:1.94.0-bookworm directly; see
 # doc/CONTAINER-IMAGES.md §3).
 #
 # Spec: doc/CONTAINER-IMAGES.md §4.1.

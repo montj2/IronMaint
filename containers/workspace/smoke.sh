@@ -18,8 +18,8 @@ ok()   { printf 'OK:   %s\n' "$*"; }
 
 # CRITICAL: rustup reads rust-toolchain.toml from the current directory and
 # auto-installs / switches to the toolchain specified there. The IronMaint
-# workspace has rust-toolchain.toml pinned to 1.88.0, so running smoke.sh
-# from /work would mask a broken image (rustup would download 1.88.0 on
+# workspace has rust-toolchain.toml pinned to 1.94.0, so running smoke.sh
+# from /work would mask a broken image (rustup would download 1.94.0 on
 # demand and the test would falsely pass).
 #
 # cd to /tmp before any toolchain queries so we test the image's actual
@@ -30,7 +30,7 @@ cd /tmp
 # If the image resolves to a newer toolchain, the image is worse than no
 # image — it converts an unenforced MSRV claim into an actively false one.
 # Spec §4.2 / §11.1.
-expected="1.88.0"
+expected="1.94.0"
 got=$(rustc --version | awk '{print $2}')
 [ "$got" = "$expected" ] || fail "rustc is $got, expected $expected"
 ok "rustc pinned at $expected"
@@ -40,12 +40,12 @@ ok "rustc pinned at $expected"
 # toolchain (no rust-toolchain.toml in /tmp).
 active=$(rustup show active-toolchain 2>/dev/null | awk '{print $1}')
 case "$active" in
-  1.88.0*) ok "rustup default toolchain is $active" ;;
-  *) fail "rustup default toolchain is '$active', expected 1.88.0*" ;;
+  1.94.0*) ok "rustup default toolchain is $active" ;;
+  *) fail "rustup default toolchain is '$active', expected 1.94.0*" ;;
 esac
 
 # ---- 2. cargo tooling on PATH --------------------------------------------
-cargo --version        | grep -q "1.88" || fail "cargo --version does not match 1.88.x"
+cargo --version        | grep -q "1.94" || fail "cargo --version does not match 1.94.x"
 cargo clippy --version | grep -q "clippy" || fail "cargo clippy --version broken"
 cargo fmt --version    | grep -q "fmt"   || fail "cargo fmt --version broken"
 rustfmt --version      | grep -q "rustfmt" || fail "rustfmt missing"

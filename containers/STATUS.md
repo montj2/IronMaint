@@ -5,7 +5,7 @@ Last verified: 2026-10-01
 | Image | Tag | Status | Smoke | Notes |
 |---|---|---|---|---|
 | `ironmaint/base` | `0.1` | BUILT | PASS | `debian:trixie-slim` + tini + ca-certificates + git + bash + curl + python3 + non-root uid 1000 |
-| `ironmaint/workspace` | `0.1` | BUILT | PASS | `rust:1.88.0-bookworm` + build-essential + ca-certificates + python3; prebuilt `target/` DEFERRED to CI PR |
+| `ironmaint/workspace` | `0.1` | BUILT | PASS | `rust:1.94.0-bookworm` + build-essential + ca-certificates + python3; prebuilt `target/` DEFERRED to CI PR |
 | `ironmaint/debian-tools` | `0.1` | NOT BUILT | — | Spec §4.3; follow-up PR |
 | `ironmaint/fedora-tools` | `0.1` | NOT BUILT | — | Spec §4.4; arm64/amd64 question (§8) needs day-one test before Dockerfile |
 | `ironmaint/agent` | `0.1` | NOT BUILT | — | Spec §4.5; `rust:1.98.0`; ironclaw submodule required |

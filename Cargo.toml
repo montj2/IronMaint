@@ -26,10 +26,10 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-# Floor is set by rmcp 3.x (see rust-toolchain.toml), not by edition 2024.
-rust-version = "1.88"
+# Floor is set by sqlx 0.9.0 (see rust-toolchain.toml), not by edition 2024.
+rust-version = "1.94"
 license = "MIT"
-authors = ["James Montgomery <montj2@github.com>"]
+authors = ["James Montgomery <james@bitrefactory.com>"]
 repository = "https://github.com/montj2/IronMaint"
 homepage = "https://github.com/montj2/IronMaint"
 publish = false
