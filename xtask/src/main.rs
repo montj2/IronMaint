@@ -7,6 +7,8 @@
 //!   snapshots in `schemas/` (PHASE-0A.md §61).
 //! - `verify-migrations`: forward-only migration directory contract
 //!   (PHASE-0B.md §30).
+//! - `verify-seams`: the static seam checks — declared interfaces with no
+//!   production fulfiller (doc/SEAM-VERIFICATION.md §2).
 
 #![forbid(unsafe_code)]
 
@@ -16,12 +18,14 @@ mod architecture;
 mod mcp_schemas;
 mod migrations;
 mod schemas;
+mod seams;
 
 enum Command {
     VerifyArchitecture,
     VerifySchemas { write: bool },
     VerifyMigrations { write: bool },
     VerifyMcpSchemas { write: bool },
+    VerifySeams,
     Help,
 }
 
@@ -41,6 +45,7 @@ fn parse_args() -> Command {
             let write = args.any(|a| a == "--write" || a == "-w");
             Command::VerifyMcpSchemas { write }
         }
+        Some("verify-seams") => Command::VerifySeams,
         Some("--help") | Some("-h") | None => Command::Help,
         Some(other) => {
             eprintln!("error: unknown subcommand `{other}`");
@@ -120,6 +125,21 @@ fn main() -> ExitCode {
             }
             Err(err) => {
                 eprintln!("verify-migrations failed: {err}");
+                ExitCode::FAILURE
+            }
+        },
+        Command::VerifySeams => match seams::run() {
+            Ok(report) => {
+                println!("{report}");
+                if report.is_clean() {
+                    ExitCode::SUCCESS
+                } else {
+                    eprintln!("verify-seams: {} violation(s).", report.violations.len());
+                    ExitCode::FAILURE
+                }
+            }
+            Err(err) => {
+                eprintln!("verify-seams failed: {err}");
                 ExitCode::FAILURE
             }
         },
