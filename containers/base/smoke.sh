@@ -40,11 +40,19 @@ ok "git, python3, curl all on PATH and reporting versions"
 # ca-certificates, the connect fails with a TLS error that looks like a
 # network fault. This is the single most likely thing to be missed.
 #
-# Temporarily disable set -e so we can capture curl's exit code AND have
-# the FAIL message printed with a useful diagnostic. Re-enable after.
+# Temporarily disable set -e AND pipefail so we can capture curl's
+# exit code AND have the FAIL message printed with a useful diagnostic.
+# `head -n1` exits non-zero on SIGPIPE when curl keeps writing past the
+# first line (GitHub's response is multi-line for HTTP/2 — the head
+# closes the pipe after the first line, curl's next write gets EPIPE,
+# and curl exits 23 "Failed writing body"). With pipefail on, that
+# propagates through the command substitution and we report curl's
+# exit code as the failure cause.
 set +e
+set +o pipefail
 out=$(curl -sSI --max-time 10 https://github.com 2>&1 | head -n1 | tr -d '\r')
 curl_rc=$?
+set -o pipefail
 set -e
 if [ "$curl_rc" -ne 0 ]; then
   fail "TLS to github.com failed: curl exited $curl_rc (likely missing ca-certificates — §11.2)"
