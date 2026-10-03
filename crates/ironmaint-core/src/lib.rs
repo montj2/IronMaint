@@ -78,5 +78,3 @@ pub use schema::SchemaVersion;
 // orphan rule. The `uuid08` and `url` features on `schemars` handle
 // `uuid::Uuid` and `url::Url` directly.
 pub mod json_schema_impls;
-
-pub(crate) fn ci_teeth_check( ) ->u8{0}
