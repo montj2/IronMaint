@@ -185,7 +185,15 @@ where
 /// gate into a single `GateResult`. Pure aggregation — does not
 /// persist.
 ///
-/// Aggregation rules (PHASE-0B.md §29):
+/// **This doc-comment is the specification for the rule.** No section
+/// of `doc/phases/PHASE-0B.md` states it; an earlier version of this
+/// comment cited §29, which is *"Execution Request"* and has nothing to
+/// do with aggregation. The behaviour below was written here first and
+/// the citation added later, which is how the citation ended up
+/// pointing at the wrong section and the code ended up contradicting
+/// the sentence directly below it.
+///
+/// Aggregation rules:
 ///   - All non-empty sets of latest evidence reach `Pass` only
 ///     when every check shows `Pass`.
 ///   - Any check showing `Fail` blocks the gate with `Fail`.
@@ -196,6 +204,12 @@ where
 ///   - If a check has no evidence yet, the gate is `NotEvaluated`.
 ///   - `NotApplicable` checks contribute nothing (the gate
 ///     ignores them).
+///   - Where two of the above could compete, an **unanswerable** gate
+///     outranks an answered one. `Blocked` and `NotEvaluated` mean
+///     "no verdict"; `Fail`, `Pass` and `ReviewRequired` all mean
+///     "a verdict". A gate in the first group cannot borrow a verdict
+///     from the second, so `Blocked` wins over `Fail` and the reasons
+///     for every check remain in `GateResult::evidence`.
 ///
 /// `now` is the evaluation time stamped on the result.
 pub async fn evaluate_gate<S>(
@@ -249,11 +263,37 @@ where
 /// one seen so far. `NotEvaluated` is the absence of evidence;
 /// it is *not* a downgrade signal — it simply leaves the
 /// aggregate unchanged when paired with a real status.
+///
+/// The ranking answers one question: *how much does this status
+/// commit to?* The statuses split into two groups, and the split is
+/// the whole point:
+///
+/// ```text
+///   0  NotEvaluated   no answer yet   — inert, never downgrades
+///   1  NotApplicable  out of scope    — contributes nothing
+///   2  Pass           answered: satisfied
+///   3  ReviewRequired answered: a human must weigh in
+///   4  Fail           answered: no
+///   5  Blocked        NOT answered — the evaluation could not complete
+/// ```
+///
+/// `Blocked` sits above `Fail` because a gate that could not be
+/// completed has no verdict to report, and must not borrow one from a
+/// co-occurring failure. Ranking it below let a single unanswerable
+/// check be overwritten by any real failure in the same gate, so the
+/// aggregate said "this gate failed" about a gate that was never
+/// finished — a claim about the package the evidence does not support.
+///
+/// That is not cosmetic downstream. `Blocked` becomes
+/// `TransitionBlocker::IncompleteGate` ("this is not answerable") and
+/// `Fail` becomes `FailedGate` ("repair this package"), and
+/// `check.run` hands the aggregate straight to IronClaw. Told `Fail`,
+/// the repair loop starts rewriting source to fix an outage.
 fn combine_status(a: GateStatus, b: GateStatus) -> GateStatus {
     let rank = |s: GateStatus| -> u8 {
         match s {
-            GateStatus::Fail => 5,
-            GateStatus::Blocked => 4,
+            GateStatus::Blocked => 5,
+            GateStatus::Fail => 4,
             GateStatus::ReviewRequired => 3,
             GateStatus::NotApplicable => 1,
             GateStatus::Pass => 2,
@@ -286,5 +326,71 @@ fn evidence_to_gate_status(status: EvidenceStatus) -> GateStatus {
         EvidenceStatus::NotApplicable => GateStatus::NotApplicable,
         EvidenceStatus::Inconclusive => GateStatus::ReviewRequired,
         EvidenceStatus::InfrastructureError => GateStatus::Blocked,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{combine_status, evidence_to_gate_status};
+    use ironmaint_evidence::{EvidenceStatus, GateStatus};
+
+    /// `GateStatus::Blocked` is documented as *"evaluation couldn't
+    /// complete"* and `Fail` as *"evaluation ran and found the gate
+    /// violated"*. Folding them together is only sound if the one
+    /// meaning "no answer" is never overwritten by the one meaning
+    /// "negative answer" — a partial evaluation is not a clean bill of
+    /// health, and reporting it as one is a false claim about the
+    /// package.
+    ///
+    /// The order is asserted in both directions because the fold is
+    /// called per check in an arbitrary order, so a ranking that only
+    /// works one way round is not a ranking.
+    #[test]
+    fn an_unanswerable_check_outranks_a_failed_one() {
+        assert_eq!(
+            combine_status(GateStatus::Fail, GateStatus::Blocked),
+            GateStatus::Blocked,
+            "a failed check must not let a gate that could not be completed \
+             report a verdict"
+        );
+        assert_eq!(
+            combine_status(GateStatus::Blocked, GateStatus::Fail),
+            GateStatus::Blocked,
+            "the fold must not depend on the order checks arrive in"
+        );
+    }
+
+    /// The distinction has to survive every co-occurrence, not just the
+    /// one that was found by hand. Anything that means "no answer"
+    /// outranks anything that means "an answer".
+    #[test]
+    fn no_answer_outranks_every_answer() {
+        for answer in [
+            GateStatus::Pass,
+            GateStatus::Fail,
+            GateStatus::NotApplicable,
+            GateStatus::ReviewRequired,
+        ] {
+            assert_eq!(
+                combine_status(answer, GateStatus::Blocked),
+                GateStatus::Blocked,
+                "{answer:?} must not overwrite `Blocked`"
+            );
+        }
+    }
+
+    /// The two statuses the type is built to keep apart must not
+    /// collapse into each other on the way in. This is the arm D-18
+    /// added, and the one the aggregation was throwing away.
+    #[test]
+    fn an_infrastructure_error_does_not_become_a_failure() {
+        assert_eq!(
+            evidence_to_gate_status(EvidenceStatus::InfrastructureError),
+            GateStatus::Blocked
+        );
+        assert_eq!(
+            evidence_to_gate_status(EvidenceStatus::Fail),
+            GateStatus::Fail
+        );
     }
 }

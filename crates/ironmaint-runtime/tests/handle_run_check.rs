@@ -15,6 +15,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -114,6 +115,52 @@ impl Executor for ScriptedExecutor {
     }
 }
 
+/// A [`ScriptedExecutor`] that answers by **tool key** rather than by call
+/// order, and may be invoked any number of times.
+///
+/// [`ScriptedExecutor`] is deliberately one-shot: it `take()`s a single
+/// response and panics on a second call, which is what makes every existing
+/// test here able to assert that the executor ran *exactly once*. A test that
+/// needs two checks in one gate cannot use it, and answering by call order
+/// would make the test silently depend on the order the two `RunCheck`
+/// commands happen to be issued in — so the lookup is keyed instead.
+struct PerToolExecutor {
+    responses: Mutex<HashMap<ToolCapabilityKey, ScriptedResponse>>,
+}
+
+impl PerToolExecutor {
+    fn new(responses: Vec<(ToolCapabilityKey, ScriptedResponse)>) -> Arc<Self> {
+        Arc::new(Self {
+            responses: Mutex::new(responses.into_iter().collect()),
+        })
+    }
+}
+
+impl Executor for PerToolExecutor {
+    async fn execute(
+        &self,
+        request: ExecutionRequest,
+    ) -> Result<ironmaint_executor::ExecutionRecord, ExecutorError> {
+        let response = self
+            .responses
+            .lock()
+            .expect("per-tool lock")
+            .get(&request.tool_key)
+            .cloned()
+            .unwrap_or_else(|| {
+                panic!(
+                    "no scripted response for tool {:?}; the test must script every \
+                     tool it runs",
+                    request.tool_key
+                )
+            });
+        match response {
+            ScriptedResponse::Record(r) => Ok(r),
+            ScriptedResponse::Error(kind) => Err(ExecutorError::new(kind, "scripted failure")),
+        }
+    }
+}
+
 fn make_record(
     key: &str,
     exit_code: i32,
@@ -138,9 +185,9 @@ fn make_record(
     }
 }
 
-async fn seed_job_with_candidate(
+async fn seed_job_with_candidate<E: Executor>(
     store: &MockStore,
-    svc: &RuntimeService<MockStore, ScriptedExecutor>,
+    svc: &RuntimeService<MockStore, E>,
 ) -> (JobId, CandidateFingerprint) {
     let result = svc
         .handle_command(RuntimeCommand::CreateJob {
@@ -191,8 +238,8 @@ async fn seed_job_with_candidate(
 /// against the active candidate fingerprint. Returns the
 /// `CheckId` (run via the runtime so per-job index + gate
 /// definition are persisted atomically).
-async fn materialize_check_for_tool(
-    svc: &RuntimeService<MockStore, ScriptedExecutor>,
+async fn materialize_check_for_tool<E: Executor>(
+    svc: &RuntimeService<MockStore, E>,
     store: &Arc<MockStore>,
     job_id: JobId,
     fingerprint: CandidateFingerprint,
@@ -225,11 +272,11 @@ fn parse_job_id(side_effect: &str) -> JobId {
     JobId::from_uuid(uuid::Uuid::parse_str(rest).expect("valid uuid"))
 }
 
-fn build_service(
+fn build_service<E: Executor>(
     store: Arc<MockStore>,
-    executor: Arc<ScriptedExecutor>,
+    executor: Arc<E>,
     registry_arc: Arc<ToolRegistry>,
-) -> RuntimeService<MockStore, ScriptedExecutor> {
+) -> RuntimeService<MockStore, E> {
     RuntimeService::new(store, fixed_clock(), executor, registry_arc)
 }
 
@@ -478,6 +525,135 @@ async fn infrastructure_failure_records_infrastructure_error_evidence() {
         gate.status,
         GateStatus::Blocked,
         "an InfrastructureError blocks the gate instead of failing it"
+    );
+}
+
+#[tokio::test]
+async fn a_gate_containing_an_unanswerable_check_does_not_report_a_verdict() {
+    // The test above pins a gate with exactly ONE check. It passes, and it
+    // has always passed, because `combine_status` folding a single
+    // `Blocked` has nothing to outrank it with. The interesting case is
+    // co-occurrence: one check in the gate genuinely failed, another
+    // could not be answered at all.
+    //
+    // `GateStatus` documents the two as opposites — `Fail` is
+    // "evaluation ran and found the gate violated", `Blocked` is
+    // "evaluation couldn't complete". A gate that could not complete
+    // has no verdict to report, so it must not report one. If it does,
+    // `check.run` hands IronClaw a `Fail` for a package that may be
+    // perfectly fine, the engine turns that into
+    // `TransitionBlocker::FailedGate` ("repair this package") rather
+    // than `IncompleteGate` ("this is not answerable"), and the
+    // repair loop starts rewriting source to fix an outage.
+    let store: Arc<MockStore> = Arc::new(MockStore::new());
+    let mut registry = ToolRegistry::new();
+    registry
+        .register(Box::new(static_tool("synthetic.test.failing")))
+        .expect("register");
+    registry
+        .register(Box::new(static_tool("synthetic.test.unreachable")))
+        .expect("register");
+    let registry_arc = Arc::new(registry);
+
+    let failing_key = ToolCapabilityKey::new("synthetic.test.failing").expect("key");
+    let unreachable_key = ToolCapabilityKey::new("synthetic.test.unreachable").expect("key");
+    let executor = PerToolExecutor::new(vec![
+        (
+            failing_key.clone(),
+            ScriptedResponse::Record(make_record(
+                "synthetic.test.failing",
+                1,
+                "compile error".to_string(),
+                false,
+            )),
+        ),
+        (
+            unreachable_key.clone(),
+            ScriptedResponse::Error(ExecutorErrorKind::InfrastructureFailed),
+        ),
+    ]);
+    let svc = build_service(store.clone(), executor, registry_arc);
+
+    let (job_id, fingerprint) = seed_job_with_candidate(&store, &svc).await;
+
+    // One check via the normal path, which also mints the gate.
+    let failing_check = materialize_check_for_tool(
+        &svc,
+        &store,
+        job_id,
+        fingerprint.clone(),
+        "synthetic.test.failing",
+    )
+    .await;
+
+    // A second check on the SAME gate. `plan_to_materialised` mints a
+    // fresh `GateId` per check, so two `MaterializeChecks` entries can
+    // never share a gate — the only way to build a multi-check gate is to
+    // write the `CheckDefinition` against the first one's `gate_id`.
+    //
+    // The two checks deliberately carry different `EvidenceKind`s.
+    // `latest_evidence_for_check` selects by `ev.kind == check.evidence_kind`
+    // and takes the latest by `observed_at`; give both checks the same
+    // kind and each one reads the *same* evidence row, the fold sees one
+    // status twice, and this test stops testing anything at all.
+    let first = store.get_check(failing_check).await.expect("check");
+    let second = ironmaint_store::CheckDefinition::new(
+        job_id,
+        fingerprint.clone(),
+        first.gate_id,
+        first.gate_stage,
+        unreachable_key,
+        EvidenceKind::Reproducibility,
+        true,
+    );
+    store.put_check(&second).await.expect("put second check");
+
+    for check_id in [failing_check, second.id] {
+        svc.handle_command(RuntimeCommand::RunCheck {
+            job_id,
+            check_id,
+            retry_class: RetryClass::Safe,
+        })
+        .await
+        .expect("run check");
+    }
+
+    // Both evidence rows landed, one per kind — otherwise the assertion
+    // below would be reading a gate that only one check ever answered.
+    let evidences = store.list_evidence_for_job(job_id).await.expect("list");
+    assert_eq!(
+        evidences.len(),
+        2,
+        "both checks must have produced evidence, or the aggregate is vacuous"
+    );
+    assert!(
+        evidences.iter().any(|e| e.status == EvidenceStatus::Fail),
+        "one check must have genuinely failed, or there is no verdict to suppress"
+    );
+    assert!(
+        evidences
+            .iter()
+            .any(|e| e.status == EvidenceStatus::InfrastructureError),
+        "one check must have been unanswerable, or there is nothing to test"
+    );
+
+    let gate = store
+        .get_gate_result(first.gate_id, &fingerprint)
+        .await
+        .expect("gate result");
+    assert_eq!(
+        gate.evidence.len(),
+        2,
+        "the aggregate must carry both checks' evidence, or only one was folded"
+    );
+    assert_eq!(
+        gate.status,
+        GateStatus::Blocked,
+        "a gate that could not be completed must not report `Fail`; \
+         `Fail` tells the repair loop to rewrite a package that may be fine \
+         (folded {} evidence row(s), status {:?})",
+        gate.evidence.len(),
+        gate.status
     );
 }
 

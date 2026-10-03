@@ -175,7 +175,8 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-21 | **MEDIUM** | **`MockStore` has no referential integrity, and the gap is reachable from the tool surface.** `source_candidates.job_id` is a `FOREIGN KEY` to `jobs(id)` and `SqliteStore` sets `PRAGMA foreign_keys = ON` on every connection (`crates/ironmaint-store-sqlite/src/lib.rs:90,121`), so SQLite genuinely refuses a candidate whose job does not exist. Nothing between the agent and the insert creates the job: the `job.capture` dispatcher takes `input.job_id` verbatim (`crates/ironmaint-mcp/src/dispatch.rs:263`), `ensure_workspace` does not create a job, and `handle_capture_candidate` (`crates/ironmaint-runtime/src/service.rs:1461`) checks only that `candidate.job_id() == job_id`. An agent that calls `job.capture` before `job.create` therefore gets a raw `FOREIGN KEY constraint failed` out of SQLite, while every test of that path runs on the mock and sees it succeed | **OPEN — needs a design decision, not a guard.** Found by the S9 store-parity script on its first run. Three candidate fixes, and they are not equivalent: (a) make the mock reject orphans, which is a 7-test blast radius across 5 binaries and mostly *wants* the mock's laxity, since `ironmaint-workspace` is a lower layer with no business knowing whether a job exists; (b) make `handle_capture_candidate` load the projection and return `NotFound`, which fixes the symptom an agent sees and leaves the two layers still disagreeing about who creates the job; (c) decide that the job is the outer transaction and make the capture path create it. **(c) is the real question** and it is a state-ownership decision, which §106 puts on the do-not-redesign list — so it belongs to the architect alongside **§17 question 8**, not to a patch. Until it is decided the divergence is pinned executably in `crates/ironmaint-testkit/tests/store_parity_sqlite.rs` (`a_candidate_for_an_unknown_job_is_refused`), and deliberately **not** in the shared script, because the mock cannot pass it |
 | D-22 | **NEGATIVE SPACE** | **`verify-seams` cannot find a class of defect, and the class is larger than the one its own document admits.** `doc/SEAM-VERIFICATION.md` §1.1 counts six of the fourteen wrong-guard defects as "nothing here" — `reconcile`'s `never_loop`, `SetActiveCandidate`'s state guard, `attach_obligation_state`'s read-before-check, `next_actions` omitting an obligation, and two more. All six share a shape: **the link exists, has a caller, and does the wrong thing.** A verifier that checks "is this called" sees a called function and has nothing to say, and no amount of source analysis changes that. The rejected alternative is recorded in §1.2 — a runtime tracer *is* strictly more powerful, and was not taken because coverage of *reached* code is not coverage of *reachable* code (a tracer would report a guard that always refuses as "called, 400 times") and it would put a durable daemon in the §97 gate | **CLOSED 2026-10-02** — closed by writing it down, which is the whole point of the row. **The standing instruction for anyone reading a `verify-seams` report: a green run is not a claim that no seam is missing.** Nine checks narrow a class; §5 of that document says so, and this row is where it is said to the people who will otherwise over-read a green gate. S9's second finding is the live example of the limit going the other way — the register could not have held D-21 by reading code, and only running the same assertions against two backends found it. **Read this as a scoping note, not a defect**: it is a property of the approach, and no commit closes it |
 | D-23 | **MEDIUM** | **Two of the six images were x86_64 inside an arm64 label.** `containers/workspace/Dockerfile` and `containers/fedora-tools/Dockerfile` pinned their bases by digest, and both pins resolved to a **single-manifest, amd64-only** image rather than a multi-arch index. `--platform linux/arm64` then pulled an amd64 base and BuildKit emitted one `InvalidBaseImagePlatform` warning and continued, so `docker inspect` reported `arm64` while every binary inside answered `x86_64` to `uname -m`. Measured: `base`, `debian-tools`, `agent`, `fake-services` were genuinely aarch64; `workspace` and `fedora-tools` were not | **CLOSED 2026-10-03** — both bases re-pinned to index digests, and every image's smoke test now asserts `uname -m` against the architecture it was requested at, so the next digest bump cannot silently reintroduce it. **Both contaminated images reported PASS**, and that is the finding worth keeping: Docker Desktop transparently emulates x86_64 on this host, so `rustc --version` and `rpm --version` both worked and the smoke tests were satisfied by an image that was wrong. The existing checks asked *does the tool respond*, never *is this binary the right architecture* — `fedora-tools/smoke.sh` asserted `fedora-44-aarch64.cfg` **exists**, which is a file, not an execution. This was D-18's shape one layer up. The teeth-check is the receipt: the *same* image that passed all six of its own other assertions fails the new one with `image is x86_64 (amd64) but was built for arm64`. Fixed on its own, ahead of anything that builds these images on purpose, because a gate that builds a contaminated image is a gate that cannot fail |
-| D-24 | **MEDIUM** | **`MockStore` returns a stale gate verdict forever after a gate is re-evaluated.** `GateStore::put_gate_result` is documented as *"Persist (or update) the result for a gate on a specific candidate. The store treats `(gate_id, fingerprint)` as the key."* `SqliteStore` implements that literally — `PRIMARY KEY (gate_id, candidate)` plus `ON CONFLICT … DO UPDATE` (`migrations/0001_initial.sql:129`, `crates/ironmaint-store-sqlite/src/ops/gates.rs:62`). `MockStore` appends to a `Vec` and `find_gate_result` returned `.iter().find(...)`, the **oldest** match, so every read of a re-evaluated gate reported the first answer it ever produced | **CLOSED 2026-10-03** — `.rev()`, and the divergence is now pinned executably by `re_evaluating_a_gate_overwrites_its_result` in the shared store-conformance script, so it runs against **both** backends. **The receipt is a second bug it was hiding.** An unrelated aggregation defect — `combine_status` in `crates/ironmaint-runtime/src/check.rs` ranking `Fail` above `Blocked`, so a gate holding both a real failure *and* an infrastructure error reported `Fail` and told the repair loop to rewrite source during an outage — (`combine_status` ranking `Fail` above `Blocked`, so a gate holding a real failure *and* an infrastructure error reported `Fail` and told the repair loop to rewrite source during an outage) could not be observed through the `MockStore` integration test written to catch it: the test evaluates its gate twice, and the mock handed back the first evaluation — `Fail` because the store was stale, not because the aggregate preferred `Fail`. Fixing the rank alone would not have turned that test green, and a future reader would have read the failure as evidence the rank was still wrong. Same class as **D-21** and the same reason it survived: the conformance script had eight cases, all candidate-shaped, and **none touched a gate at all**. See the long-form entry below |
+| D-24 | **MEDIUM** | **`MockStore` returns a stale gate verdict forever after a gate is re-evaluated.** `GateStore::put_gate_result` is documented as *"Persist (or update) the result for a gate on a specific candidate. The store treats `(gate_id, fingerprint)` as the key."* `SqliteStore` implements that literally — `PRIMARY KEY (gate_id, candidate)` plus `ON CONFLICT … DO UPDATE` (`migrations/0001_initial.sql:129`, `crates/ironmaint-store-sqlite/src/ops/gates.rs:62`). `MockStore` appends to a `Vec` and `find_gate_result` returned `.iter().find(...)`, the **oldest** match, so every read of a re-evaluated gate reported the first answer it ever produced | **CLOSED 2026-10-03** — `.rev()`, and the divergence is now pinned executably by `re_evaluating_a_gate_overwrites_its_result` in the shared store-conformance script, so it runs against **both** backends. **The receipt is a second bug it was hiding.** An unrelated aggregation defect — `combine_status` in `crates/ironmaint-runtime/src/check.rs` ranking `Fail` above `Blocked`, so a gate holding both a real failure *and* an infrastructure error reported `Fail` and told the repair loop to rewrite source during an outage — could not be observed through the `MockStore` integration test written to catch it: the test evaluates its gate twice, and the mock handed back the first evaluation — `Fail` because the store was stale, not because the aggregate preferred `Fail`. Fixing the rank alone would not have turned that test green, and a future reader would have read the failure as evidence the rank was still wrong. Same class as **D-21** and the same reason it survived: the conformance script had eight cases, all candidate-shaped, and **none touched a gate at all**. See the long-form entry below |
+| D-25 | **MEDIUM** | **A gate that could not be answered reported a verdict it did not have.** `combine_status` (`crates/ironmaint-runtime/src/check.rs`) ranked `GateStatus::Fail` **above** `GateStatus::Blocked`, and `evaluate_gate` has no early return — it folds every check in the gate. So a gate holding one real check failure *and* one infrastructure error aggregated to `Fail`, and the infrastructure error was erased from the verdict. The enum's own documentation (`crates/ironmaint-evidence/src/gate.rs:97-110`) says `Fail` is *"evaluation ran and found the gate violated"* and `Blocked` is *"evaluation couldn't complete"* | **CLOSED 2026-10-03** — `Blocked` now outranks `Fail`, and the rank table carries the reason instead of bare integers. **It is load-bearing, and not cosmetic:** `check.run` hands the aggregate to IronClaw verbatim, and the engine splits `Blocked → TransitionBlocker::IncompleteGate` ("not answerable, re-run it") from `Fail → FailedGate` ("repair this package"). Told `Fail` about a gate that never finished evaluating, the repair loop starts rewriting source to fix an outage — the exact failure `CLAUDE.md`'s *"tool failure ≠ infrastructure error"* exists to prevent, discarded one layer above the types that keep it apart. Teeth: a two-check gate integration test plus three unit tests of the fold. Reverting only the rank turns the integration test red with `left: Fail, right: Blocked` and `folded 2 evidence row(s)`, so the failure is provably the ordering and nothing else. **This was the actual Phase 1 blocker** — not §17 Q8, which `doc/PHASE-0B-COMPLETION.md` had claimed for two PRs. See the long-form entry below |
 ---
 
 ## D-23 — two of six images are x86_64 inside an arm64 label (MEDIUM) — **CLOSED 2026-10-03**
@@ -2265,3 +2266,149 @@ cannot pass it. This one both can.
 
 Red commit `c3150d8`, fix `df4e354`.
 
+---
+
+## D-25 — a gate that could not be answered reported a verdict it did not have (MEDIUM) — **CLOSED 2026-10-03**
+
+**This is the defect that was actually standing between Phase 0 and a Phase 1
+scope** — not §17 question 8, which `doc/PHASE-0B-COMPLETION.md` named as the
+blocker in two separate PRs. The correction is recorded there; this entry is
+the receipt.
+
+### The defect
+
+`combine_status` (`crates/ironmaint-runtime/src/check.rs`) folds every check in
+a gate with a "worst wins" integer rank. It ranked:
+
+```rust
+GateStatus::Fail => 5,
+GateStatus::Blocked => 4,   // ranked BELOW Fail
+```
+
+and `evaluate_gate` has no early return — it folds all of them. So a gate
+holding one check whose evidence is a real `EvidenceStatus::Fail` and another
+whose evidence is `EvidenceStatus::InfrastructureError` aggregated to **`Fail`**,
+and the infrastructure error was erased from the verdict.
+
+### This is not a precedence policy someone chose
+
+The type already declares the semantics, and the implementation contradicted
+them. `crates/ironmaint-evidence/src/gate.rs:97-110`:
+
+```rust
+Fail,     /// Evaluation ran and found the gate violated.
+Blocked,  /// Evaluation couldn't complete (missing dependency, tool error).
+```
+
+"Couldn't complete" is not a worse version of "completed, answer is no". It is
+the absence of an answer, and a gate that produced none must not borrow one from
+a co-occurring failure. A partial evaluation is not a clean bill of health, and
+reporting it as one is a claim about the package that the evidence does not
+support.
+
+The ranking now answers one question — *how much does this status commit to?* —
+and the six statuses split into two groups:
+
+```text
+  0  NotEvaluated   no answer yet   — inert, never downgrades
+  1  NotApplicable  out of scope    — contributes nothing
+  2  Pass           answered: satisfied
+  3  ReviewRequired answered: a human must weigh in
+  4  Fail           answered: no
+  5  Blocked        NOT answered — the evaluation could not complete
+```
+
+The old table justified none of its numbers, which is how the wrong one survived
+two reviews and a documentation pass.
+
+### Why it is load-bearing
+
+1. `check.run`'s MCP response carries `gate_status` verbatim to the agent
+   (`crates/ironmaint-mcp/src/tools/check.rs:46`).
+2. The engine splits them: `Blocked → TransitionBlocker::IncompleteGate`,
+   `Fail → FailedGate` (`crates/ironmaint-state/src/engine.rs:428-432`), which
+   surface as different refusal messages
+   (`crates/ironmaint-runtime/src/service.rs`).
+3. So the rank decides whether the agent is told **"repair this package"** or
+   **"this is not answerable."**
+
+Told `Fail` about a gate that never finished evaluating, the repair loop starts
+rewriting source to fix an outage. `CLAUDE.md` gives the reason this distinction
+exists at all: *"Tool failure ≠ infrastructure error… The type system keeps them
+distinct **so future IronClaw repair behavior can react correctly**."* The types
+kept them apart. The aggregation discarded the distinction one layer above them.
+
+### Teeth
+
+Three unit tests on the fold, and one integration test that pins the behaviour
+the agent sees rather than the arithmetic. The integration test needed three
+things the file did not have, and all three are traps for the next person:
+
+- **A per-tool scripted executor.** The existing `ScriptedExecutor` is
+  one-shot, so a two-check gate needs a test-local impl keyed by
+  `ToolCapabilityKey`.
+- **A second `CheckDefinition` on the same gate.** `plan_to_materialised` mints
+  a *fresh* `GateId` per check, so two checks can never share a gate through
+  `MaterializeChecks`. The test writes the second against the first's
+  `gate_id`.
+- **Two distinct `EvidenceKind`s.** `latest_evidence_for_check` selects on
+  `ev.kind == check.evidence_kind`. Two checks sharing a kind would each read the
+  *same* evidence row, the fold would see one status twice, and the test would
+  stop testing anything while still passing.
+
+**Teeth-check, in the direction that matters:** reverting *only* the rank turns
+the integration test red with `left: Fail, right: Blocked` and the message
+`folded 2 evidence row(s)`. Both checks really folded, so the failure is
+provably the ordering and nothing else.
+
+**The receipt for why it survived.** `handle_run_check.rs` already contained a
+test asserting that a gate must be `Blocked` and not `Fail` — and it passed. It
+has exactly one check, so the rank never comes into play. It was the only test
+in the workspace asserting `GateStatus::Blocked`. A gate with one check cannot
+tell you anything about how two checks combine.
+
+### The dependency worth recording
+
+This defect could not be observed until **D-24** was fixed, and that ordering
+was not obvious in advance. The integration test evaluates its gate **twice**,
+because that is how a two-check gate is built — and `MockStore` was serving the
+*first* evaluation. So the test failed with `Fail`, folding only **1** evidence
+row: right answer, wrong reason. Fixing the rank alone would have left it red,
+and the natural reading would have been "the rank fix did not work".
+
+That is the trap D-14 exists for, one layer up: a test that cannot distinguish
+the defect it was written for from an unrelated one on the same code path. It
+also means the end-to-end assertion was unfalsifiable until D-24 landed, and
+the unit test beside `combine_status` is the one that carried the ordering in
+the meantime.
+
+### What was decided next to it, and why it is not in this row
+
+`TransitionContext::infrastructure_blocked` stays `false` at both production
+call sites, and that is now a named constant with its reasoning in
+`crates/ironmaint-runtime/src/service.rs`. It is a **transition-time veto**
+checked before the gate checks (`crates/ironmaint-state/src/engine.rs:299`),
+not a job-state entry, and it exists for infrastructure broken *outside any
+gate* — where no gate can be evaluated at all. Phase 1's one such failure does
+have a gate, and reaches the agent as `IncompleteGate(gate_id)`, which names the
+gate and is more actionable than a bare "infrastructure blocked".
+
+Worth noting: **that argument is only true because of this fix.** While the rank
+preferred `Fail`, an infrastructure error inside a gate was reported as a
+verdict, and "Phase 1's failure mode has a gate" would not have been a safe
+thing to rely on. The two changes are not independent.
+
+Wiring criterion, recorded at the constant: *wire it when a failure mode exists
+that has no gate to carry it.* Both sites, never one — a named constant rather
+than two literals, so a one-site change cannot half-happen.
+
+### What this says about how Phase 1 was going to be scoped
+
+`doc/EXECUTION-PLAN.md` predicted that writing down D-09's decision "unblocks
+the Phase 1 spec", and §17 Q8 repeated it. Both were reasoning from the *shape*
+of a gap rather than from what §35 requires. An entry that reasons about
+behaviour that has not been run is a hypothesis; this is the second time the
+register has been wrong in that specific way, and the first time the real
+blocker turned out to be somewhere no one was looking — a rank table in a
+function nobody suspected, found by writing a test and watching it fail with a
+number nobody had predicted.
