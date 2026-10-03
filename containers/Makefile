@@ -21,6 +21,9 @@
 #   make smoke-agent
 #   make smoke-fake-services
 #   make verify               Build + smoke, fail on any non-zero exit.
+#   make gate                 The §97 acceptance gate, inside the workspace
+#                             image. This is the main loop.
+#   make gate-fast            The same gate minus the test runs, for editing.
 #   make registry             Start a local registry:2 on :5000 (background).
 #   make inspect              Print image metadata.
 #   make clean                Remove locally-loaded images.
@@ -41,6 +44,11 @@ ifeq ($(NATIVE_ARCH),)
 NATIVE_ARCH    := arm64
 endif
 PLATFORMS      := linux/arm64,linux/amd64
+
+# D-23: every smoke test asserts the running architecture equals this.
+# Passed as an env var because the container cannot infer what it was
+# *requested* to be -- that is exactly the value that was wrong.
+IRONMAINT_EXPECT_ARCH ?= $(NATIVE_ARCH)
 
 # Detect the docker driver for buildx. The `docker` driver supports
 # --load; the `docker-container` driver does not — it requires --push.
@@ -188,12 +196,14 @@ smoke: smoke-base smoke-workspace smoke-debian-tools smoke-fedora-tools smoke-ag
 .PHONY: smoke-base
 smoke-base: build-base
 	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-e IRONMAINT_EXPECT_ARCH=$(IRONMAINT_EXPECT_ARCH) \
 		$(BASE_TAG) \
 		/usr/local/bin/smoke.sh
 
 .PHONY: smoke-workspace
 smoke-workspace: build-workspace
 	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-e IRONMAINT_EXPECT_ARCH=$(IRONMAINT_EXPECT_ARCH) \
 		-v "$(PWD)":/work \
 		-w /work \
 		$(WORKSPACE_TAG) \
@@ -202,6 +212,7 @@ smoke-workspace: build-workspace
 .PHONY: smoke-debian-tools
 smoke-debian-tools: build-debian-tools
 	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-e IRONMAINT_EXPECT_ARCH=$(IRONMAINT_EXPECT_ARCH) \
 		-v "$(PWD)":/work \
 		-w /work \
 		$(DEBIAN_TOOLS_TAG) \
@@ -214,6 +225,7 @@ smoke-fedora-tools: build-fedora-tools
 	# compose. This smoke verifies the toolchain binaries + group setup
 	# + TLS, which don't need privileges.
 	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-e IRONMAINT_EXPECT_ARCH=$(IRONMAINT_EXPECT_ARCH) \
 		-v "$(PWD)":/work \
 		-w /work \
 		$(FEDORA_TOOLS_TAG) \
@@ -226,6 +238,7 @@ smoke-agent: build-agent
 	# spec §4.5). No bind mount needed because the smoke doesn't read
 	# the repo.
 	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-e IRONMAINT_EXPECT_ARCH=$(IRONMAINT_EXPECT_ARCH) \
 		$(AGENT_TAG) \
 		bash /usr/local/bin/smoke.sh
 
@@ -237,9 +250,95 @@ smoke-fake-services: build-fake-services
 	# Disable partial failure in smoke (the 5% 502 rate is for realism,
 	# not for an audit-time smoke check).
 	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-e IRONMAINT_EXPECT_ARCH=$(IRONMAINT_EXPECT_ARCH) \
 		-e FAKE_SERVICES_PARTIAL_FAILURE_RATE=0.0 \
 		$(FAKE_SERVICES_TAG) \
 		bash /usr/local/bin/smoke.sh
+
+# ---- gate ----------------------------------------------------------------
+# The §97 acceptance set, run in the workspace image.
+#
+# `docker compose run` rather than `docker run` on purpose: compose.yml
+# already holds the wiring that took real work to get right — the source
+# bind mount, CARGO_HOME and CARGO_TARGET_DIR on named volumes outside
+# the bind mount, the non-root uid, tini as PID 1. compose.yml:60-113
+# explains why CARGO_TARGET_DIR is a named volume and not /work/target;
+# register entry D-18 is the bug that motivated it. Re-deriving that in
+# a second docker run line would be a second place to get it wrong.
+#
+# The platform override is a generated second compose file, not a flag,
+# and not an environment variable. `docker compose run` has no
+# `--platform` (checked against compose v2.40.3), and `COMPOSE_PLATFORM`
+# is silently ignored because compose.yml sets `platform:` explicitly on
+# the service — an explicit key beats the env var, so a run that *looks*
+# like it honoured the override is actually running arm64. Verified: with
+# COMPOSE_PLATFORM=linux/ppc64le the container came up bookworm without
+# complaint. A second -f file comes later in the chain and wins.
+#
+# The first `make gate` compiles the workspace; after that the
+# `cargo-target` named volume makes it a link. That is the whole reason
+# the prebuilt `target/` layer in the workspace Dockerfile is
+# SUPERSEDED rather than deferred — see CONTAINER-IMAGES.md §4.2.
+COMPOSE          := docker compose -f containers/compose.yml
+PLATFORM_OVERRIDE = /tmp/ironmaint-compose-platform-$(NATIVE_ARCH).yml
+
+define compose-platform-override
+printf 'services:\n  workspace:\n    platform: linux/%s\n' '$(NATIVE_ARCH)' > $(PLATFORM_OVERRIDE)
+endef
+
+.PHONY: gate
+gate: build-workspace
+	$(compose-platform-override)
+	$(COMPOSE) -f $(PLATFORM_OVERRIDE) run --rm \
+		workspace bash /work/containers/gate.sh
+
+# Same checks, no test runs. Clippy's --all-targets compiles the test
+# binaries regardless, so this is not much cheaper than the full gate —
+# it just avoids running them. The right loop while editing.
+#
+# `-e` passes the flag into the container. Setting GATE_FAST=1 on the
+# make recipe line would set it on the *compose client*, where nothing
+# reads it.
+.PHONY: gate-fast
+gate-fast: build-workspace
+	$(compose-platform-override)
+	$(COMPOSE) -f $(PLATFORM_OVERRIDE) run --rm \
+		-e GATE_FAST=1 \
+		workspace bash /work/containers/gate.sh
+
+# Prove the gate can fail, and prove it on the real script rather than on
+# a command in a shell. Per doc/EXECUTION-PLAN.md §4: a check that has
+# never been seen red is an assumption wearing a tick.
+#
+# The check copies gate.sh, renames one real verifier to one that does not
+# exist, and runs the copy. So what is under test is the actual control
+# flow: does the script stop, does it name the step that failed, and does
+# the non-zero exit survive compose and make. Running a bogus command in a
+# `bash -c` would only prove cargo can fail.
+.PHONY: gate-teeth
+gate-teeth:
+	$(compose-platform-override)
+	@rm -f containers/.gate-teeth.sh; \
+	sed 's/verify-architecture/verify-not-a-real-verifier/' containers/gate.sh \
+		> containers/.gate-teeth.sh; \
+	grep -q verify-not-a-real-verifier containers/.gate-teeth.sh \
+		|| { echo "FAIL: gate-teeth — the sed did not take; nothing was broken."; \
+		     rm -f containers/.gate-teeth.sh; exit 1; }; \
+	rc=0; \
+	$(COMPOSE) -f $(PLATFORM_OVERRIDE) run --rm -e GATE_FAST=1 \
+		workspace bash /work/containers/.gate-teeth.sh > /tmp/gate-teeth.log 2>&1 || rc=$$?; \
+	rm -f containers/.gate-teeth.sh; \
+	cat /tmp/gate-teeth.log; \
+	if [ $$rc -eq 0 ]; then \
+		echo "FAIL: gate-teeth — a broken gate exited 0. The gate cannot fail."; \
+		exit 1; \
+	fi; \
+	if ! grep -q "FAIL at step 3" /tmp/gate-teeth.log; then \
+		echo "FAIL: gate-teeth — the gate failed but did not say which step."; \
+		exit 1; \
+	fi; \
+	echo; \
+	echo "gate-teeth: the gate stopped at step 3 and exited $$rc, as it must."
 
 # ---- inspect / clean -----------------------------------------------------
 .PHONY: inspect

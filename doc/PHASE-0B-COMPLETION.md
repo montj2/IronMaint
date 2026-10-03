@@ -341,6 +341,34 @@ yet, so "rebuild everything" is a shell loop over known ids.
 > `-D warnings` clean. The +10 is this branch's three checks — S3's three
 > capability-inventory tests, the two store-conformance drivers plus the orphan
 > case S9 found, and S8's four xtask unit tests.
+> **Amended 2026-10-03**, at `1e4c959`: **916** unit and **925** with
+> `--features integration`, both green, `fmt` and clippy `-D warnings` clean,
+> all five verifiers clean. The §97 set now runs in the
+> `ironmaint/workspace` image via `make -f containers/Makefile gate` — 8 steps,
+> **63 s** end to end, 1841 test executions across the two invocations.
+>
+> The counts here are measured, not carried forward, and the container's
+> numbers were checked against the host's rather than assumed equal:
+>
+> | | host (macOS) | container (linux/arm64) |
+> |---|---|---|
+> | `cargo test --workspace` | 916 passed, 0 failed | 916 passed, 0 failed |
+> | `cargo test --workspace --features integration` | 925 passed, 0 failed | 925 passed, 0 failed |
+> | test names, `--list` | 894 / 902 | 894 / 902 — **`diff` empty** |
+>
+> The `--list` comparison is the one that matters. Totals agree, so the two
+> environments run the same number of tests; the name diff shows they are the
+> *same* tests, which totals alone cannot distinguish from one test replacing
+> another. It was worth doing because a gate that quietly ran a smaller suite
+> inside its own image would be the worst kind of defect to ship as "the
+> gate" — a check that is cheaper in the place that matters.
+>
+> A note on the numbers themselves: they are the sum of `test result:` lines
+> under `awk -F'[ ;]' '{p+=$4}'`, which counts executions, not unique test
+> names. The gap between 916 executions and 894 names is doctests and
+> generated cases. An earlier note in this file quoted 935 for the
+> integration run; that does not reproduce on this tree and the reproducible
+> figure is 925.
 
 All §97 commands green at `bf11da7` (0B.9 C6):
 

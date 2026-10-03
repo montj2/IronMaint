@@ -25,7 +25,13 @@
 # against fedora:42 (which is the previous stable); the user
 # explicitly corrected to fedora:44 as the current standard. Spec
 # §11.1 applies: pinning the digest makes the FROM reproducible.
-FROM fedora:44@sha256:be9d65e2344d805cc11114319c685ecaa96b6d9b4350a0a6460cdb931babbd19
+# Pinned to the MULTI-ARCH INDEX digest, not a per-platform manifest digest.
+# The previous pin named a single amd64 manifest, so `--platform linux/arm64`
+# resolved amd64 and the image inspected as arm64 while every binary was x86_64.
+# This one matters twice over here: `mock` builds a buildroot for the machine it
+# believes it is on, and a fedora-tools image carrying amd64 binaries would have
+# told it to build for the wrong architecture. See D-23.
+FROM fedora:44@sha256:43b29f65a41eb9c35e1cd5323e3bdf3b655c2357a9f4f1ff2f9c2798e5045d80
 
 # ---- dnf packages --------------------------------------------------------
 # Spec §4.4 tool-key → binary → package table:

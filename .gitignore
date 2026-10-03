@@ -33,3 +33,8 @@ target
 # sets CARGO_HOME=/var/cargo on a named volume, so this is dead.
 # Keep the ignore so a future CARGO_HOME regression doesn't re-add it.
 /.cargo/
+
+# Scratch copy of containers/gate.sh, written by `make gate-teeth` to
+# break a verifier on purpose. The target removes it on every exit path,
+# but an interrupted run should not leave a file that looks like source.
+/containers/.gate-teeth.sh

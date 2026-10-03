@@ -18,6 +18,42 @@ set -euo pipefail
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 ok()   { printf 'OK:   %s\n' "$*"; }
 
+# ---- architecture: the image is what it claims to be -----------------------
+# Register entry D-23. `docker inspect` reports the platform an image was
+# REQUESTED for, not the architecture of the binaries inside it, so an image can
+# be labelled arm64, contain only x86_64, and still inspect as correct.
+#
+# Two things made that invisible when it happened here. A base pinned by digest
+# where the digest names a single amd64 manifest rather than a multi-arch index
+# resolves amd64 even under `--platform linux/arm64`, and BuildKit warns once and
+# carries on. And Docker Desktop emulates x86_64 transparently, so every version
+# check in these scripts answers correctly from a wrong binary.
+#
+# So the assertion compares the arch we ASKED for against the arch we GOT.
+# Anything else is circular: a README, an image label, or `dpkg --print-architecture`
+# on an emulated image all report what was requested, not what runs.
+#
+# IRONMAINT_EXPECT_ARCH is set by `make -C containers smoke-*` and by CI. A bare
+# `docker run` cannot answer the question, so it says so rather than passing a
+# check it did not make.
+got_arch=$(uname -m)
+if [ -z "${IRONMAINT_EXPECT_ARCH:-}" ]; then
+  printf 'SKIP: architecture not checked - IRONMAINT_EXPECT_ARCH is unset.\n'
+  printf '      actual: %s. Run `make -C containers smoke`, or pass\n' "$got_arch"
+  printf '      -e IRONMAINT_EXPECT_ARCH=arm64 to assert it.\n'
+else
+  # Normalise Go/docker arch names (arm64) to uname's (aarch64).
+  case "$got_arch" in
+    aarch64) got_norm=arm64 ;;
+    x86_64)  got_norm=amd64 ;;
+    *)       got_norm=$got_arch ;;
+  esac
+  [ "$got_norm" = "$IRONMAINT_EXPECT_ARCH" ] || \
+    fail "image is $got_arch ($got_norm) but was built for $IRONMAINT_EXPECT_ARCH - D-23. A base pinned to a single-arch manifest is the usual cause; pin the multi-arch index digest."
+  ok "image architecture is $got_arch, as requested"
+fi
+
+
 # ---- 1. PID 1 is tini (inherited from base) ------------------------------
 # The base image sets tini as PID 1. debian-tools inherits that — the
 # Dockerfile doesn't override USER or ENTRYPOINT. If a future change
