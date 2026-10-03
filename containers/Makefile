@@ -42,6 +42,11 @@ NATIVE_ARCH    := arm64
 endif
 PLATFORMS      := linux/arm64,linux/amd64
 
+# D-23: every smoke test asserts the running architecture equals this.
+# Passed as an env var because the container cannot infer what it was
+# *requested* to be -- that is exactly the value that was wrong.
+IRONMAINT_EXPECT_ARCH ?= $(NATIVE_ARCH)
+
 # Detect the docker driver for buildx. The `docker` driver supports
 # --load; the `docker-container` driver does not — it requires --push.
 # For local multi-arch we use docker-container + push to local registry.
@@ -188,12 +193,14 @@ smoke: smoke-base smoke-workspace smoke-debian-tools smoke-fedora-tools smoke-ag
 .PHONY: smoke-base
 smoke-base: build-base
 	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-e IRONMAINT_EXPECT_ARCH=$(IRONMAINT_EXPECT_ARCH) \
 		$(BASE_TAG) \
 		/usr/local/bin/smoke.sh
 
 .PHONY: smoke-workspace
 smoke-workspace: build-workspace
 	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-e IRONMAINT_EXPECT_ARCH=$(IRONMAINT_EXPECT_ARCH) \
 		-v "$(PWD)":/work \
 		-w /work \
 		$(WORKSPACE_TAG) \
@@ -202,6 +209,7 @@ smoke-workspace: build-workspace
 .PHONY: smoke-debian-tools
 smoke-debian-tools: build-debian-tools
 	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-e IRONMAINT_EXPECT_ARCH=$(IRONMAINT_EXPECT_ARCH) \
 		-v "$(PWD)":/work \
 		-w /work \
 		$(DEBIAN_TOOLS_TAG) \
@@ -214,6 +222,7 @@ smoke-fedora-tools: build-fedora-tools
 	# compose. This smoke verifies the toolchain binaries + group setup
 	# + TLS, which don't need privileges.
 	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-e IRONMAINT_EXPECT_ARCH=$(IRONMAINT_EXPECT_ARCH) \
 		-v "$(PWD)":/work \
 		-w /work \
 		$(FEDORA_TOOLS_TAG) \
@@ -226,6 +235,7 @@ smoke-agent: build-agent
 	# spec §4.5). No bind mount needed because the smoke doesn't read
 	# the repo.
 	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-e IRONMAINT_EXPECT_ARCH=$(IRONMAINT_EXPECT_ARCH) \
 		$(AGENT_TAG) \
 		bash /usr/local/bin/smoke.sh
 
@@ -237,6 +247,7 @@ smoke-fake-services: build-fake-services
 	# Disable partial failure in smoke (the 5% 502 rate is for realism,
 	# not for an audit-time smoke check).
 	docker run --rm --platform linux/$(NATIVE_ARCH) \
+		-e IRONMAINT_EXPECT_ARCH=$(IRONMAINT_EXPECT_ARCH) \
 		-e FAKE_SERVICES_PARTIAL_FAILURE_RATE=0.0 \
 		$(FAKE_SERVICES_TAG) \
 		bash /usr/local/bin/smoke.sh
