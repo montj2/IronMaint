@@ -25,9 +25,14 @@
 #       --token-file /run/secrets/token
 #
 # Note on platforms: the `platform: linux/arm64` pin below assumes the
-# dev machine is aarch64 macOS (verified: spec §8). Override on linux/amd64
-# hosts with `COMPOSE_PLATFORM=linux/amd64 docker compose run …` or by
-# editing this file. The Makefile picks the right platform automatically.
+# dev machine is aarch64 macOS (verified: spec §8). To run on an amd64
+# host, pass a SECOND compose file that overrides it —
+# `docker compose -f compose.yml -f override.yml run …` — because this
+# file sets `platform:` explicitly and an explicit key beats
+# COMPOSE_PLATFORM. (COMPOSE_PLATFORM=linux/ppc64le was tried against
+# compose v2.40.3 and the container came up bookworm anyway: the
+# override was ignored, silently. `make -f containers/Makefile gate`
+# generates that second file from the detected host platform.)
 #
 # Path resolution: this file lives at `containers/compose.yml`, so its
 # "project directory" is `containers/`. `..` is therefore the repo root.
@@ -42,8 +47,7 @@ services:
       context: ..
       dockerfile: containers/workspace/Dockerfile
       args:
-        # BuildKit is required for the Dockerfile 1.7 syntax. Explicit so a
-        # CI run on a vanilla buildx without BUILDKIT_INLINE_CACHE=1 still works.
+        # BuildKit is required for the Dockerfile 1.7 syntax.
         BUILDKIT_INLINE_CACHE: "1"
     image: ironmaint/workspace:0.1
     platform: linux/arm64

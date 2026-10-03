@@ -21,6 +21,14 @@ When working in this repo before that lands, expect `cargo` commands run in the 
 
 The Phase 0B spec (§97) defines the acceptance command set. Run them from the repo root; treat failures as `cargo`-level blockers, not "no work to do".
 
+Run all of it with one command, in the `ironmaint/workspace` image, before you commit:
+
+```sh
+make -f containers/Makefile gate         # the §97 set; use gate-fast while editing
+```
+
+Run from the repo root — the Makefile resolves its contexts with `$(PWD)`, so `make -C containers` does not work. That is the whole workflow: there is no hosted CI, and `doc/CONTAINER-IMAGES.md` §10 records that as a decision, not an oversight. The gate is the same set below, run under the same toolchain the image and `rust-toolchain.toml` both pin:
+
 ```sh
 cargo fmt --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
@@ -33,7 +41,7 @@ cargo run -p xtask -- verify-seams           # S1/S2/S4/S5 seam checks
 cargo test --workspace --features integration   # integration suite (synthetic E2E)
 ```
 
-Note: the workspace defines its own `xtask` crate. Until `cargo install cargo-xtask` lands in CI, invoke each subcommand via `cargo run -p xtask -- verify-…` from the repo root. Running `cargo xtask verify-…` directly produces `help: view all installed commands with 'cargo --list'` and fails.
+Note: the workspace defines its own `xtask` crate. Until `cargo install cargo-xtask` lands, invoke each subcommand via `cargo run -p xtask -- verify-…` from the repo root. Running `cargo xtask verify-…` directly produces `help: view all installed commands with 'cargo --list'` and fails. The gate adds `--locked` to every cargo invocation; `Cargo.lock` is committed, and a check that resolves a different dependency graph than the one under review is not checking the thing under review.
 
 For a single test during development:
 
