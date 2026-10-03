@@ -175,6 +175,7 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-21 | **MEDIUM** | **`MockStore` has no referential integrity, and the gap is reachable from the tool surface.** `source_candidates.job_id` is a `FOREIGN KEY` to `jobs(id)` and `SqliteStore` sets `PRAGMA foreign_keys = ON` on every connection (`crates/ironmaint-store-sqlite/src/lib.rs:90,121`), so SQLite genuinely refuses a candidate whose job does not exist. Nothing between the agent and the insert creates the job: the `job.capture` dispatcher takes `input.job_id` verbatim (`crates/ironmaint-mcp/src/dispatch.rs:263`), `ensure_workspace` does not create a job, and `handle_capture_candidate` (`crates/ironmaint-runtime/src/service.rs:1461`) checks only that `candidate.job_id() == job_id`. An agent that calls `job.capture` before `job.create` therefore gets a raw `FOREIGN KEY constraint failed` out of SQLite, while every test of that path runs on the mock and sees it succeed | **OPEN — needs a design decision, not a guard.** Found by the S9 store-parity script on its first run. Three candidate fixes, and they are not equivalent: (a) make the mock reject orphans, which is a 7-test blast radius across 5 binaries and mostly *wants* the mock's laxity, since `ironmaint-workspace` is a lower layer with no business knowing whether a job exists; (b) make `handle_capture_candidate` load the projection and return `NotFound`, which fixes the symptom an agent sees and leaves the two layers still disagreeing about who creates the job; (c) decide that the job is the outer transaction and make the capture path create it. **(c) is the real question** and it is a state-ownership decision, which §106 puts on the do-not-redesign list — so it belongs to the architect alongside **§17 question 8**, not to a patch. Until it is decided the divergence is pinned executably in `crates/ironmaint-testkit/tests/store_parity_sqlite.rs` (`a_candidate_for_an_unknown_job_is_refused`), and deliberately **not** in the shared script, because the mock cannot pass it |
 | D-22 | **NEGATIVE SPACE** | **`verify-seams` cannot find a class of defect, and the class is larger than the one its own document admits.** `doc/SEAM-VERIFICATION.md` §1.1 counts six of the fourteen wrong-guard defects as "nothing here" — `reconcile`'s `never_loop`, `SetActiveCandidate`'s state guard, `attach_obligation_state`'s read-before-check, `next_actions` omitting an obligation, and two more. All six share a shape: **the link exists, has a caller, and does the wrong thing.** A verifier that checks "is this called" sees a called function and has nothing to say, and no amount of source analysis changes that. The rejected alternative is recorded in §1.2 — a runtime tracer *is* strictly more powerful, and was not taken because coverage of *reached* code is not coverage of *reachable* code (a tracer would report a guard that always refuses as "called, 400 times") and it would put a durable daemon in the §97 gate | **CLOSED 2026-10-02** — closed by writing it down, which is the whole point of the row. **The standing instruction for anyone reading a `verify-seams` report: a green run is not a claim that no seam is missing.** Nine checks narrow a class; §5 of that document says so, and this row is where it is said to the people who will otherwise over-read a green gate. S9's second finding is the live example of the limit going the other way — the register could not have held D-21 by reading code, and only running the same assertions against two backends found it. **Read this as a scoping note, not a defect**: it is a property of the approach, and no commit closes it |
 | D-23 | **MEDIUM** | **Two of the six images were x86_64 inside an arm64 label.** `containers/workspace/Dockerfile` and `containers/fedora-tools/Dockerfile` pinned their bases by digest, and both pins resolved to a **single-manifest, amd64-only** image rather than a multi-arch index. `--platform linux/arm64` then pulled an amd64 base and BuildKit emitted one `InvalidBaseImagePlatform` warning and continued, so `docker inspect` reported `arm64` while every binary inside answered `x86_64` to `uname -m`. Measured: `base`, `debian-tools`, `agent`, `fake-services` were genuinely aarch64; `workspace` and `fedora-tools` were not | **CLOSED 2026-10-03** — both bases re-pinned to index digests, and every image's smoke test now asserts `uname -m` against the architecture it was requested at, so the next digest bump cannot silently reintroduce it. **Both contaminated images reported PASS**, and that is the finding worth keeping: Docker Desktop transparently emulates x86_64 on this host, so `rustc --version` and `rpm --version` both worked and the smoke tests were satisfied by an image that was wrong. The existing checks asked *does the tool respond*, never *is this binary the right architecture* — `fedora-tools/smoke.sh` asserted `fedora-44-aarch64.cfg` **exists**, which is a file, not an execution. This was D-18's shape one layer up. The teeth-check is the receipt: the *same* image that passed all six of its own other assertions fails the new one with `image is x86_64 (amd64) but was built for arm64`. Fixed on its own, ahead of anything that builds these images on purpose, because a gate that builds a contaminated image is a gate that cannot fail |
+| D-24 | **MEDIUM** | **`MockStore` returns a stale gate verdict forever after a gate is re-evaluated.** `GateStore::put_gate_result` is documented as *"Persist (or update) the result for a gate on a specific candidate. The store treats `(gate_id, fingerprint)` as the key."* `SqliteStore` implements that literally — `PRIMARY KEY (gate_id, candidate)` plus `ON CONFLICT … DO UPDATE` (`migrations/0001_initial.sql:129`, `crates/ironmaint-store-sqlite/src/ops/gates.rs:62`). `MockStore` appends to a `Vec` and `find_gate_result` returned `.iter().find(...)`, the **oldest** match, so every read of a re-evaluated gate reported the first answer it ever produced | **CLOSED 2026-10-03** — `.rev()`, and the divergence is now pinned executably by `re_evaluating_a_gate_overwrites_its_result` in the shared store-conformance script, so it runs against **both** backends. **The receipt is a second bug it was hiding.** An unrelated aggregation defect — `combine_status` in `crates/ironmaint-runtime/src/check.rs` ranking `Fail` above `Blocked`, so a gate holding both a real failure *and* an infrastructure error reported `Fail` and told the repair loop to rewrite source during an outage — (`combine_status` ranking `Fail` above `Blocked`, so a gate holding a real failure *and* an infrastructure error reported `Fail` and told the repair loop to rewrite source during an outage) could not be observed through the `MockStore` integration test written to catch it: the test evaluates its gate twice, and the mock handed back the first evaluation — `Fail` because the store was stale, not because the aggregate preferred `Fail`. Fixing the rank alone would not have turned that test green, and a future reader would have read the failure as evidence the rank was still wrong. Same class as **D-21** and the same reason it survived: the conformance script had eight cases, all candidate-shaped, and **none touched a gate at all**. See the long-form entry below |
 ---
 
 ## D-23 — two of six images are x86_64 inside an arm64 label (MEDIUM) — **CLOSED 2026-10-03**
@@ -2156,3 +2157,111 @@ rather than only here.
 | Should a failed *mandatory* obligation divert the job to `HumanReviewRequired`? | **No — entering is explicit.** 0A §21 says orchestration "*may*" move a job there; automatic diversion would make §101's repair loop unreachable for the agent that is supposed to perform it. `EnterHumanReview` exists as a command and has **no** MCP tool, so an agent cannot hand itself into a state only a human should enter. | C2 |
 | Where should the §101 scenario's MCP driver live? | **`ironmaint-testkit/tests/`, not `crates/ironmaint-mcp`.** §98.6 forbids the MCP crate from depending on a store backend in *either* dependency kind, and "MCP must never bypass runtime" is a rule about the crate, not about whether the caller is a test. | C5 |
 | Do the privileged-operation producers belong in 0B? | **No — dropped, not deferred.** §4.10, §26 and §99 forbid them, so building them would produce code the acceptance scenario must never exercise. | 0B.10 scope |
+
+---
+
+## D-24 — the mock returns a stale gate verdict forever (MEDIUM) — **CLOSED 2026-10-03**
+
+Found while writing the teeth for a defect in gate aggregation, and it is the
+second instance of D-21's exact shape. It gets a long-form entry because *what
+it was hiding* is the point — the fix is a `.rev()` and the reason it matters is
+not.
+
+The defect it was hiding is `combine_status` ranking `GateStatus::Fail` **above**
+`GateStatus::Blocked`, so a gate holding both a real check failure and an
+infrastructure error aggregated to `Fail` and told the repair loop to rewrite
+source during an outage. That defect is fixed on its own branch, and carries its
+own register row.
+
+### What it is
+
+`GateStore::put_gate_result` (`crates/ironmaint-store/src/gate.rs:31-34`) says:
+
+> Persist (or update) the result for a gate on a specific candidate. The store
+> treats `(gate_id, fingerprint)` as the key.
+
+`SqliteStore` implements that literally. `migrations/0001_initial.sql:129`
+declares `PRIMARY KEY (gate_id, candidate)` and
+`crates/ironmaint-store-sqlite/src/ops/gates.rs:62-65` writes:
+
+```sql
+ON CONFLICT(gate_id, candidate) DO UPDATE SET
+    payload_json = excluded.payload_json
+```
+
+Structurally one row, overwritten in place. Last write wins, because there is
+only ever one value to hold.
+
+`MockStore` appended to a `Vec` and read the first match:
+
+```rust
+// put_gate_result — appends
+w.gate_results.entry(gate_id).or_default()
+    .push((fingerprint.clone(), result.clone()));
+
+// find_gate_result — the OLDEST one
+entries.iter().find(|(fp, _)| fp == fingerprint).map(|(_, r)| r)
+```
+
+So the mock answered every gate read with the **first evaluation that gate ever
+had**. A gate that is re-evaluated after its checks re-run is reported at its
+previous verdict, indefinitely.
+
+### Why the divergence was invisible
+
+The store-conformance script is the one thing whose job is to make the two
+backends agree. It had **eight cases and none of them touched a gate** — all
+eight were candidate-shaped. `evidence`, `checks`, `obligations`, `operations`,
+`artifacts` and `projections` were all equally unchecked, and are equally
+exposed; `gate_results` is simply the one where the divergence bites first,
+because gates are the only one of those that gets re-written as a matter of
+routine.
+
+Every one of the mock's other seven `.push(...)` sites appends an **id** to a
+genuinely many-valued index — `sources_by_job`, `evidence_by_job`,
+`checks_by_job` — which is correct. `gate_results` was the only site appending
+a record under a key the trait itself declares unique, which is what made it
+the odd one out rather than one more instance of an ordinary pattern.
+
+### The receipt: it was hiding a second bug
+
+The integration test written for the aggregation defect evaluates its gate
+**twice** — once per check, because
+that is how a two-check gate is actually built. Under the stale mock it read
+back the first evaluation, which was computed before the second check's evidence
+existed. The test failed, and it failed with `left: Fail, right: Blocked` — the
+exact assertion it was written to make, for entirely the wrong reason:
+
+```text
+left:  Fail        <- the stale first evaluation, returned by the store
+right: Blocked     <- what the aggregate should have said
+```
+
+Had the rank been fixed without this, **the test would still have been red**,
+and the next reader would have concluded the rank fix did not work. The
+`combine_status` unit test beside the aggregation is what actually pinned the
+ordering; this store defect is what would have made the end-to-end assertion
+unfalsifiable.
+
+That is the general lesson, and it is D-22's: the register could not have held
+this row by reading either file. Two correct-looking functions, in two crates,
+disagreeing about the meaning of a store read.
+
+### The fix, and what it cost
+
+`.rev()` in `find_gate_result`, with the reason written above it. Blast radius
+measured, not assumed: **926 tests across 109 binaries, zero failures**, and not
+one existing assertion changed what it observed. The zero is itself the
+finding — the divergence was invisible to the entire suite, not merely to the
+new case, which is the same statement D-22 makes about `verify-seams` from the
+other side.
+
+The teeth are in the shared script, so the identical assertion runs against
+both backends: green on SQLite, red on the mock. That is what establishes the
+mock as the defect rather than the test, and it is why this belongs in
+`store_conformance.rs` rather than in a `store_parity_sqlite.rs` local — the
+D-21 case could only be pinned in the SQLite half because the mock genuinely
+cannot pass it. This one both can.
+
+Red commit `c3150d8`, fix `df4e354`.
+
