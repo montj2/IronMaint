@@ -54,6 +54,10 @@ use ironmaint_core::{
     MaintenanceJob, PackageIdentity, PackageName, PackageRevision, PackageVersion, RepositoryRef,
     SourceCandidate, VcsKind,
 };
+use ironmaint_evidence::{
+    EvidenceKind, GateDefinition, GateRequirement, GateResult, GateStage, GateStatus,
+    RequiredEvidenceStatus,
+};
 use ironmaint_store::{IronMaintStore, StoreError, StoreErrorKind};
 use time::macros::datetime;
 use url::Url;
@@ -77,6 +81,7 @@ where
     an_unknown_candidate_is_not_found(store).await;
     an_unknown_fingerprint_is_absent_not_an_error(store).await;
     an_unknown_job_lists_nothing(store).await;
+    re_evaluating_a_gate_overwrites_its_result(store).await;
 }
 
 /// A candidate survives `put` → `get` byte-for-byte.
@@ -403,6 +408,123 @@ where
             .expect("a job with no candidates is not an error")
             .is_empty(),
         "a job that has never captured anything must list nothing"
+    );
+}
+
+/// Re-evaluating a gate replaces its stored result. The read-back
+/// is the one a caller sees, and it must be the *latest* evaluation.
+///
+/// `GateStore::put_gate_result` is documented as *"Persist (or
+/// update) the result for a gate on a specific candidate. The store
+/// treats `(gate_id, fingerprint)` as the key."* One key, one value,
+/// and the value written later replaces the earlier one. A gate is
+/// evaluated again every time its checks re-run, so "the stored
+/// result" and "the first result ever stored" are only the same thing
+/// when a gate is evaluated once — which is the case a gate that
+/// passes on its first run reaches, and never the case for a gate that
+/// has to be re-run after a failure.
+///
+/// The two backends disagreed here, and the mock is the one that was
+/// wrong:
+///
+/// - `SqliteStore` declares `PRIMARY KEY (gate_id, candidate)`
+///   (`migrations/0001_initial.sql:129`) and writes
+///   `ON CONFLICT(gate_id, candidate) DO UPDATE SET payload_json =
+///   excluded.payload_json`. There is structurally one row and it is
+///   overwritten. Correct per the contract.
+/// - `MockStore` `put_gate_result` *appends* to a `Vec` and
+///   `find_gate_result` returns `.iter().find(...)` — the first match,
+///   i.e. the oldest. It returns a stale verdict forever after a
+///   gate is re-evaluated.
+///
+/// **This is not theoretical, and the receipt is a bug it hid.** The
+/// aggregation defect behind D-25 — `combine_status` ranking `Fail`
+/// above `Blocked`, so a gate holding both a real failure and an
+/// infrastructure error reported `Fail` and told the repair loop to
+/// rewrite source during an outage — was invisible to the
+/// `MockStore` integration test written to catch it. That test
+/// evaluates the same gate twice, and the mock handed back the first
+/// evaluation, which was computed before the second check's evidence
+/// existed. The test failed, but not for the reason it was written to
+/// fail: it reported `Fail` because the store returned a stale
+/// `Fail`, not because the aggregate preferred `Fail`. Fixing the rank
+/// alone would not have turned it green. The unit test beside
+/// `combine_status` is the one that pins the ordering; this case is
+/// the one that makes the end-to-end assertion mean what it says.
+///
+/// Same class as D-21 — a live `MockStore`/SQLite divergence found by
+/// the S9 parity driver — and for the same reason it survived: the
+/// conformance script had eight candidate-shaped cases and no gate
+/// case at all, so this path was never in the loop.
+///
+/// This is a semantics case rather than an error case, which is not
+/// what this suite is otherwise weighted towards. It stays because the
+/// suite's subject is the two backends *agreeing*, and they disagreed
+/// here on a question with no error to return.
+async fn re_evaluating_a_gate_overwrites_its_result<S>(store: &S)
+where
+    S: IronMaintStore + ?Sized,
+{
+    let job = JobId::new();
+    create_job(store, job).await;
+    let source = source_candidate(job, '7', '1');
+    let candidate = source.fingerprint();
+    store
+        .put_source_candidate(&source)
+        .await
+        .expect("candidate");
+
+    let definition = GateDefinition::new(
+        candidate.clone(),
+        GateStage::BuildValidation,
+        GateRequirement::new(EvidenceKind::Build, RequiredEvidenceStatus::Pass),
+        true,
+    );
+    store
+        .put_gate_definition(&definition, job)
+        .await
+        .expect("gate definition");
+    let gate_id = definition.id;
+
+    let first = GateResult {
+        gate_id,
+        candidate: candidate.clone(),
+        status: GateStatus::Pass,
+        evidence: Vec::new(),
+        evaluated_at: datetime!(2026-01-01 00:00:00 UTC),
+    };
+    let second = GateResult {
+        status: GateStatus::Fail,
+        evaluated_at: datetime!(2026-01-01 00:05:00 UTC),
+        ..first.clone()
+    };
+    assert_ne!(
+        first.status, second.status,
+        "the fixture is wrong: a re-evaluation indistinguishable from the first \
+         cannot detect a store that returns the first one"
+    );
+
+    store
+        .put_gate_result(gate_id, &candidate, &first)
+        .await
+        .expect("first evaluation");
+    store
+        .put_gate_result(gate_id, &candidate, &second)
+        .await
+        .expect("re-evaluating a gate is an update, not a conflict");
+
+    let read = store
+        .get_gate_result(gate_id, &candidate)
+        .await
+        .expect("gate result");
+    assert_eq!(
+        read.status,
+        GateStatus::Fail,
+        "a gate re-evaluated from Pass to Fail must read back Fail. A store \
+         that returns the first evaluation it was ever handed is reporting a \
+         verdict about the world as it was before the checks ran again, and \
+         the caller cannot tell — `GateStore::put_gate_result` names \
+         `(gate_id, fingerprint)` as the key, so there is one stored answer."
     );
 }
 
