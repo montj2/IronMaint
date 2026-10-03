@@ -61,6 +61,73 @@ pub enum QueryResult {
     ReleaseCandidate(ironmaint_policy::ReleaseCandidate),
 }
 
+/// Why `TransitionContext::infrastructure_blocked` is hardcoded
+/// `false` at both production call sites, and when that stops being
+/// the right answer.
+///
+/// A named constant rather than two bare `false` literals, so that
+/// "both sites, never one" is enforced by the compiler rather than by
+/// a comment that the next reader has to notice.
+///
+/// ## What the flag actually is
+///
+/// A **transition-time veto**, not a job-state entry.
+/// `TransitionEngine::evaluate` checks it at step 6
+/// (`crates/ironmaint-state/src/engine.rs:299`) and returns
+/// `TransitionBlocker::InfrastructureBlocked` immediately, *before*
+/// the gate checks at step 7. So it means "do not evaluate this
+/// transition at all", not "move the job into
+/// `JobState::InfrastructureBlocked`".
+///
+/// That is what it is for: infrastructure broken **outside any gate**.
+/// The store is unreachable, the workspace is gone, the adapter cannot
+/// be constructed. In each of those cases there is no gate to be
+/// `Blocked` *in*, because no gate can be evaluated at all — so the
+/// flag is the only place that failure can be expressed. The whole
+/// `InfrastructureBlocked` path is built, wired and tested; nothing
+/// sets this boolean in production. `true` appears exactly once in the
+/// tree, in `engine_scenarios.rs`.
+///
+/// ## Why Phase 1 does not need it
+///
+/// Spec §35 is the Debian read-only slice: repository inspection,
+/// Policy retrieval, the Developer's Reference, BTS read-only. Every
+/// input is over the network, which makes Phase 1 the first phase
+/// where a *required* input can simply be unavailable.
+///
+/// That failure **does** have a gate. An unreachable source produces
+/// `EvidenceStatus::InfrastructureError` on a real check, which
+/// aggregates to `GateStatus::Blocked`, which the engine turns into
+/// `TransitionBlocker::IncompleteGate(gate_id)`. That names the gate
+/// that could not be answered and keeps the reason in
+/// `GateResult::evidence` — strictly more actionable than a bare
+/// `"infrastructure blocked"`, and it arrives through the path IronClaw
+/// already reacts to differently from a failure.
+///
+/// ## The wiring criterion
+///
+/// **Wire it when a failure mode exists that has no gate to carry
+/// it.** Until then it is not a gap; it is the absence of a caller
+/// for a correct mechanism.
+///
+/// Note that the gate-aggregation defect fixed in this same branch is
+/// what makes the alternative safe to rely on. While `combine_status`
+/// ranked `Fail` above `Blocked`, an infrastructure error inside a
+/// gate was reported as a verdict and this argument would not have
+/// held. The criterion is only true because of that fix.
+///
+/// ## Both sites, never one
+///
+/// There are exactly two production constructions of
+/// `TransitionContext`: `try_transition`, and the `reconcile` rule
+/// walk. **A one-site fix would be worse than the current honest
+/// `false`**: it would make a manual transition refuse while
+/// `job.reconcile` reported the same job as movable. The two callers
+/// would disagree about the same job in the same instant, and the
+/// agent has no way to tell which surface it is talking to. Setting
+/// this constant flips both or neither.
+const INFRASTRUCTURE_BLOCKED: bool = false;
+
 pub struct RuntimeService<S: IronMaintStore + ?Sized, E: Executor + ?Sized> {
     store: Arc<S>,
     clock: Arc<dyn Clock>,
@@ -868,7 +935,8 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             approval_requirements: &approval_requirements,
             obligations: &obligations,
             approvals: &approvals,
-            infrastructure_blocked: false,
+            // A decision, not an oversight. See `INFRASTRUCTURE_BLOCKED`.
+            infrastructure_blocked: INFRASTRUCTURE_BLOCKED,
             resume_event: resume,
         };
 
@@ -1366,7 +1434,9 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                     obligations: &obligations,
                     approval_requirements: &approval_requirements,
                     approvals: &approvals,
-                    infrastructure_blocked: false,
+                    // The same constant as the other production call
+                    // site, deliberately: see `INFRASTRUCTURE_BLOCKED`.
+                    infrastructure_blocked: INFRASTRUCTURE_BLOCKED,
                     resume_event: None,
                 };
                 let request = ironmaint_state::TransitionRequest {
