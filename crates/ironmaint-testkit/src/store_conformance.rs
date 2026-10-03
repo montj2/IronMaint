@@ -437,11 +437,12 @@ where
 ///   i.e. the oldest. It returns a stale verdict forever after a
 ///   gate is re-evaluated.
 ///
-/// **This is not theoretical, and the receipt is a bug it hid.** The
-/// aggregation defect behind D-25 — `combine_status` ranking `Fail`
-/// above `Blocked`, so a gate holding both a real failure and an
-/// infrastructure error reported `Fail` and told the repair loop to
-/// rewrite source during an outage — was invisible to the
+/// **This is not theoretical, and the receipt is a bug it hid.** An
+/// aggregation defect in `combine_status`
+/// (`crates/ironmaint-runtime/src/check.rs`) ranked `Fail` above
+/// `Blocked`, so a gate holding both a real failure and an
+/// infrastructure error reported `Fail` — telling the repair loop to
+/// rewrite source during an outage. It was invisible to the
 /// `MockStore` integration test written to catch it. That test
 /// evaluates the same gate twice, and the mock handed back the first
 /// evaluation, which was computed before the second check's evidence
@@ -505,16 +506,16 @@ where
     );
 
     store
-        .put_gate_result(gate_id, &candidate, &first)
+        .put_gate_result(gate_id, candidate, &first)
         .await
         .expect("first evaluation");
     store
-        .put_gate_result(gate_id, &candidate, &second)
+        .put_gate_result(gate_id, candidate, &second)
         .await
         .expect("re-evaluating a gate is an update, not a conflict");
 
     let read = store
-        .get_gate_result(gate_id, &candidate)
+        .get_gate_result(gate_id, candidate)
         .await
         .expect("gate result");
     assert_eq!(
