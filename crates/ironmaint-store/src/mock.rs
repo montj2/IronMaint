@@ -102,12 +102,29 @@ impl MockStore {
         self.inner.write().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The latest stored result for `fingerprint` under one gate.
+    ///
+    /// `.rev()` is load-bearing. `put_gate_result` appends, and the
+    /// contract it implements is *"persist (or update) … the store
+    /// treats `(gate_id, fingerprint)` as the key"* — one key, one
+    /// stored answer, last write wins. `SqliteStore` enforces that with
+    /// `PRIMARY KEY (gate_id, candidate)` and
+    /// `ON CONFLICT ... DO UPDATE`, so it holds a single row and
+    /// overwrites it. Finding the *first* match here instead made the
+    /// mock return the oldest evaluation a gate ever had, which is the
+    /// opposite of what the other backend does, and it is the read
+    /// every caller makes.
+    ///
+    /// Found by the conformance case
+    /// `re_evaluating_a_gate_overwrites_its_result`, which is green
+    /// against SQLite and was red against this.
     fn find_gate_result<'a>(
         entries: &'a [(CandidateFingerprint, GateResult)],
         fingerprint: &'a CandidateFingerprint,
     ) -> Option<&'a GateResult> {
         entries
             .iter()
+            .rev()
             .find(|(fp, _)| fp == fingerprint)
             .map(|(_, r)| r)
     }
