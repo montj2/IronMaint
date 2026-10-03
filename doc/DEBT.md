@@ -129,11 +129,90 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-14 | MEDIUM | `rebuild_projection` rejects every real job's event log, so the §36 operator escape hatch cannot rebuild anything | **CLOSED** by 0B.10 — `JobEvent::JobCreated` carries the birth projection, so the log is authoritative for a never-transitioned job. **Amended 2026-10-01**: the closure is true about the birth and false about everything after it; the `active_candidate` gap is **D-16** |
 | D-15 | LOW | §102 item 30 ("an actual IronClaw agent can complete the synthetic repair workflow") is **unverifiable in this environment** — not unmet, and not a code defect | **ENVIRONMENT-BLOCKED**, with repro steps at the bottom of the register. 33 of 34 DoD items are true; this is the one that cannot be checked here |
 | D-16 | MEDIUM | The event log did not record candidate activation — **or the version and timestamp that activation writes to the row** — so `rebuild-projections` could not rebuild any job that had captured a candidate, and writing the replay anyway would have dropped the §30 binding every gate verdict depends on | **CLOSED** — `JobEvent::CandidateActivated` makes activation replayable, and `rebuild-projections` rebuilds a captured job with its active candidate intact. No migration was needed (`event_type` is unconstrained `TEXT`); the JSON schema snapshot was regenerated. The refusal is **kept** as a legacy-data guard for rows written by the older binary, whose logs genuinely cannot justify their activation |
-| D-17 | LOW | Container images not built in CI. `ironmaint/base:0.1` and `ironmaint/workspace:0.1` ship as Dockerfiles + a Makefile + per-image smoke tests; nothing builds them on every push. Spec §10 is explicit that adding CI is a separate decision with a separate owner. The smoke tests have teeth (D-14 lesson applied) but a digest bump or FROM-tag drift would not be caught automatically. | OPEN |
+| D-17 | LOW | Container images not built in CI. `ironmaint/base:0.1` and `ironmaint/workspace:0.1` ship as Dockerfiles + a Makefile + per-image smoke tests; nothing builds them on every push. Spec §10 is explicit that adding CI is a separate decision with a separate owner. The smoke tests have teeth (D-14 lesson applied) but a digest bump or FROM-tag drift would not be caught automatically. | **CLOSED 2026-10-03**, by taking the decision rather than by writing code. The spec's condition was that CI needed a different owner, and it now has one: the decision was asked for explicitly, and `CONTAINER-IMAGES.md` §10 records the supersession in place rather than deleting the non-goal. `.github/workflows/ci.yml` runs the §97 gate and builds and smokes all six images on `ubuntu-24.04-arm` — native, because §8 treats emulated builds as unusable for iteration and §10 rules out amd64-as-first-class. **Closed on the CI part only, and that is the whole of the original row** |
 | D-18 | MEDIUM | One symptom — 7 of 10 `process_exit_codes` tests failing with `exit_code: 127` in the container — with **two independent causes**, plus a third found while verifying. Six tests were a harness defect (three sites resolved the `ironmaint-fixture` binary by walking to `target/` and guarding with `path.exists()`); one was a **production** defect (on Linux `posix_spawn` reports a failed `exec` as a child exiting 127, so a missing tool was recorded as a tool that ran) | **CLOSED 2026-10-02** — the original entry's hypothesis was *half* right and the first correction was *half* wrong: both halves shared the exit code 127, which is why the 7/10 never identified a single cause. Four fixes: `67fedbc` one loadability-checking resolver, `3e30002` a fourth call site, `c0e551b` a pre-spawn launchability check, `29c8e23`/`02ee489` the container build dir and the verifier that read it. In-container §97 is green for the first time (877/886). Raised LOW → **MEDIUM** on the production half. See the long-form entry below |
 | D-19 | MEDIUM | A §97 container run hung in `startup_shutdown.rs` and the cause is **not known**. One confirmed defect found while investigating: `Drop for Daemon` signalled SIGKILL but never reaped, so 11 of the 15 tests in that file depended on tokio's SIGCHLD orphan handler to collect their own children — and a live `ironmaintd` from a killed run survived on the host for two days | **PARTLY FIXED** — `kill_on_drop(true)`, an awaited `shutdown()` that escalates, and a test that pins the reap. The **hang itself is OPEN**: see the entry for what is ruled out, what is not, and what would settle it |
 ||||||| parent of a3040fc (Correct S1's allowlist, and record D-20: five are decisions, two are stale docs)
 | D-20 | LOW | S1 in `verify-seams` found that **7 of 12 `RuntimeCommand` variants have no production construction site.** `handle_command` has twelve arms, all patterns; the five constructions are all in `crates/ironmaint-mcp/src/dispatch.rs`. Five of the seven are decisions with the reason written down at the call site. The two that are not: **`RequestApproval`'s doc makes a claim that is false**, and **`job.resume` cannot succeed in production** because the only `ResumeRecorded` writer is itself unreachable | **OPEN, two parts, both documentation-shaped** — no capability is missing from the runtime, and neither part is a bug to fix so much as a comment that will mislead. Part 1: `RequestApproval`'s doc says `next_actions` advertises it and that following it reaches the refusal; `ReadyForApproval` emits `allowed: vec![]` / `requires_human: ApproveRelease` and `RequestApproval` is not an `AllowedAction`. Part 2: the two `next_actions` docs describing `ResumeJob` and `ReviewEscalation` describe a state production cannot reach. See the long-form entry below |
+| D-23 | **MEDIUM** | **Two of the six images are x86_64 inside an arm64 label.** `containers/workspace/Dockerfile:27` and `containers/fedora-tools/Dockerfile:28` pin their bases by digest, and both pins resolve to a **single-manifest, amd64-only** image rather than a multi-arch index. `--platform linux/arm64` then pulls an amd64 base and BuildKit emits one `InvalidBaseImagePlatform` warning and continues, so `docker inspect` reports `arm64` while every binary inside answers `x86_64` to `uname -m`. Measured: `base`, `debian-tools`, `agent`, `fake-services` are genuinely aarch64; `workspace` and `fedora-tools` are not | **OPEN — fix lands in the CI PR that closed D-17**, recorded here rather than folded into that row because the two are unrelated and a merged row would hide this one. **Both contaminated images report PASS**, and that is the finding worth keeping: Docker Desktop transparently emulates x86_64 on this host, so `rustc --version` and `rpm --version` both work and the smoke tests are satisfied by an image that is wrong. The existing checks ask *does the tool respond*, never *is this binary the right architecture* — `fedora-tools/smoke.sh` asserts `fedora-44-aarch64.cfg` **exists**, which is a file, not an execution, and `workspace/smoke.sh` has no architecture assertion at all. This is D-18's shape one layer up: a binary that is present, runnable, and the wrong one. Fixed by re-pinning both bases to index digests and adding an `uname -m` assertion to every image's smoke test, so the next digest bump cannot silently reintroduce it. **Raised to MEDIUM, not HIGH**, because nothing consumes these images in production yet: they are developer tooling, and the contamination is caught by the architecture assertion rather than by a user |
+
+---
+
+## D-23 — two of six images are x86_64 inside an arm64 label (MEDIUM) — **OPEN, fix in the CI PR**
+
+Found while planning the CI sub-phase, by asking whether the image job could run
+on an arm64 runner and then checking rather than assuming. It gets a long-form
+entry because the reason it survived is the interesting part, and because a
+one-line row would let the next person re-pin a digest and reintroduce it
+unnoticed.
+
+### What it is
+
+`containers/workspace/Dockerfile:27` and `containers/fedora-tools/Dockerfile:28`
+pin their bases by digest, which is correct and is what §11.1 asks for. The
+defect is *which* digest. Pinning `rust:1.94.0-bookworm@sha256:…` where that
+digest names a **single manifest** rather than a **multi-arch index** pins the
+amd64 build specifically:
+
+```text
+$ docker buildx imagetools inspect \
+    rust:1.94.0-bookworm@sha256:4673f78d…
+MediaType: application/vnd.oci.image.manifest.v1+json   # not …image.index…
+
+$ docker buildx imagetools inspect rust:1.94.0-bookworm
+MediaType: application/vnd.oci.image.index.v1+json      # the tag IS multi-arch
+  Platform: linux/amd64
+  Platform: linux/arm64/v8
+```
+
+The tag was multi-arch and the pin silently narrowed it. `--platform linux/arm64`
+then resolves the amd64 manifest, BuildKit says so in a warning, and builds
+anyway:
+
+```text
+InvalidBaseImagePlatform: Base image rust:1.94.0-bookworm@sha256:4673f78d… was
+  pulled with platform "linux/amd64", expected "linux/arm64" for current build
+```
+
+The result is labelled correctly and is not:
+
+| Image | `docker inspect` | `uname -m` inside |
+|---|---|---|
+| `ironmaint/base:0.1` | arm64 | `aarch64` |
+| `ironmaint/debian-tools:0.1` | arm64 | `aarch64` |
+| `ironmaint/agent:0.1` | arm64 | `aarch64` |
+| `ironmaint/fake-services:0.1` | arm64 | `aarch64` |
+| **`ironmaint/workspace:0.1`** | arm64 | **`x86_64`** |
+| **`ironmaint/fedora-tools:0.1`** | arm64 | **`x86_64`** |
+
+### Why every existing check passed
+
+Docker Desktop emulates x86_64 transparently on this arm64 host, so an x86_64
+`rustc` and an x86_64 `rpm` both run and both answer. `workspace/smoke.sh` asks
+whether `rustc --version` reports 1.94.0; it does. `fedora-tools/smoke.sh:101`
+asks whether `fedora-44-aarch64.cfg` is readable; it is — and that assertion is
+named for the aarch64 contract while only ever checking that a *file exists*,
+which is §9's "a check that cannot fail" failure mode wearing an aarch64 label.
+
+The general shape: **the checks ask whether a tool responds, never whether the
+binary is the right architecture.** That is D-18 one layer up — a binary that is
+present, runnable, and the wrong one — and it is why this belongs in the CI PR
+rather than a backlog. A native arm64 CI runner has no emulator, so the same
+image fails outright there instead of quietly; the fix and the CI job are
+mutually verifying, which is a better arrangement than either alone.
+
+### The fix, and the trap inside it
+
+Re-pin both bases to the **index** digest, which resolves per-platform and keeps
+the reproducibility property §11.1 wants. The trap: a digest that parses and
+still resolves to amd64 looks identical in a diff, so the pin edit is not itself
+evidence. Verification is two independent checks — `imagetools inspect` reports
+`…image.index` with `linux/arm64/v8` present, **and** the built image answers
+`aarch64` to `uname -m`.
+
+Alongside it, every image's smoke test gains an architecture assertion, so the
+next digest bump cannot reintroduce this silently. That assertion is the durable
+half; the re-pin is the one-time repair.
 
 ---
 

@@ -603,6 +603,14 @@ Stated so the work is not judged against goals it was never meant to hit:
 - **A CI pipeline.** The absence of CI is a real hole and this does not close it
   — but "add CI" is a different decision with a different owner. Say so; do not
   smuggle it in.
+  - **Superseded 2026-10-03.** The separate decision was taken, and the owner
+    asked for it explicitly. `.github/workflows/ci.yml` runs the §97 gate and
+    builds and smokes the six images on `ubuntu-24.04-arm`. The line above is
+    kept as written because it was right when written: CI was a decision, not a
+    Dockerfile, and nothing in this image set should have implied otherwise.
+    What the decision does **not** cover is listed under §12, because a CI
+    pipeline that exists is not the same as a CI pipeline that runs everything
+    §9 asks for.
 - **Real privileged side effects.** No signing keys, no upload credentials, no
   real BTS/Koji/Bodhi writes. §4.10 and §30 both forbid it.
 - **Making the synthetic tools obsolete.** They are §92's exit checkpoint and the
@@ -671,3 +679,41 @@ The `smoke/` scripts should be runnable on a developer machine and in CI
 alike, and each should be a *real* check — a `sbuild` build, a `mock` buildroot,
 an `ironclaw --version` — because that is the lesson of D-14 written down as
 infrastructure: **a test that cannot fail is not a test.**
+
+### 12.1 What CI does, and what it does not
+
+Added 2026-10-03 alongside the §10 supersession. A CI pipeline existing is not
+the same as a CI pipeline running everything §9 asks for, and the difference is
+worth writing down rather than discovering from an unticked box.
+
+**What runs:** the §97 gate, and `make -C containers verify` — all six images
+built and all six smoke tests executed, on `ubuntu-24.04-arm`.
+
+**What does not, and why:**
+
+- **The `mock` buildroot and the real `sbuild` build.** §9 asks for both and
+  means it — "not a `--version` check". Both need `--privileged`, both are
+  minutes-to-tens-of-minutes, and `STATUS.md`'s two day-one arm64 risks for
+  `mock` and `sbuild` have still not been run. A runner that builds a mock
+  buildroot is a different and much slower job, and putting it in this one
+  would make the gate unreliable rather than fast. The §9 boxes stay unticked.
+- **Multi-arch.** Native arm64 only. §8 treats emulated builds as unusable for
+  iteration and §10 rules out amd64 as a first-class target, so `build-multi` and
+  its local-registry path stay a developer-machine concern.
+- **Publishing.** The image job builds and smokes. Nothing is pushed and
+  nothing is tagged; a registry and a release policy are a separate decision on
+  the same grounds §10 gave for CI itself.
+- **Branch protection.** The gate is not yet required on `develop`. Making it
+  required changes what every other contributor can do, which is the same class
+  of change this section's parent non-goal was protecting.
+
+**One deviation from §4.2, on purpose.** §4.2 wants
+`cargo build --workspace --all-targets` baked into the workspace image so a cold
+CI run is a link step. That is not what this CI does, and it is worth saying why
+rather than leaving the Dockerfile's DEFERRED block to imply it is still coming:
+a baked `target/` is a multi-GB layer that is invalidated by every source
+change, which is to say it is stale exactly when CI matters most. A
+`target/`-keyed CI cache gives the same "link, not compile" behaviour on the
+second run, invalidates correctly, and costs no image size. The block stays in
+the Dockerfile with its reasoning updated, because the spec's instinct was
+right and its mechanism was sized for a world where CI is one cold run.
