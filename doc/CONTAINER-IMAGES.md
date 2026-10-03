@@ -610,14 +610,17 @@ Stated so the work is not judged against goals it was never meant to hit:
 - **A CI pipeline.** The absence of CI is a real hole and this does not close it
   — but "add CI" is a different decision with a different owner. Say so; do not
   smuggle it in.
-  - **Superseded 2026-10-03.** The separate decision was taken, and the owner
-    asked for it explicitly. `.github/workflows/ci.yml` runs the §97 gate and
-    builds and smokes the six images on `ubuntu-24.04-arm`. The line above is
-    kept as written because it was right when written: CI was a decision, not a
-    Dockerfile, and nothing in this image set should have implied otherwise.
-    What the decision does **not** cover is listed under §12, because a CI
-    pipeline that exists is not the same as a CI pipeline that runs everything
-    §9 asks for.
+  - **Resolved 2026-10-03, in the other direction.** The owner was asked and
+    answered: the gate runs **locally**, from a Mac, in this image set, via
+    `make -f containers/Makefile gate`. A GitHub Actions workflow was written
+    first and turned out not to be what was wanted, so it is not in the tree.
+    This non-goal therefore stands — and stands for the stronger reason, that
+    the decision it deferred to has now actually been made. The line above is
+    kept as written because it was right when written, and because the answer
+    it was waiting for turned out to be "not GitHub Actions".
+  - The consequence is stated rather than papered over: **nothing runs these
+    checks unless a human runs them.** No push, no pull request, no tag
+    triggers a gate. What that costs and what it buys is §12.1.
 - **Real privileged side effects.** No signing keys, no upload credentials, no
   real BTS/Koji/Bodhi writes. §4.10 and §30 both forbid it.
 - **Making the synthetic tools obsolete.** They are §92's exit checkpoint and the
@@ -687,40 +690,72 @@ alike, and each should be a *real* check — a `sbuild` build, a `mock` buildroo
 an `ironclaw --version` — because that is the lesson of D-14 written down as
 infrastructure: **a test that cannot fail is not a test.**
 
-### 12.1 What CI does, and what it does not
+### 12.1 The local gate: what it runs, and what it does not
 
-Added 2026-10-03 alongside the §10 supersession. A CI pipeline existing is not
-the same as a CI pipeline running everything §9 asks for, and the difference is
-worth writing down rather than discovering from an unticked box.
+Added 2026-10-03 alongside the §10 decision. The gate runs on a human's
+machine, on demand, in the workspace image. That is the whole workflow, and
+it is worth writing down what it does and does not reach, rather than
+discovering the gap from an unticked box.
 
-**What runs:** the §97 gate, and `make -C containers verify` — all six images
-built and all six smoke tests executed, on `ubuntu-24.04-arm`.
+**What it is:**
 
-**What does not, and why:**
+```sh
+make -f containers/Makefile gate        # the §97 set, in the image
+make -f containers/Makefile gate-fast   # the same minus the test runs
+make -f containers/Makefile verify      # build + smoke all six images
+make -f containers/Makefile gate-teeth  # assert the gate can fail
+```
 
+`gate` runs the §97 command set inside `ironmaint/workspace:0.1` with the
+repo bind-mounted at `/work` and `CARGO_TARGET_DIR` on a named volume. The
+first run compiles; every run after it is a link. `gate.sh` stops at the
+first failure and names the step, because six of the eight steps compile the
+workspace and "the third one failed" is the difference between a two-minute
+fix and a twenty-minute bisect.
+
+**What it does not, and why:**
+
+- **It does not run unless someone runs it.** No push, no pull request, no
+  tag triggers anything. This is the accepted cost of the decision in §10, and
+  it is a real one: a defect that lands on `develop` while nobody is looking
+  stays landed until the next person runs the gate. State it plainly rather
+  than describing the workflow as though it were continuous.
 - **The `mock` buildroot and the real `sbuild` build.** §9 asks for both and
   means it — "not a `--version` check". Both need `--privileged`, both are
   minutes-to-tens-of-minutes, and `STATUS.md`'s two day-one arm64 risks for
-  `mock` and `sbuild` have still not been run. A runner that builds a mock
-  buildroot is a different and much slower job, and putting it in this one
-  would make the gate unreliable rather than fast. The §9 boxes stay unticked.
+  `mock` and `sbuild` have still not been run. They are a separate target, on
+  a separate day, not a step in the loop you run after every edit. The §9
+  boxes stay unticked.
 - **Multi-arch.** Native arm64 only. §8 treats emulated builds as unusable for
-  iteration and §10 rules out amd64 as a first-class target, so `build-multi` and
-  its local-registry path stay a developer-machine concern.
-- **Publishing.** The image job builds and smokes. Nothing is pushed and
-  nothing is tagged; a registry and a release policy are a separate decision on
-  the same grounds §10 gave for CI itself.
-- **Branch protection.** The gate is not yet required on `develop`. Making it
-  required changes what every other contributor can do, which is the same class
-  of change this section's parent non-goal was protecting.
+  iteration and §10 rules out amd64 as a first-class target, so `build-multi`
+  and its local-registry path stay a developer-machine concern.
+- **Publishing.** `make verify` builds and smokes. Nothing is pushed and
+  nothing is tagged; a registry and a release policy are a separate decision,
+  on the same grounds §10 gave for CI itself.
+- **The host's toolchain.** The gate runs in the container precisely so that
+  it does not check the developer's macOS Rust. `gate.sh` refuses to run
+  outside one — `rust-toolchain.toml` in the working directory is the marker,
+  and a green run on the wrong toolchain is worse than a red one because it
+  is believed.
 
 **One deviation from §4.2, on purpose.** §4.2 wants
-`cargo build --workspace --all-targets` baked into the workspace image so a cold
-CI run is a link step. That is not what this CI does, and it is worth saying why
-rather than leaving the Dockerfile's DEFERRED block to imply it is still coming:
-a baked `target/` is a multi-GB layer that is invalidated by every source
-change, which is to say it is stale exactly when CI matters most. A
-`target/`-keyed CI cache gives the same "link, not compile" behaviour on the
-second run, invalidates correctly, and costs no image size. The block stays in
-the Dockerfile with its reasoning updated, because the spec's instinct was
-right and its mechanism was sized for a world where CI is one cold run.
+`cargo build --workspace --all-targets` baked into the workspace image so the
+first run is a link step. That is not what this does, and it is worth saying
+why rather than leaving the Dockerfile's DEFERRED block to imply it is still
+coming: a baked `target/` is a multi-GB layer that is invalidated by every
+source change, which is to say it is stale exactly when you most want the
+cache. The `cargo-target` named volume that `compose.yml` already mounts
+gives the same "link, not compile" behaviour on the second run, invalidates
+correctly, and costs no image size. The block stays in the Dockerfile with
+its reasoning updated, because the spec's instinct was right and its
+mechanism was sized for a world where the gate runs once, cold.
+
+**The teeth, and how they were checked.** `doc/EXECUTION-PLAN.md` §4: every
+check gets broken on purpose before it is trusted. Two receipts:
+
+- The §97 *command set* was broken by appending unformatted dead code to
+  `ironmaint-core`; `cargo fmt --check` and `cargo clippy` both rejected it,
+  independently, and both passed again on the revert.
+- The `make gate` *wrapper* is checked by `make gate-teeth`, which runs a
+  verifier that does not exist and fails if it exits zero. A gate that has
+  never been seen red is an assumption wearing a tick.
