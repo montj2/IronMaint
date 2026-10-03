@@ -33,7 +33,9 @@ cargo run -p xtask -- verify-seams           # S1/S2/S4/S5 seam checks
 cargo test --workspace --features integration   # integration suite (synthetic E2E)
 ```
 
-Note: the workspace defines its own `xtask` crate. Until `cargo install cargo-xtask` lands in CI, invoke each subcommand via `cargo run -p xtask -- verify-…` from the repo root. Running `cargo xtask verify-…` directly produces `help: view all installed commands with 'cargo --list'` and fails.
+Note: the workspace defines its own `xtask` crate. Until `cargo install cargo-xtask` lands, invoke each subcommand via `cargo run -p xtask -- verify-…` from the repo root. Running `cargo xtask verify-…` directly produces `help: view all installed commands with 'cargo --list'` and fails.
+
+The command set above is also what `.github/workflows/ci.yml` runs, on every push and pull request against `develop`, on a native `ubuntu-24.04-arm` runner. CI adds `--locked` to every cargo invocation and nothing else; if a command above and a CI step disagree, the CI step is the one with a log to point at.
 
 For a single test during development:
 

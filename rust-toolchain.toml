@@ -4,7 +4,8 @@
 # the sqlite store). The previous floor (1.88.0) was set against rmcp
 # 3.x in Phase 0B.9; sqlx 0.9 raised its floor to 1.94 and that became
 # the binding constraint. Edition 2024 itself still only needs 1.85.
-# Newer toolchains are supported; CI and contributors will resolve to the
-# latest compatible stable automatically.
+# Newer toolchains are supported; contributors on a newer stable can build
+# without this file, and CI installs exactly this channel. The pin is an
+# upper bound on what is tested, not a lower bound on what compiles.
 channel = "1.94.0"
 components = ["rustfmt", "clippy", "rust-src"]
