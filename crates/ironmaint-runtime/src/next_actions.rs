@@ -60,6 +60,23 @@ pub enum AllowedAction {
     /// recorded target is the escalator's decision, so resuming is an
     /// operator's move. The two answers are deliberately different
     /// fields — `requires_human: ReviewEscalation` carries the second.
+    ///
+    /// **No production job reaches this.** `job.resume` is a registered
+    /// tool and it works, but the `ResumeRecord` it reads is written
+    /// only by `RuntimeCommand::EnterHumanReview`, and nothing in
+    /// production constructs that command — the sole construction site
+    /// is `crates/ironmaint-mcp/tests/dispatcher.rs`. So the record
+    /// never exists, the handler refuses with `InvalidInput`, and the
+    /// tool cannot succeed on any job a real agent can reach. Only
+    /// tests, which dispatch `EnterHumanReview` directly, can get here.
+    ///
+    /// This is the one honest thing to say about the two states at
+    /// once: the *shape* above is right, and there is no production
+    /// path that exercises it. Who may escalate a job, and on what
+    /// evidence, is an open architecture question — D-20, and §17
+    /// question 8 of `doc/PHASE-0B-COMPLETION.md`. When that is
+    /// answered, this doc's first paragraph is what a caller should
+    /// read.
     ResumeJob,
 }
 
@@ -94,10 +111,19 @@ pub enum HumanAction {
     /// it, because the recorded state is the escalator's decision
     /// and the agent has no basis to overrule it.
     ///
-    /// The same job also lists `AllowedAction::ResumeJob`, because a
-    /// tool for it exists. This variant is the reason that listing is
-    /// not an instruction: `allowed` answers "what is performable",
-    /// `requires_human` answers "whose move is it".
+    /// When a job is genuinely in this state it also lists
+    /// `AllowedAction::ResumeJob`, because a tool for it exists. This
+    /// variant is the reason that listing is not an instruction:
+    /// `allowed` answers "what is performable", `requires_human`
+    /// answers "whose move is it".
+    ///
+    /// **No production job reaches this either, and for the same
+    /// reason** — see `AllowedAction::ResumeJob`. The projection
+    /// produces this variant for `HumanReviewRequired` because the
+    /// state exists in the machine, but nothing enters that state in
+    /// production, so the pairing described above is exercised only by
+    /// tests. Whether "nothing enters it" is correct is an open
+    /// architecture question, not a fact this enum can settle.
     ReviewEscalation,
 }
 

@@ -21,6 +21,13 @@ thiserror = { workspace = true }
 [dev-dependencies]
 debian-stub = { path = "../../adapters/debian-stub" }
 fedora-stub = { path = "../../adapters/fedora-stub" }
+# S3 (`doc/SEAM-VERIFICATION.md` §2/S3): the capability inventory
+# compares what an adapter *plans* against the `ToolRegistry` the
+# daemon's own tool set builds. Dev-only, and `verify-architecture`
+# exempts dev-dependencies (xtask/src/architecture.rs:269), so the
+# adapter layer does not gain a production edge on the executor
+# layer -- which would be the wrong way round.
+ironmaint-executor = { path = "../ironmaint-executor" }
 ironmaint-testkit = { path = "../../crates/ironmaint-testkit" }
 time = { workspace = true, features = ["macros"] }
 url = { workspace = true }

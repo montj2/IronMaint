@@ -76,12 +76,14 @@ use crate::seams::{
     actions::ActionsCheck,
     commands::{CheckOutcome, CommandsCheck},
     events::EventsCheck,
+    reachability::ReachabilityCheck,
     stores::StoresCheck,
 };
 
 mod actions;
 mod commands;
 mod events;
+mod reachability;
 mod stores;
 
 /// Directories under the workspace root whose `.rs` files the source-walking
@@ -157,13 +159,15 @@ pub fn run() -> Result<Report, Box<dyn Error>> {
     let files = collect_source_files(&root)?;
     let mut report = Report::default();
 
-    // One walk, four checks. S2 reads the same sources as the rest; only half
-    // of it comes from the tree, and that half is the half that needs reading.
+    // One walk, five checks. S2 and S8 read the same sources as the rest; only
+    // part of each comes from the tree, and that part is the part that needs
+    // reading.
     let outcomes = [
         ("S1", CommandsCheck::run(&files)),
         ("S2", ActionsCheck::run(&files)),
         ("S4", EventsCheck::run(&files)),
         ("S5", StoresCheck::run(&files)),
+        ("S8", ReachabilityCheck::run(&files)),
     ];
     for (name, outcome) in outcomes {
         report.summary.insert(name, outcome.summary);

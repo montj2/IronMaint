@@ -330,6 +330,17 @@ yet, so "rebuild everything" is a shell loop over known ids.
 > tests in that crate to put a real job in front of the tool rather than
 > exercising the no-events path.
 >
+> **Amended 2026-10-02**, at `ffccbd7`: **916** unit and **925** with
+> `--features integration`, both green, and now **five** verifiers — `verify-seams`
+> joined the §97 set. The +76 is the container and in-container work
+> (`41682b2`, `13bf829`, `500e37c`) and the seam checker itself (`ffccbd7`).
+> Every count above this line is kept as written; §21 records what changed.
+>
+> **Amended 2026-10-02**, at `50a6136`: **926** unit and **935** with
+> `--features integration`, both green, five verifiers clean, `fmt` and clippy
+> `-D warnings` clean. The +10 is this branch's three checks — S3's three
+> capability-inventory tests, the two store-conformance drivers plus the orphan
+> case S9 found, and S8's four xtask unit tests.
 > **Amended 2026-10-03**, at `1e4c959`: **916** unit and **925** with
 > `--features integration`, both green, `fmt` and clippy `-D warnings` clean,
 > all five verifiers clean. The §97 set now runs in the
@@ -470,6 +481,22 @@ Specifically enforced and holding on this branch:
   `if family == "debian"` branching exists in any core crate.
 - `ironmaint-mcp` depends on `ironmaint-runtime` (dispatcher → service), not
   the reverse.
+
+**A second verifier now guards the seams rather than the dependency graph.**
+`cargo run -p xtask -- verify-seams` (`ffccbd7`) is the fifth §97 command. It
+carries four static checks — S1 (every `RuntimeCommand` variant is *constructed*
+outside tests, not merely mentioned), S2 (every name `tool_for_action` returns
+is a registered tool), S4 (every `JobEvent` has an arm in `ProjectionApply::apply`
+and seed selection is decided in exactly one place), S5 (both store backends
+implement the same supertrait). Three behavioural checks — S3, S8, S9 — are
+specified in `doc/SEAM-VERIFICATION.md` and **not yet built**; §21 says what
+that leaves uncovered.
+
+Worth knowing before reading a green result: the check's first run reported six
+violations and **five were bugs in the check**, because its test module had
+never been compiled — `cargo test -p xtask` had not been run, and twelve of its
+thirty-four tests failed. The lesson is written into the module's own doc
+comment rather than left here.
 
 ## 15. Schema verification result
 
@@ -899,6 +926,75 @@ driven end to end over MCP.)
 > **eleven**; `release.candidate.create` landed at the C5 prerequisite, for
 > §101 steps 26–27.)
 
+**8. Who may put a job into `HumanReviewRequired` or `InfrastructureBlocked`,
+and on what evidence?** **OPEN. This is the one question in this section that
+Phase 1 cannot start without an answer to, and it is a state-ownership
+decision.**
+
+It is the same question asked three times, and each asking found the same hole:
+
+- `RuntimeCommand::EnterHumanReview` is implemented, dispatched, and works.
+  `handle_enter_human_review` writes the `ResumeRecord`, and `job.resume`
+  consumes it. **The only thing missing is a caller** — the sole construction
+  site in the tree is `crates/ironmaint-mcp/tests/dispatcher.rs:236`. No
+  registered tool builds it. So `job.resume` is a tool that cannot succeed on
+  any job a real agent can reach (D-20 part 2).
+- `InfrastructureBlocked` has the mirror-image shape. D-09 records the *exit*
+  as complete and the *entry* as absent: `ResumeRecord` is persisted and
+  `job.resume` returns the job from either exceptional state, but nothing
+  writes the transition into the first one.
+- The intent is documented and deliberate — *"escalation is an orchestration
+  decision, and an agent that could raise it against itself could also strand
+  itself"* (`mcp/tests/dispatcher.rs:204`), and 0A §21 gives the state no entry
+  point at all. **Both are correct answers to a question Phase 0 was not asked
+  to answer.** The gap is that nobody has since been asked it.
+
+Why this blocks Phase 1 specifically: the human-review loop is what a real
+adapter's escalation path terminates in, and **state ownership is on §106's
+do-not-redesign list.** If the first adapter needs an escalation entry point
+and there is none, Phase 1 either waits or invents one — and inventing one
+under deadline is exactly the redesign §106 says would mean 0B failed.
+
+Three candidate answers. **These are options, not a recommendation** — the
+choice is architectural, and the deciding constraint is one only the architect
+can weigh.
+
+> **(a) An operator tool the agent cannot call.** A registered MCP tool,
+> alongside `RequestApproval`'s refusal, that only a human can invoke. This
+> matches the principle already established for approvals — the agent may not
+> self-grant — and it is the only option where "who" is settled by
+> construction rather than by policy. *Does not change:* the state machine, the
+> `ResumeRecord`, `job.resume`, or the projection. *Costs:* a new tool, a new
+> authorisation surface, and a decision about whether the daemon can authenticate
+> an operator at all — which it currently cannot, and which is the same missing
+> piece that makes `RequestApproval` a refusal (D-20 part 1).
+
+> **(b) Adapter-derived and deterministic.** The adapter's plan declares that
+> a particular check *requires* human judgement, and the runtime escalates when
+> the plan says so rather than when an agent asks. Escalation becomes a
+> property of the distribution's requirements, which is the same shape as
+> `Obligation` and keeps the decision in the engine. *Does not change:* the
+> state machine or `job.resume`. *Costs:* a new field in `AdapterCapabilities`,
+> a schema change, and a path where a distribution's policy can strand a job —
+> which needs its own "who un-strands it" answer, and lands back on (a).
+
+> **(c) A `reconcile` rule.** §41's rule list grows one: a job that has held
+> the same state across N reconcile passes with no progress escalates. This
+> keeps the decision in the state machine, next to the rules already there, and
+> needs no new tool. *Does not change:* the state machine. *Costs:* a
+> notion of progress or elapsed time that `JobProjection` may not currently
+> carry, and it is in tension with D-10 — `reconcile` is per-call with no
+> background loop, so "N passes" needs a loop that Phase 0 deliberately did not
+> build. This option is the one that would re-open a recorded decision.
+
+The three are not exclusive, and the cheapest honest answer may be "operator
+tool now, adapter-derived later" — but that should be a decision, not a drift.
+
+**What is not at stake.** Nothing here is broken. `EnterHumanReview` and
+`InfrastructureBlocked` both have working handlers, a working exit, a working
+projection and passing tests. The code is correct; what is missing is a
+decision about who is allowed to start it.
+
 ---
 
 ## 18. North-star check (§105)
@@ -1167,3 +1263,178 @@ and no test in the workspace capable of finding it.
 binary is present, so a green run of *it* proves the server and not the agent.
 Row 30 is unaffected: the agent loop and the extension manifest still have not
 been exercised, and D-15's repro steps still stand.
+
+---
+
+## 21. Post-0B.10 amendment — 2026-10-02
+
+Everything above this line is accurate as of the commit named in each section,
+which for §20 is `8b95884`. This section records the five sub-phases that have
+landed since, and — more to the point for a Phase 1 reader — what they changed
+about the handoff.
+
+### 21.1 What landed
+
+| Commit | PR | What |
+|---|---|---|
+| `13bf829` | #34 | `ironmaint/base:0.1` and `ironmaint/workspace:0.1` images, Dockerfiles, Makefile, per-image smoke tests (D-17) |
+| `41682b2` | #35 | the four remaining images: `debian-tools`, `fedora-tools`, `agent`, `fake-services` |
+| `500e37c` | #36 | D-18 — one symptom, two independent causes, and a third found while verifying. In-container §97 green for the first time |
+| `79a7a2a` | #37 | daemon teardown in tests: `kill_on_drop`, an awaited `shutdown()`, and a test that pins the reap (D-19's found half) |
+| `ffccbd7` | #38 | `verify-seams` — static checks S1, S2, S4, S5, in the §97 set |
+| this PR | — | `CLAUDE.md` rewritten: it described a repository with no code in it |
+| this PR | — | D-20's two false doc comments corrected, and the question they were hiding posed as §17 question 8 |
+| this PR | — | S9 store parity — **found D-21, a live agent-reachable divergence** |
+| this PR | — | S3 capability inventory — eight unregistered keys, each with the phase that supplies it |
+| this PR | — | S8 tool reachability — the direction S2 declined, plus `pub` dispatch helpers no arm reaches |
+
+§97 on that tree: **926** unit, **935** integration, five verifiers, `fmt` and
+clippy `-D warnings` clean — walked end to end rather than inferred from the
+parts already green, because a gate assembled from earlier partial runs is not
+a gate.
+
+**The behavioural half of the seam work turned out to be the productive half.**
+S9's script found D-21 on its first run, and nothing in the register, the phase
+report or a code read had caught it — because the mock *is* the gate for every
+test of the path it breaks. Both new checks also got broken on purpose before
+they were trusted (`026e559`, `a34e0e9`, `5f2076a`), and **two of those breaks
+corrected a claim the check's own documentation had made** — S3's failure
+reported one key per run, and S8's doc promised a reachability the workspace
+`dead_code` lint already provided for private helpers. That is recorded in
+`doc/EXECUTION-PLAN.md` §3 because it is the part of the teeth-check that is not
+about the check.
+
+### 21.2 The register, and who owns each open row
+
+`doc/DEBT.md` carried twenty rows; ten were closed by those five commits and
+their predecessors. **Two more were added while writing this section, and both
+are the kind of row that only appears when something is actually run** — D-21
+(found by S9's script on its first run) and D-22 (what `verify-seams` provably
+cannot find, which no run can tell you). The ten that were open each now opens
+with a tag saying **who decides**, because a flat list of "OPEN" rows mixed six
+different kinds of object. In summary: **three are architect decisions**
+(D-09's open half, D-20 — closed on 2026-10-02 by *posing* its question rather
+than coding it — and now **D-21**), **two are environment-blocked** (D-06 and
+D-15 — neither closable by writing code), **two are Phase 1 by design** (D-11,
+D-12), **one is a recorded non-decision** (D-10), **one is process** (D-13),
+and **two are real but bounded and not Phase 1's problem** (D-17 needs a CI
+owner; D-19's teardown defect is fixed and the unreproduced hang is not a
+blocker). **D-22 is closed by being written down**, which is the whole point of
+it: it is a scoping note about what a green `verify-seams` means, and no commit
+closes it.
+
+**D-06 and D-15 are the only two that stop a claim from being verified rather
+than a capability from existing.** Neither will be closed by Phase 1 writing
+code; both close on a machine with an `ironclaw` binary.
+
+### 21.3 Phase 1 landmines
+
+**Six things an adapter author will hit. The first is now fixed; the second is
+a live defect; the rest are decisions the code is making by omission.** Landmine 1 was
+originally written as "not in the register", and the store-parity script that
+found the second of these has since landed and turned it into a fixed bug plus
+a new one — so this list is now what the tree actually says.
+
+**1. `MockStore` accepted a duplicate fingerprint; that is fixed, and the fix is
+pinned.** `MockStore::put_source_candidate` did
+`source_by_fp.insert(fp, id)` unconditionally, so a second candidate carrying a
+duplicate fingerprint silently overwrote the index while real SQLite rejected it
+(`migrations/0001_initial.sql:65` is `fingerprint TEXT NOT NULL UNIQUE`).
+Defect instances 9 and 11, made invisible because every test of capture ran on
+the mock. `ironmaint-testkit/src/store_conformance.rs` now runs the same
+assertions against both backends, and the guard is in the store rather than
+only at the one call site that had it. **D-09-era, closed by S9.**
+
+**2. `MockStore` has no referential integrity, and `job.capture` reaches the
+gap — D-21, and this is the one to read before writing an adapter.**
+`source_candidates.job_id` is a `FOREIGN KEY` to `jobs(id)` and `SqliteStore`
+sets `PRAGMA foreign_keys = ON` on every connection
+(`crates/ironmaint-store-sqlite/src/lib.rs:90,121`), so SQLite genuinely
+refuses a candidate whose job was never created. **Nothing between the agent and
+the insert creates it**: the `job.capture` dispatcher takes `input.job_id`
+verbatim (`crates/ironmaint-mcp/src/dispatch.rs:263`), `ensure_workspace` does
+not create a job, and `handle_capture_candidate`
+(`crates/ironmaint-runtime/src/service.rs:1461`) checks only that
+`candidate.job_id() == job_id`. An agent that calls `job.capture` before
+`job.create` gets a raw `FOREIGN KEY constraint failed` out of SQLite, while
+every test of that path runs on the mock and sees it succeed.
+
+*This one is recorded, not fixed, and the reason matters.* Giving the mock
+referential integrity has a measured blast radius of **7 tests across 5
+binaries**, and most of them legitimately build a candidate for a job the
+workspace layer has no business knowing about. So the disagreement underneath is
+real and it is a design question: **the workspace layer and the runtime disagree
+about who creates the job first.** That is a state-ownership decision, which
+§106 puts on the do-not-redesign list, so it goes to the architect alongside
+[§17 question 8](#17-questions-requiring-review-before-real-debian-integration)
+rather than getting patched. The divergence is pinned executably by
+`store_parity_sqlite::a_candidate_for_an_unknown_job_is_refused`, in the
+backend-specific driver rather than the shared script, because the mock cannot
+pass it.
+
+**3. A `SourceCandidate` is a property of a source tree, not of a job.**
+`compute_fingerprint` hashes family, release, source name, version, repository
+URL, commit and tree — **`JobId` is not among them** — and the `UNIQUE`
+constraint is global rather than per job. So two jobs that capture the same
+upstream tree are contending for one candidate, and the second write is refused.
+That falls out of two independent design choices, neither of which mentions the
+other, and **nothing in the workspace asserted it until
+`a_fingerprint_is_shared_across_jobs` existed.** Whether it is right is not the
+suite's call; an adapter that lets two jobs point at one tree needs to know, so
+the behaviour is pinned to make a future change a decision rather than an
+accident.
+
+**4. Nothing escalates a job to `HumanReviewRequired` in production**, so the
+registered `job.resume` tool cannot succeed on any job a real agent can reach.
+`EnterHumanReview` is implemented, dispatched, and works — its only
+construction site is `crates/ironmaint-mcp/tests/dispatcher.rs:236`. Same
+shape as the `InfrastructureBlocked` entry in D-09. **Both are posed as
+[§17 question 8](#17-questions-requiring-review-before-real-debian-integration)
+above, with three candidate answers.** Nothing is broken; the decision is
+simply unmade, and state ownership is on §106's do-not-redesign list.
+
+**5. The stubs' plans are real and unwired.** `adapters/debian-stub` and
+`adapters/fedora-stub` return distribution-distinct plans — eight capability
+keys across the two, none of which has a registered tool — and both pass the
+shared conformance suite. **Their only caller is that conformance suite.**
+Wiring `build_plan()`/`qa_plan()` into a production flow is Phase 1's first
+task, and §17 question 7 already settled that the first real adapter must
+activate its candidate or it is not exercising what it claims to.
+
+**The allowlist that now names all eight is the useful artefact here.**
+`crates/ironmaint-adapter-api/tests/capability_inventory.rs` pairs each
+unregistered key with the phase that supplies it, and
+`debian.qa.piuparts` is the one that does **not** need
+`doc/CONTAINER-IMAGES.md` §4.3 — piuparts tests the source package, which the
+capture boundary already produces — so it is the first that can be unblocked
+without the image work.
+
+**6. Six of the fourteen wrong-guard defects are out of reach of any verifier
+shipped so far — now D-22.** `reconcile`'s `never_loop`, `SetActiveCandidate`'s
+state guard, `attach_obligation_state`'s read-before-check, `next_actions`
+omitting an obligation. The link exists, has a caller, and does the wrong thing.
+A "is this called" check sees a called function and has nothing to say. This is
+recorded so those six are not later re-attributed to `verify-seams`, and so **a
+green `verify-seams` is never read as "no missing seams."**
+
+
+### 21.4 What Phase 0A left behind
+
+There is no `PHASE-0A-COMPLETION.md`. Phase 0A's six sub-phases landed as
+`47ceb6e` (0A.1), `feature/phase-0a-domain-model` (0A.2–0A.3), PR #7 (0A.4),
+`a514686` (0A.5), and PR #9 (0A.6). Their spec sections are
+`doc/phases/PHASE-0A.md` §§76–81. The one post-condition that slipped — 0A.6
+promoting the panic-policy lints — landed later under D-04 in 0B.10, not in
+0A.6.
+
+### 21.5 What is still claimed rather than shown
+
+Two, both unchanged since 0B.10 and both recorded above:
+
+- **§102 row 30** — an actual IronClaw agent completing the synthetic repair
+  workflow. Environment-blocked (D-15). The workflow is proven agent-drivable;
+  the specific agent the spec names has not been run against it.
+- **The §36 operator escape hatch** — driven by hand, not by
+  `scripts/ironclaw-e2e.sh`, whose IronClaw half skips with a notice when no
+  binary is present. A green run of *that* script proves the server, not the
+  agent.

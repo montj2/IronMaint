@@ -1038,6 +1038,7 @@ dependencies = [
  "fedora-stub",
  "ironmaint-core",
  "ironmaint-evidence",
+ "ironmaint-executor",
  "ironmaint-policy",
  "ironmaint-testkit",
  "schemars 0.8.22",

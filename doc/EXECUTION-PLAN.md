@@ -148,16 +148,29 @@ the whole reason wave 5 exists.
 
 ## 3. Definition of done for this plan
 
-- [ ] Every open register row is CLOSED, or carries a recorded reason it is not
+- [x] Every open register row is CLOSED, or carries a recorded reason it is not
       closing, with a *changed* reason rather than a repeated "deferred to 0B.10"
+      — every row's status now opens with **who decides**, so a reader can tell
+      which rows are waiting on them. Two rows were added while doing it, and
+      neither is a chore: **D-21** (a live `MockStore`/SQLite divergence on the
+      `job.capture` path, found by S9) and **D-22** (what `verify-seams`
+      provably cannot find)
 - [x] `cargo run -p xtask -- verify-seams` is in the §97 set in `CLAUDE.md`
 - [x] S7's failing commit is in the history, before D-16's fix — `84af759`
-- [ ] `verify-seams` has been seen to fail on a deliberately introduced defect,
-      twice (S1 and S9), per `doc/SEAM-VERIFICATION.md` §4. **S1: done** —
-      `530672f` builds the command by deserialising it, so `job.create` still
-      works and every test still passes, and `verify-seams` is the only thing
-      in the build that notices. S9 lands with the behavioural PR
-- [ ] §102 is 34 of 34, or the remaining gap is D-15 and D-15 says why
+- [x] `verify-seams` has been seen to fail on a deliberately introduced defect,
+      per `doc/SEAM-VERIFICATION.md` §4. **S1** — `530672f` builds the command
+      by deserialising it, so `job.create` still works and every test still
+      passes, and `verify-seams` is the only thing in the build that notices.
+      **S9** — `026e559` weakens the mock's duplicate-fingerprint guard so a
+      valid upsert is refused, and the *static* checks stay green: `verify-seams`
+      reported "No violations" on that tree, which is the whole argument for
+      keeping the error cases behavioural. **S3** — `a34e0e9` deletes one
+      allowlist entry. **S8** — `5f2076a` deletes a dispatch arm, and had to
+      make the helper `pub` first, because the lints already own the private
+      case. Four breaks rather than the two this box originally asked for, and
+      two of them corrected a claim their own check had made
+- [x] §102 is 34 of 34, or the remaining gap is D-15 and D-15 says why — it is
+      33 of 34; item 30 is environment-blocked and D-15 keeps the repro
 
 ---
 

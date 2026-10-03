@@ -20,6 +20,9 @@
 //!   orchestrator plus private per-capability helpers.
 //! - [`executor_conformance`] — [`assert_executor_conformance`] plus
 //!   [`register_fixture_tools`] / [`FixtureKeys`] for the §92 suite.
+//! - [`store_conformance`] — [`assert_store_conformance`], the script
+//!   every `IronMaintStore` backend must pass. S9 of
+//!   `doc/SEAM-VERIFICATION.md`.
 //!
 //! ## Phase 0A.5 deferred to 0A.6
 //!
@@ -35,6 +38,7 @@ pub mod conformance;
 pub mod executor_conformance;
 pub mod fixtures;
 pub mod scenario;
+pub mod store_conformance;
 
 pub use conformance::assert_distribution_adapter_conformance;
 pub use executor_conformance::{
@@ -44,3 +48,4 @@ pub use scenario::{
     SCENARIO_OBLIGATION_REQUIREMENT, SCENARIO_STAGES, ScenarioAdapter, ScenarioScript,
     ScenarioTools, register_scenario_tools,
 };
+pub use store_conformance::assert_store_conformance;

@@ -153,12 +153,31 @@ which means it is discovered by running a job rather than by building. The
 allowlist converts it into a build-time statement, and `doc/CONTAINER-IMAGES.md`
 §4.3's image work is what will empty the list.
 
-**Scope note.** The check needs the adapter's plan, which is a runtime value, so
-this is not pure source analysis. Two options: a test that instantiates both
-stubs against the `ScenarioAdapter`'s harness, or a generated table. **Recommend
-the test** — it runs the real `build_plan`, so a new stub is covered the day it
-lands, and it belongs in `ironmaint-testkit` where the conformance suite already
-lives. It is listed as behavioural (S8) rather than static for that reason.
+**Where it landed.** `crates/ironmaint-adapter-api/tests/capability_inventory.rs`,
+beside the existing both-stubs conformance test, because that crate already
+dev-depends on both stubs and the test needs the real `DistributionAdapter`. The
+registered side is *not* a list of literals: it is a `ToolRegistry` built by the
+same `register_synthetic_tools` call `bins/ironmaintd` makes, so a newly
+registered tool empties its own allowlist entry with no list edit.
+
+**It is a test rather than a source scan, and the reason is load-bearing.** The
+capability set is a runtime value — it comes out of `build_plan` and `qa_plan`,
+and a real adapter will compute it from the package, the release and the policy.
+Reading the source for string literals would pass on every stub and fail on the
+first conditional one.
+
+**The check does more than the assertion above.** The allowlist is only useful if
+it is a list of *claims*, so `every_allowlist_entry_is_still_needed` runs the
+other way and fails on an entry for a key no adapter plans, and on an entry for a
+key that has since gained a registered tool. An entry with no owner is worse
+than no entry, because it reads as a plan.
+
+Eight entries, all naming a phase. `debian.qa.piuparts` is the one that does
+**not** need `doc/CONTAINER-IMAGES.md` §4.3 — piuparts tests the source package,
+which the capture boundary already produces — so it is the first that can be
+unblocked without the image work, and the reason it is worth reading rather than
+skimming.
+
 
 ### S4 — every event variant is handled in every replay implementation
 
@@ -251,16 +270,55 @@ not name the type whose event log it is auditing. It lives at
 already blesses, and the same one §101's two drivers use for the same reason.
 The store crate is the *subject* of the check, not its author.
 
-### S8 — every command is reachable through the public surface *(behavioural)*
+### S8 — every advertised tool is dispatchable, and every dispatchable tool is advertised
 
-**Assertion.** Every `RuntimeCommand` the check S1 clears is constructible
-through at least one of: a registered MCP tool, the daemon's startup/CLI path, or
-another command's body — and that path is exercised by at least one test.
+**Assertion.** Two things, both read off `dispatch` and both compared against
+`generate_all_schemas()` rather than a second source of truth:
 
-This is the *positive* half of S1, and it is where S3 belongs (see above). The
-distinction matters: S1 catches "nothing calls this", S8 catches "something calls
-this only from a test", which is a weaker but real version of the same defect —
-D-14's `rebuild_projection` tests all did exactly that.
+1. Every advertised tool has a dispatch arm, and every arm names an advertised
+   tool. This is the direction **S2 deliberately declined** — its own doc records
+   that a tool *registered but not implemented* is "a dispatch arm", and calls it
+   other territory. This is that territory.
+2. Every `RuntimeCommand` construction in the MCP layer sits in a helper an arm
+   actually calls.
+
+The first half matters because `dispatch` matches on a `&str` and ends in
+`unknown => Err(...)`. The catch-all is correct and necessary, and it is also
+what makes a miss compile: no error for `"checks.run"` written where
+`"check.run"` was meant, and the first sign of it is an `unknown tool` error
+handed to whoever called it.
+
+The second half is **S1's question inverted**. S1 asks "is anything outside the
+enum's own match arms constructing this variant?"; S8 asks "is the thing that
+constructs it reachable from the tool surface?" A caller can exist, be
+production, and lead nowhere — D-14's shape, and why "there is a caller" is not
+a sufficient answer on its own.
+
+**Deviation from the "home" column in §3, recorded rather than made quietly.**
+This section originally read `*(behavioural)*` and asserted that a path must be
+"exercised by at least one test". It shipped as a **static** check in
+`xtask/src/seams/reachability.rs`, and it does not assert test coverage at all.
+Two reasons, both found by building it:
+
+- "Exercised by at least one test" is a coverage question, and §1.2 already
+  rejects coverage instrumentation for the whole project. Adopting it for one
+  check would be the inconsistency, not the correction.
+- The half of the original assertion that *is* about reachability is decidable
+  statically, and the half that needs a test is the half the §101 drivers
+  already provide. Re-checking it would have bought a slower gate and no new
+  signal.
+
+Reachability here is **structural** — a construction inside a function the
+dispatcher calls — not a call-graph analysis. A helper reached only by another
+unreachable helper still counts as reachable. §1.2's argument covers this too,
+and the same limit is stated in the check's own module doc.
+
+**And the orphan-helper half is about `pub` helpers only.** Deleting an arm
+whose helper is private never reaches S8: the workspace denies `dead_code`, so
+the compiler refuses an uncalled private function first. The lints already own
+that case, and S8 is for the one they are blind to — a `pub` fn in a `pub mod`,
+which gets no dead-code warning and stops being reachable silently. The
+teeth-break had to make the helper `pub` before S8 said anything at all.
 
 ### S9 — mock and SQLite behave identically *(behavioural)*
 
@@ -276,7 +334,54 @@ on the backend the daemon actually runs was invisible to all of them.
 The error cases are the load-bearing half. A mock that returns `Ok` where SQLite
 returns `Err` is not a simplification, it is a hole with a passing test over it.
 
----
+**Where it landed.** `ironmaint-testkit/src/store_conformance.rs`, generic over
+`S: IronMaintStore + ?Sized` — the sub-traits declare `async fn` and so are not
+dyn-compatible, which is why the shared script is a generic function and not a
+trait object. Two drivers, `tests/store_parity.rs` and
+`tests/store_parity_sqlite.rs`, split rather than combined so a failure names the
+backend.
+
+**The SQLite driver opens a real migrated file, and not `open_in_memory`.**
+`open_in_memory` skips migrations, so the `UNIQUE` on
+`source_candidates.fingerprint` — the very constraint the duplicate case is about
+— does not exist there, and the case would pass for entirely the wrong reason.
+That is this document's own subject one level down: a green test over a hole.
+
+**It found two divergences and pinned one property, on its first run.**
+
+| Found | What |
+|---|---|
+| Fixed | `MockStore` accepted a duplicate fingerprint, overwriting the index. Instances 9 and 11's shape. |
+| **Recorded, not fixed** | `MockStore` has no referential integrity, and `job.capture` reaches the gap — **D-21** |
+| Pinned | `compute_fingerprint` does not take `job_id` and the `UNIQUE` is global, so two jobs capturing one tree contend for a candidate |
+
+The second is the interesting one, and it is the third time this document's
+subject has turned up. `dispatch_capture` takes `input.job_id` verbatim and
+`handle_capture_candidate` checks only that `candidate.job_id() == job_id`, so
+nothing creates the job before the insert — and real SQLite refuses it. Giving
+the mock referential integrity has a measured blast radius of 7 tests across 5
+binaries, most of which legitimately build a candidate for a job the workspace
+layer has no business knowing about. So the disagreement underneath is real:
+**who creates the job first is a state-ownership question**, which §106 puts on
+the do-not-redesign list. It is recorded for the architect rather than patched,
+and the divergence is pinned executably by
+`store_parity_sqlite::a_candidate_for_an_unknown_job_is_refused` — in the
+backend-specific driver, not the shared script, because the mock cannot pass it.
+
+The third row is not a defect and was not a bug report. It is a consequence of
+two independent design choices, neither of which mentions the other, that
+nothing in the workspace asserted. A `SourceCandidate` turns out to be a
+property of a *source tree*, not of a job. An adapter author who lets two jobs
+point at one upstream tree needs to know that, so
+`a_fingerprint_is_shared_across_jobs` makes it a decision rather than an
+accident.
+
+**Two fixture rules the suite had to learn the hard way,** both now in the
+module doc: cases share one store and the fingerprint is a global content hash,
+so each case takes its own namespace or two fixtures collide and the failure
+reads as a conformance violation; and every case must create its job first,
+because `source_candidates.job_id` is a `FOREIGN KEY`.
+
 
 ## 3. Where each check runs
 
@@ -284,16 +389,26 @@ returns `Err` is not a simplification, it is a hole with a passing test over it.
 |---|---|---|---|
 | S1 command inventory | static | `xtask/src/seams.rs` | **yes** |
 | S2 action → tool | static | `xtask/src/seams.rs` | **yes** |
-| S3 capability inventory | behavioural | `ironmaint-testkit` | **yes** |
+| S3 capability inventory | behavioural | `ironmaint-adapter-api/tests/capability_inventory.rs` | **yes** |
 | S4 seed selection | static | `xtask/src/seams.rs` | **yes** |
 | S5 store method parity | static | `xtask/src/seams.rs` | **yes** |
 | S6 no third copy | **deferred** | — | — |
 | S7 replay round-trip | behavioural | `ironmaint-testkit/tests/replay_roundtrip.rs` | **yes** |
-| S8 production reachability | behavioural | `ironmaint-testkit/tests/` | **yes** |
-| S9 store parity | behavioural | `ironmaint-testkit` | **yes** |
+| S8 tool reachability | static | `xtask/src/seams/reachability.rs` | **yes** |
+| S9 store parity | behavioural | `ironmaint-testkit/src/store_conformance.rs` + 2 drivers | **yes** |
 
 `cargo run -p xtask -- verify-seams` is the entry point, matching the existing
 four verifiers' shape: in-process, no clap, `Result<_, Box<dyn Error>>`.
+
+**One row in the table above is not what this document originally specified, and
+the change is recorded here rather than made silently.** S8 was specified as
+*behavioural* in `ironmaint-testkit/tests/`, asserting that each reachable path
+"is exercised by at least one test". It shipped as a **static** check in
+`xtask/src/seams/reachability.rs`, asserting structural reachability and no test
+coverage at all. §2/S8 gives the reasoning in full; the short version is that
+§1.2 already rejects coverage instrumentation for the whole project, so adopting
+it for one check would be the inconsistency, and the half of the original
+assertion that needs a test is the half the §101 drivers already cover.
 
 **S7 must not be green on its first run.** If it is, the check is wrong, not the
 code. Write the test, watch it fail against the mechanism in §2/S7, and record
@@ -310,20 +425,31 @@ the reason the paragraph above gives — its failure is the receipt — and
 
 ## 4. Definition of done
 
-- [ ] `cargo run -p xtask -- verify-seams` exists and is listed in `CLAUDE.md`'s
+- [x] `cargo run -p xtask -- verify-seams` exists and is listed in `CLAUDE.md`'s
       §97 acceptance set
-- [ ] Every allowlist entry carries a reason naming a spec section or a design
+- [x] Every allowlist entry carries a reason naming a spec section or a design
       fact — checked at review, and **counted**: an allowlist that has grown
-      without a reason is the failure mode
+      without a reason is the failure mode. S1's 7 and S4's 2 were reviewed
+      when written; S3's 8 arrived with the check and `cargo test` now fails on
+      an entry for a key nothing plans, which is the part review cannot keep up
+      with
 - [x] S7's first run failed, and both the failure and its cause are written down
-- [ ] S6 is either built or explicitly deferred **in this document**, not left
-      as a heading with no content
-- [ ] A deliberately introduced missing caller (S1) and a deliberately
+- [x] S6 is either built or explicitly deferred **in this document**, not left
+      as a heading with no content — deferred in §2/S6 and in
+      `doc/EXECUTION-PLAN.md` §2, with the one concrete instance already covered
+      by S4
+- [x] A deliberately introduced missing caller (S1) and a deliberately
       duplicated candidate (S9) each make the verifier fail, and both are
       reverted afterwards. **A verifier that has never been seen to fail is
       assumed broken until this is done**
-- [ ] `doc/DEBT.md` gains an entry recording what each check *cannot* find, so
+      — S1 `530672f`, S9 `026e559`. S3 `a34e0e9` and S8 `5f2076a` followed on
+      the same rule, and both earned corrections to their own claims: S3's
+      failure reported one key per run, and S8's doc claimed a reachability it
+      did not have for private helpers. **A break is not only a receipt. It is
+      the first thing that reads the check as a user would.**
+- [x] `doc/DEBT.md` gains an entry recording what each check *cannot* find, so
       the six wrong-guard defects in §1.1 are not re-attributed to this work
+      — **D-22**
 
 ---
 
