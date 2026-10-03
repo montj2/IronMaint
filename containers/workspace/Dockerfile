@@ -102,15 +102,23 @@ RUN mkdir -p /work /var/cargo/registry /var/cargo/git /var/cargo-target /var/iro
 
 USER rust
 
-# ---- prebuilt target/ — DEFERRED ----------------------------------------
+# ---- prebuilt target/ — SUPERSEDED, do not re-enable --------------------
 # Spec §4.2 calls for `cargo build --workspace --all-targets` +
 # `cargo build --workspace --tests` to be baked into the image so a cold
-# CI run is a link step rather than a compile. This is a multi-GB image
-# cost and there is no CI yet (spec §10 explicit non-goal). Deferred to
-# the PR that adds CI. The named volume `target:` in compose.yml handles
-# dev iteration in the meantime.
+# run of the §97 gate is a link step rather than a compile.
+# `make -f containers/Makefile gate` does not do this, on purpose.
 #
-# To re-enable later, add:
+# A baked target/ is a multi-GB layer that is invalidated by every source
+# change — stale exactly when the gate matters most — and it pins the
+# image to one commit's build. The `cargo-target` named volume that
+# compose.yml already mounts gives the same "link, not compile" behaviour
+# on the second run, invalidates correctly, and costs no image size.
+# See doc/CONTAINER-IMAGES.md §12.1.
+#
+# The named volume `target:` in compose.yml still handles dev iteration,
+# and that part of the original plan stands unchanged.
+#
+# The block below is kept only so the spec's original recipe is not lost:
 #   COPY --chown=rust:rust . /work
 #   RUN cargo build --workspace --all-targets \
 #    && cargo build --workspace --tests
