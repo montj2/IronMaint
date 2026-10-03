@@ -288,3 +288,69 @@ fn evidence_to_gate_status(status: EvidenceStatus) -> GateStatus {
         EvidenceStatus::InfrastructureError => GateStatus::Blocked,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{combine_status, evidence_to_gate_status};
+    use ironmaint_evidence::{EvidenceStatus, GateStatus};
+
+    /// `GateStatus::Blocked` is documented as *"evaluation couldn't
+    /// complete"* and `Fail` as *"evaluation ran and found the gate
+    /// violated"*. Folding them together is only sound if the one
+    /// meaning "no answer" is never overwritten by the one meaning
+    /// "negative answer" — a partial evaluation is not a clean bill of
+    /// health, and reporting it as one is a false claim about the
+    /// package.
+    ///
+    /// The order is asserted in both directions because the fold is
+    /// called per check in an arbitrary order, so a ranking that only
+    /// works one way round is not a ranking.
+    #[test]
+    fn an_unanswerable_check_outranks_a_failed_one() {
+        assert_eq!(
+            combine_status(GateStatus::Fail, GateStatus::Blocked),
+            GateStatus::Blocked,
+            "a failed check must not let a gate that could not be completed \
+             report a verdict"
+        );
+        assert_eq!(
+            combine_status(GateStatus::Blocked, GateStatus::Fail),
+            GateStatus::Blocked,
+            "the fold must not depend on the order checks arrive in"
+        );
+    }
+
+    /// The distinction has to survive every co-occurrence, not just the
+    /// one that was found by hand. Anything that means "no answer"
+    /// outranks anything that means "an answer".
+    #[test]
+    fn no_answer_outranks_every_answer() {
+        for answer in [
+            GateStatus::Pass,
+            GateStatus::Fail,
+            GateStatus::NotApplicable,
+            GateStatus::ReviewRequired,
+        ] {
+            assert_eq!(
+                combine_status(answer, GateStatus::Blocked),
+                GateStatus::Blocked,
+                "{answer:?} must not overwrite `Blocked`"
+            );
+        }
+    }
+
+    /// The two statuses the type is built to keep apart must not
+    /// collapse into each other on the way in. This is the arm D-18
+    /// added, and the one the aggregation was throwing away.
+    #[test]
+    fn an_infrastructure_error_does_not_become_a_failure() {
+        assert_eq!(
+            evidence_to_gate_status(EvidenceStatus::InfrastructureError),
+            GateStatus::Blocked
+        );
+        assert_eq!(
+            evidence_to_gate_status(EvidenceStatus::Fail),
+            GateStatus::Fail
+        );
+    }
+}
