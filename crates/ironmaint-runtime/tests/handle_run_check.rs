@@ -642,10 +642,18 @@ async fn a_gate_containing_an_unanswerable_check_does_not_report_a_verdict() {
         .await
         .expect("gate result");
     assert_eq!(
+        gate.evidence.len(),
+        2,
+        "the aggregate must carry both checks' evidence, or only one was folded"
+    );
+    assert_eq!(
         gate.status,
         GateStatus::Blocked,
         "a gate that could not be completed must not report `Fail`; \
-         `Fail` tells the repair loop to rewrite a package that may be fine"
+         `Fail` tells the repair loop to rewrite a package that may be fine \
+         (folded {} evidence row(s), status {:?})",
+        gate.evidence.len(),
+        gate.status
     );
 }
 
