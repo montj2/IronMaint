@@ -24,7 +24,12 @@
 # pin out as the single most likely thing to get wrong — "an image that
 # resolves to a newer toolchain is worse than no image, because it
 # converts an unenforced claim into an actively false one."
-FROM rust:1.94.0-bookworm@sha256:4673f78db88b71f09d5451bbc404734807918161241215ba0a50bbbe9b448117
+# Pinned to the MULTI-ARCH INDEX digest, not a per-platform manifest digest.
+# The previous pin named a single amd64 manifest, so `--platform linux/arm64`
+# resolved amd64, BuildKit warned once, and the image inspected as arm64 while
+# every binary inside was x86_64. See register entry D-23; the smoke test now
+# asserts `uname -m`, so this cannot regress silently.
+FROM rust:1.94.0-bookworm@sha256:365468470075493dc4583f47387001854321c5a8583ea9604b297e67f01c5a4f
 
 # ---- apt packages on top of the rust image ------------------------------
 # The `rust:*` images are based on debian-slim + rustup-installed toolchain.
