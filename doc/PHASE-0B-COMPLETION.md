@@ -927,9 +927,59 @@ driven end to end over MCP.)
 > §101 steps 26–27.)
 
 **8. Who may put a job into `HumanReviewRequired` or `InfrastructureBlocked`,
-and on what evidence?** **OPEN. This is the one question in this section that
-Phase 1 cannot start without an answer to, and it is a state-ownership
-decision.**
+and on what evidence?** **OPEN, and still a state-ownership decision. But the
+claim below — that Phase 1 cannot start without an answer — was wrong, and is
+withdrawn on 2026-10-03. Read the correction before acting on the options.**
+
+> **Withdrawn 2026-10-03.** This entry used to open *"This is the one question
+> in this section that Phase 1 cannot start without an answer to"* and to
+> close *"Why this blocks Phase 1 specifically"*. Both claims were mine, from
+> PR #39, and both were wrong. They were wrong because they were reasoned from
+> the shape of the gap rather than from what §35 actually requires.
+>
+> **What §35 requires.** Phase 1 is the Debian read-only slice: repository
+> inspection, Policy retrieval, the Developer's Reference, BTS read-only. Every
+> input is over the network — Phase 1 is the first phase where a *required*
+> input can simply be unavailable.
+>
+> **But that failure already has somewhere to go.** An unreachable source
+> produces `EvidenceStatus::InfrastructureError` on a real check, which
+> aggregates to `GateStatus::Blocked`, which the engine turns into
+> `TransitionBlocker::IncompleteGate(gate_id)` — naming the gate that could not
+> be answered, with the reason kept in `GateResult::evidence`. That satisfies
+> §35's exit checkpoint without a job state, and it is strictly more
+> actionable than a bare `"infrastructure blocked"`, because it arrives through
+> the path IronClaw already reacts to differently from a failure.
+>
+> **`JobState::InfrastructureBlocked` is not needed for Phase 1 at all.** The
+> escalation the first adapter terminates in is a *human-review* loop, and that
+> is the half that matters for §35. Nothing about repository inspection or
+> Policy retrieval requires the runtime to be able to park a job.
+>
+> **The real cost of being wrong here was not "Phase 1 is blocked".** It was
+> that reaching for the state would have touched §106's do-not-redesign list
+> for no Phase 1 benefit. The honest statement is the opposite of the one
+> above: **the question does not block Phase 1, and acting on it prematurely
+> is the larger risk.**
+>
+> **Q8 remains OPEN and still belongs to the architect.** It is deferred to
+> Phase 2 scoping, with a stated trigger rather than a standing block:
+> *when a real adapter needs to escalate into either state and there is no
+> caller, revisit this.* Until then the exit machinery stays unused, which is
+> a recorded and deliberate condition — not a gap, and not a defect.
+>
+> **`TransitionContext::infrastructure_blocked` is a separate matter, and it is
+> now decided.** Both production call sites bind it to one named constant,
+> `INFRASTRUCTURE_BLOCKED` in `crates/ironmaint-runtime/src/service.rs`, whose
+> doc comment carries the reasoning and the wiring criterion: *wire it when a
+> failure mode exists that has no gate to carry it.* The flag is a
+> transition-time veto checked before the gate checks, not a job-state entry,
+> so it is not the mechanism Q8 is asking about. A named constant rather than
+> two literals because a one-site change would be worse than today's honest
+> `false` — `try_transition` would refuse while `job.reconcile` reported the
+> same job as movable.
+
+**The original question, unchanged, and the evidence for it is still sound:**
 
 It is the same question asked three times, and each asking found the same hole:
 
@@ -949,11 +999,15 @@ It is the same question asked three times, and each asking found the same hole:
   point at all. **Both are correct answers to a question Phase 0 was not asked
   to answer.** The gap is that nobody has since been asked it.
 
-Why this blocks Phase 1 specifically: the human-review loop is what a real
-adapter's escalation path terminates in, and **state ownership is on §106's
-do-not-redesign list.** If the first adapter needs an escalation entry point
-and there is none, Phase 1 either waits or invents one — and inventing one
-under deadline is exactly the redesign §106 says would mean 0B failed.
+Why it *would* block Phase 1, if it blocked it: the human-review loop is what a
+real adapter's escalation path terminates in, and **state ownership is on §106's
+do-not-redesign list.** If the first adapter needed an escalation entry point
+and there were none, Phase 1 would either wait or invent one — and inventing
+one under deadline is exactly the redesign §106 says would mean 0B failed.
+**That conditional does not fire for §35**, which is read-only retrieval and
+has no escalation path to terminate in. It should fire for whichever Phase
+needs a real adapter that can *fail to be repaired*, and that is a Phase 2
+question.
 
 Three candidate answers. **These are options, not a recommendation** — the
 choice is architectural, and the deciding constraint is one only the architect
@@ -994,6 +1048,24 @@ tool now, adapter-derived later" — but that should be a decision, not a drift.
 `InfrastructureBlocked` both have working handlers, a working exit, a working
 projection and passing tests. The code is correct; what is missing is a
 decision about who is allowed to start it.
+
+**One more correction, 2026-10-03, because it is the same failure.** The
+`doc/EXECUTION-PLAN.md` "Plus one item" note predicted that writing this
+question down *"unblocks the Phase 1 spec"*, and this entry repeated the
+prediction. Both were reasoning from the shape of the gap rather than from what
+§35 requires. Writing the answer down would not have unblocked anything; the
+Phase 1 blocker was a **defect in gate aggregation** — `combine_status` ranking
+`Fail` above `Blocked`, so a gate holding both a real failure and an
+infrastructure error reported a verdict it did not have, and told the repair
+loop to rewrite source during an outage. That is **D-25**, fixed in #46, and
+it is what actually stood between here and a Phase 1 scope.
+
+The general lesson is D-14's, and it is worth stating once more because this is
+the second time: **an entry that reasons about behaviour that has not been run
+is a hypothesis.** Two candidates for a blocker were identified by reading, one
+of them was real, and the real one was in a rank table nobody suspected. The
+one that was real was found by writing a test and watching it fail with a
+number nobody had predicted.
 
 ---
 
