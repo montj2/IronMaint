@@ -134,6 +134,111 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-19 | MEDIUM | A §97 container run hung in `startup_shutdown.rs` and the cause is **not known**. One confirmed defect found while investigating: `Drop for Daemon` signalled SIGKILL but never reaped, so 11 of the 15 tests in that file depended on tokio's SIGCHLD orphan handler to collect their own children — and a live `ironmaintd` from a killed run survived on the host for two days | **PARTLY FIXED** — `kill_on_drop(true)`, an awaited `shutdown()` that escalates, and a test that pins the reap. The **hang itself is OPEN**: see the entry for what is ruled out, what is not, and what would settle it |
 ||||||| parent of a3040fc (Correct S1's allowlist, and record D-20: five are decisions, two are stale docs)
 | D-20 | LOW | S1 in `verify-seams` found that **7 of 12 `RuntimeCommand` variants have no production construction site.** `handle_command` has twelve arms, all patterns; the five constructions are all in `crates/ironmaint-mcp/src/dispatch.rs`. Five of the seven are decisions with the reason written down at the call site. The two that are not: **`RequestApproval`'s doc makes a claim that is false**, and **`job.resume` cannot succeed in production** because the only `ResumeRecorded` writer is itself unreachable | **OPEN, two parts, both documentation-shaped** — no capability is missing from the runtime, and neither part is a bug to fix so much as a comment that will mislead. Part 1: `RequestApproval`'s doc says `next_actions` advertises it and that following it reaches the refusal; `ReadyForApproval` emits `allowed: vec![]` / `requires_human: ApproveRelease` and `RequestApproval` is not an `AllowedAction`. Part 2: the two `next_actions` docs describing `ResumeJob` and `ReviewEscalation` describe a state production cannot reach. See the long-form entry below |
+| D-23 | **MEDIUM** | **Two of the six images were x86_64 inside an arm64 label.** `containers/workspace/Dockerfile` and `containers/fedora-tools/Dockerfile` pinned their bases by digest, and both pins resolved to a **single-manifest, amd64-only** image rather than a multi-arch index. `--platform linux/arm64` then pulled an amd64 base and BuildKit emitted one `InvalidBaseImagePlatform` warning and continued, so `docker inspect` reported `arm64` while every binary inside answered `x86_64` to `uname -m`. Measured: `base`, `debian-tools`, `agent`, `fake-services` were genuinely aarch64; `workspace` and `fedora-tools` were not | **CLOSED 2026-10-03** — both bases re-pinned to index digests, and every image's smoke test now asserts `uname -m` against the architecture it was requested at, so the next digest bump cannot silently reintroduce it. **Both contaminated images reported PASS**, and that is the finding worth keeping: Docker Desktop transparently emulates x86_64 on this host, so `rustc --version` and `rpm --version` both worked and the smoke tests were satisfied by an image that was wrong. The existing checks asked *does the tool respond*, never *is this binary the right architecture* — `fedora-tools/smoke.sh` asserted `fedora-44-aarch64.cfg` **exists**, which is a file, not an execution. This was D-18's shape one layer up. The teeth-check is the receipt: the *same* image that passed all six of its own other assertions fails the new one with `image is x86_64 (amd64) but was built for arm64`. Fixed on its own, ahead of anything that builds these images on purpose, because a gate that builds a contaminated image is a gate that cannot fail |
+
+---
+
+## D-23 — two of six images are x86_64 inside an arm64 label (MEDIUM) — **CLOSED 2026-10-03**
+
+Found by asking whether the image set could be built on this machine and then
+checking rather than assuming — `uname -m` inside each image, rather than
+`docker inspect`, which reports the platform the image was *requested* for. It
+gets a long-form
+entry because the reason it survived is the interesting part, and because a
+one-line row would let the next person re-pin a digest and reintroduce it
+unnoticed.
+
+### What it is
+
+`containers/workspace/Dockerfile:27` and `containers/fedora-tools/Dockerfile:28`
+pin their bases by digest, which is correct and is what §11.1 asks for. The
+defect is *which* digest. Pinning `rust:1.94.0-bookworm@sha256:…` where that
+digest names a **single manifest** rather than a **multi-arch index** pins the
+amd64 build specifically:
+
+```text
+$ docker buildx imagetools inspect \
+    rust:1.94.0-bookworm@sha256:4673f78d…
+MediaType: application/vnd.oci.image.manifest.v1+json   # not …image.index…
+
+$ docker buildx imagetools inspect rust:1.94.0-bookworm
+MediaType: application/vnd.oci.image.index.v1+json      # the tag IS multi-arch
+  Platform: linux/amd64
+  Platform: linux/arm64/v8
+```
+
+The tag was multi-arch and the pin silently narrowed it. `--platform linux/arm64`
+then resolves the amd64 manifest, BuildKit says so in a warning, and builds
+anyway:
+
+```text
+InvalidBaseImagePlatform: Base image rust:1.94.0-bookworm@sha256:4673f78d… was
+  pulled with platform "linux/amd64", expected "linux/arm64" for current build
+```
+
+The result is labelled correctly and is not:
+
+| Image | `docker inspect` | `uname -m` inside |
+|---|---|---|
+| `ironmaint/base:0.1` | arm64 | `aarch64` |
+| `ironmaint/debian-tools:0.1` | arm64 | `aarch64` |
+| `ironmaint/agent:0.1` | arm64 | `aarch64` |
+| `ironmaint/fake-services:0.1` | arm64 | `aarch64` |
+| **`ironmaint/workspace:0.1`** | arm64 | **`x86_64`** |
+| **`ironmaint/fedora-tools:0.1`** | arm64 | **`x86_64`** |
+
+### Why every existing check passed
+
+Docker Desktop emulates x86_64 transparently on this arm64 host, so an x86_64
+`rustc` and an x86_64 `rpm` both run and both answer. `workspace/smoke.sh` asks
+whether `rustc --version` reports 1.94.0; it does. `fedora-tools/smoke.sh:101`
+asks whether `fedora-44-aarch64.cfg` is readable; it is — and that assertion is
+named for the aarch64 contract while only ever checking that a *file exists*,
+which is §9's "a check that cannot fail" failure mode wearing an aarch64 label.
+
+The general shape: **the checks ask whether a tool responds, never whether the
+binary is the right architecture.** That is D-18 one layer up — a binary that is
+present, runnable, and the wrong one — and it is why this is fixed here rather
+than left in a backlog. The emulator is the reason it survived as long as it
+did: on a machine without one, the same image fails outright instead of
+quietly, so the fix and the environment that would have caught it are mutually
+verifying.
+
+### The fix, and the trap inside it
+
+Re-pin both bases to the **index** digest, which resolves per-platform and keeps
+the reproducibility property §11.1 wants. The trap: a digest that parses and
+still resolves to amd64 looks identical in a diff, so the pin edit is not itself
+evidence. Verification is two independent checks — `imagetools inspect` reports
+`…image.index` with `linux/arm64/v8` present, **and** the built image answers
+`aarch64` to `uname -m`.
+
+Alongside it, every image's smoke test gains an architecture assertion, so the
+next digest bump cannot reintroduce this silently. That assertion is the durable
+half; the re-pin is the one-time repair.
+
+### The teeth
+
+`doc/EXECUTION-PLAN.md` §4: every check gets broken on purpose before it is
+trusted. Broken in both directions, because a check that passes everything is
+indistinguishable from a check that does nothing:
+
+| run | expected | got |
+|---|---|---|
+| `IRONMAINT_EXPECT_ARCH=arm64` on the **contaminated** `workspace:0.1` | FAIL | `FAIL: image is x86_64 (amd64) but was built for arm64` — exit 1 |
+| same image, **assertion removed** | PASS | all five pre-existing assertions passed |
+| `IRONMAINT_EXPECT_ARCH=arm64` on the **re-pinned** `workspace:0.1` | PASS | `OK: image architecture is aarch64, as requested` — exit 0 |
+| `make verify` after the re-pin, all six | PASS | six × `SMOKE OK`, six × `aarch64` |
+
+The middle row is the one that matters. The image was wrong and the suite was
+green; the new assertion is the only thing that distinguished them. A check
+added without breaking it against the known-bad case would have had no
+evidence of being able to fail.
+
+`IRONMAINT_EXPECT_ARCH` is passed by `make smoke-*` and defaults to
+`NATIVE_ARCH`. A bare `docker run` cannot answer the question — it has nothing
+to compare against — so it prints `SKIP` and says why, rather than passing a
+check it did not make.
 
 ---
 
