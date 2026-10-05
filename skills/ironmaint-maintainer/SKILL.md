@@ -86,8 +86,9 @@ inspects `blockers` sees nothing to do and stops on a job that has barely
 started.
 
 If `requires_human` is set, **stop.** Do not look for a tool that performs
-it. Two of its values (`approve_release`, `authorize_publication`) have no
-tool in 0B at all, and the phase forbids adding one.
+it. Two of its values (`approve_release`, `authorize_publication`) have
+no tool surface entry point, and the architecture forbids agents from
+performing privileged operations directly.
 
 `job.reconcile` answers with one of these shapes:
 
@@ -246,16 +247,14 @@ runtime command behind it is refused by design.
 
 ## Where the loop currently stops
 
-In Phase 0B, `reconcile` returns `no_op` for a job that has no active
-candidate, and no tool sets one: the runtime commands that do
-(`SetActiveCandidate`, `MaterializeChecks`) are driven by a distribution
-adapter, and there is no adapter yet. A real Debian or Fedora adapter is
-what seeds the checks the state machine walks, and it is Phase 1 work.
-
-So today a correct session is: create the job, capture a candidate, read
-the projection, and report honestly that the job cannot advance further
-until an adapter exists. **Do not improvise past this** — there is no
-supported way to set an active candidate from the tool surface, and
-fabricating state is the one thing the rules above exist to prevent.
+The capture path is closed at `SourceIntegrity` while Phase 1 lands the
+real Debian adapter (`doc/phases/PHASE-1.md` §36). Until that lands, a
+captured Debian or Fedora job will activate and materialise gates, but
+the gates report `no tool registered for capability debian.build.sbuild`
+(etc.) — visible, typed, reported in the capture's own notes — and
+`next_actions` reads correctly as "the orchestrator must register the
+tool surface for the active candidate's family". Fabricating an
+`AllowedAction` you do not actually have a tool for is the one thing
+the rules above exist to prevent.
 
 `doc/PHASE-0B-COMPLETION.md` §16.8 records this precisely.

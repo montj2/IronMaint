@@ -72,7 +72,7 @@ map_err_ignore = "deny"
 all = { level = "warn", priority = -1 }
 
 [workspace.metadata.ironmaint]
-phase = "0B"
+phase = "1"
 north_star = "Adding support for a new distribution requires implementing that distribution's maintenance contract — not rewriting IronMaint's fundamental trust, evidence, orchestration, or release model."
 
 # -----------------------------------------------------------------------------
@@ -82,12 +82,12 @@ north_star = "Adding support for a new distribution requires implementing that d
 # -----------------------------------------------------------------------------
 [workspace.dependencies]
 # Phase 0A forbids async in domain crates (PHASE-0A.md §84). The runtime
-# async deps (tokio, sqlx, rmcp, tracing, fs2, tempfile) land in Phase 0B
-# and are consumed only by the infrastructure crates (store, executor,
-# artifacts, workspace, runtime, mcp, daemon) — never by the domain crates
-# (core, evidence, policy, state, adapter-api). PHASE-0B.md §98 enforces this
-# via `cargo xtask verify-architecture`. Native `async fn` in traits is
-# stable on MSRV 1.88, so no `async-trait` dep is needed.
+# async deps (tokio, sqlx, rmcp, tracing, fs2, tempfile) are consumed only
+# by the infrastructure crates (store, executor, artifacts, workspace,
+# runtime, mcp, daemon) — never by the domain crates (core, evidence,
+# policy, state, adapter-api). `cargo run -p xtask -- verify-architecture`
+# enforces this dependency direction. Native `async fn` in traits is
+# stable on MSRV 1.94, so no `async-trait` dep is needed.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = { version = "0.8", features = ["uuid1", "url"] }
@@ -100,9 +100,10 @@ thiserror = "2"
 regex = "1"
 insta = { version = "1", features = ["json"] }
 pretty_assertions = "1"
-# Phase 0B runtime deps (PHASE-0B.md §86). Listed here so member crates
-# can opt in with `dep = { workspace = true }` and inherit the version.
-# No member yet consumes these — they are pinned for commits 2+.
+# Runtime deps. Listed here so member crates can opt in with
+# `dep = { workspace = true }` and inherit the version. The domain crates
+# (core, evidence, policy, state, adapter-api) must not consume them —
+# `cargo run -p xtask -- verify-architecture` enforces that.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "sync", "time", "io-util", "net"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "sqlite", "macros", "json", "time"] }
 rmcp = { version = "3", features = ["server", "transport-streamable-http-server", "macros"] }

@@ -15,7 +15,7 @@
 //!       ↓
 //! verify artifact store
 //!       ↓
-//! recover interrupted operations        (deferred — 0B.10)
+//! recover interrupted operations        (deferred — Phase 1+)
 //!       ↓
 //! load adapter registry                 (deferred — Phase 1)
 //!       ↓
@@ -323,11 +323,12 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
         "configuration"
     );
     // §67's remaining step, stated rather than omitted. No
-    // `PrivilegedOperation` is ever created in 0B (§4.10, §26,
-    // §99), so there is nothing in flight to recover; the scan
-    // belongs to the privileged service, which does not exist yet.
+    // `PrivilegedOperation` is ever created today (Phase 0B §4.10,
+    // §26, §99, and Phase 1's read-only-intake scope), so there is
+    // nothing in flight to recover; the scan belongs to the
+    // privileged service, which Phase 1 does not implement.
     tracing::info!(
-        "recover interrupted operations: no privileged service in 0B, \
+        "recover interrupted operations: no privileged service in Phase 1, \
          so no operation can be in flight"
     );
 

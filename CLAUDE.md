@@ -7,8 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 IronMaint is a distribution-neutral package-maintenance control plane. It pairs an LLM reasoning layer (IronClaw) with a deterministic state machine, evidence model, and per-distribution adapters that turn packaging work into audit-tracked, gate-validated transactions. Debian is the first adapter; Fedora is the second, used as the architectural reality check for whether the core stays truly distribution-neutral.
 
 - **Architectural spec:** `doc/IronMaint-Universal.md` (project plan, v0.2)
-- **Phase specs:** `doc/phases/PHASE-0A.md`, `doc/phases/PHASE-0B.md`
-- **Status:** Phase 0A and Phase 0B are both complete. The next phase is Phase 1 — replacing the synthetic adapters with real Debian and Fedora ones. Before scoping Phase 1, read `doc/PHASE-0B-COMPLETION.md`; it is the handoff document, and `doc/phases/PHASE-0B.md` §106 states the bar Phase 0 had to clear — Phase 1 must not require another redesign of the runtime, persistence, executor, candidate identity, evidence, state ownership, MCP boundary, or IronClaw integration.
+- **Phase specs:** `doc/phases/PHASE-0A.md`, `doc/phases/PHASE-0B.md`, `doc/phases/PHASE-1.md`
+- **Status:** Phase 0A, Phase 0B, and the Phase 0B debt are all closed. Phase 1 is in progress — replacing the synthetic adapters with real Debian and Fedora ones. Before scoping Phase 1 work, read `doc/PHASE-0B-COMPLETION.md` (the Phase 0 handoff) and `doc/DEBT.md` (the open register); `doc/phases/PHASE-0B.md` §106 states the bar Phase 0 had to clear — Phase 1 must not require another redesign of the runtime, persistence, executor, candidate identity, evidence, state ownership, MCP boundary, or IronClaw integration.
 - **Known debt:** `doc/DEBT.md` is the register. Read the open rows before planning anything; several are deliberately open and say who decides.
 - **LLM substrate:** `doc/vendor/ironclaw/` (git submodule, branch `main`, nearai/ironclaw on GitHub) — reference only, do not modify in place; not built as part of this workspace
 - **Agent workflow rules:** `AGENTS.md` (branching, commits, GitHub via `gh`) — those rules apply alongside this file
@@ -23,7 +23,9 @@ crates/            14 library crates — core, evidence, policy, state, adapter-
                    runtime, mcp, synthetic-tools, testkit
 adapters/          debian-stub, fedora-stub — the DistributionAdapter
                    implementations. Real plan data, distribution-distinct, no
-                   production caller yet. This is Phase 1's first task.
+                   production caller yet. Phase 1's first task is to replace
+                   them with real Debian and Fedora adapters under
+                   `adapters/debian/` and `adapters/fedora/`.
 bins/              ironmaintd (the daemon), ironmaintctl, ironmaint-fixture
 xtask/             the build-time verifiers, run as `cargo run -p xtask -- <check>`
 ```
@@ -112,6 +114,11 @@ infrastructure. Debian Policy retrieval, real dpkg/rpm version comparison,
 sbuild / Mock / Lintian / rpmlint, BTS and Bugzilla, Koji and Bodhi and Packit,
 signing, and upload. Everything between the adapter boundary and those
 infrastructure calls already exists and is tested.
+
+The Phase 1 plan is `doc/phases/PHASE-1.md` (§§31–37 sub-phase structure,
+§42 the 16-PR sequence). Read it before starting any Phase 1 PR — every
+PR has a stated contract, an invariant it preserves, and a deliberately-
+broken-then-fixed check (`doc/EXECUTION-PLAN.md` §4).
 
 ## Other Conventions
 
