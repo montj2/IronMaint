@@ -1533,6 +1533,30 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         job_id: JobId,
         candidate: SourceCandidate,
     ) -> Result<CommandResult, RuntimeError> {
+        // D-21 closure (Phase 1 §4): `candidate.capture` must never
+        // create a job implicitly. The job is the outer transaction
+        // and the agent must call `job.create` first. We pre-check
+        // the projection here so the agent gets the same typed
+        // `InvalidInput` signal whether the backing store enforces
+        // referential integrity (`SqliteStore`, which would
+        // otherwise surface a raw `FOREIGN KEY constraint failed`)
+        // or does not (`MockStore`, which would otherwise silently
+        // accept the orphan). The downstream `activate_candidate`
+        // also reads the projection — this check fails earlier and
+        // with a typed error so an agent never sees a partial write.
+        match self.store.get_projection(job_id).await {
+            Ok(_) => {}
+            Err(_) => {
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::InvalidInput,
+                    format!(
+                        "cannot capture candidate for unknown job {job_id}: \
+                         the agent must call `job.create` first"
+                    ),
+                ));
+            }
+        }
+
         // Reject candidates whose job_id does not match the
         // command's target — keeps the (job_id, fingerprint)
         // index invariant honest.

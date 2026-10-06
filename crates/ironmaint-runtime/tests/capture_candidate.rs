@@ -15,6 +15,11 @@
 //!   5. A candidate whose `job_id` doesn't match the command's
 //!      `job_id` is rejected as `InvalidInput` (preserves the
 //!      `(job_id, fingerprint)` index invariant).
+//!   6. **D-21 closure** — a capture whose `job_id` has no projection
+//!      is rejected at the boundary as typed `InvalidInput`, not
+//!      silently accepted (`MockStore`) or surfaced as a raw store
+//!      foreign-key violation (`SqliteStore`). The agent must call
+//!      `job.create` first.
 //!
 //! `unwrap`/`expect` are allowed here because failure in a test
 //! should panic; the production crate forbids them via the
@@ -30,6 +35,7 @@ use ironmaint_core::{
     VcsKind,
 };
 use ironmaint_executor::{NullExecutor, ToolRegistry};
+use ironmaint_runtime::error::{RuntimeError, RuntimeErrorKind};
 use ironmaint_runtime::{Clock, FixedClock, OrchestratorRef, RuntimeCommand, RuntimeService};
 use ironmaint_state::JobEvent;
 use ironmaint_store::mock::MockStore;
@@ -328,4 +334,53 @@ async fn capture_candidate_allows_two_distinct_fingerprints_for_same_job() {
         2,
         "two distinct fingerprints must produce two candidate rows"
     );
+}
+
+#[tokio::test]
+async fn capture_candidate_for_unknown_job_returns_invalid_input() {
+    // D-21 closure (Phase 1 §4): `candidate.capture` must never create a
+    // job implicitly. The agent must call `job.create` first, and the
+    // runtime must surface a typed `InvalidInput` error at the
+    // capture boundary so the agent gets the same signal whether the
+    // backing store enforces referential integrity (SqliteStore) or
+    // does not (MockStore). Previously the mock silently accepted the
+    // orphan and SQLite surfaced a raw `FOREIGN KEY constraint failed`
+    // string — neither is acceptable for an autonomous agent.
+    let store: Arc<MockStore> = Arc::new(MockStore::new());
+    let svc = build_service(store.clone());
+
+    let unknown_job = JobId::new();
+    let candidate = source_candidate(unknown_job, "1.0.0");
+    let fingerprint = candidate.fingerprint().clone();
+
+    let err = svc
+        .handle_command(RuntimeCommand::CaptureCandidate {
+            job_id: unknown_job,
+            candidate,
+        })
+        .await
+        .expect_err("capture against unknown job must be rejected");
+
+    let kind = err.kind;
+    assert_eq!(
+        kind,
+        RuntimeErrorKind::InvalidInput,
+        "D-21 closure: capture must return typed InvalidInput (got {kind:?})"
+    );
+
+    // The candidate must not be persisted — the rejection is at the
+    // boundary, not after a half-completed write. The mocked parity
+    // case in `tests/store_parity_sqlite.rs` covers the same invariant
+    // on the SQLite side via the FK constraint.
+    let stored = store
+        .find_source_by_fingerprint(&fingerprint)
+        .await
+        .expect("store read");
+    assert!(
+        stored.is_none(),
+        "rejected capture must leave no candidate row behind"
+    );
+
+    // Touch the value so the import is not flagged as unused.
+    let _ = RuntimeError::new(kind, "unused");
 }
