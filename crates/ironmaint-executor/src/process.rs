@@ -47,6 +47,7 @@ use crate::artifact_guard::{
 use crate::env::ProcessEnvironment;
 use crate::error::{ExecutorError, ExecutorErrorKind};
 use crate::executor::Executor;
+use crate::input::ToolInputMode;
 use crate::limits::ExecutionClass;
 use crate::record::{DroppedArtifact, ExecutionRecord, OutputStream, SpilledArtifact};
 use crate::registry::ToolRegistry;
@@ -262,10 +263,25 @@ impl Executor for ProcessExecutor {
         for (k, v) in &request.env_overrides {
             cmd.env(k, v);
         }
-        // (5) Pipe stdout/stderr; no stdin needed.
+        // (5) Pipe stdout/stderr; stdin per `input_mode`.
+        // `ToolInputMode::None` opens stdin as `Stdio::null()` —
+        // the PHASE-0B §22 behaviour, preserved verbatim. A tool
+        // that declares `ToolInputMode::JsonStdin` gets a piped
+        // stdin and a writer task that serialises
+        // `ExecutionRequest::input` as JSON before closing the
+        // pipe (PHASE-1.md §7).
         cmd.stdout(Stdio::piped());
         cmd.stderr(Stdio::piped());
-        cmd.stdin(Stdio::null());
+        let wants_stdin_payload = match tool.input_mode() {
+            ToolInputMode::None => {
+                cmd.stdin(Stdio::null());
+                false
+            }
+            ToolInputMode::JsonStdin => {
+                cmd.stdin(Stdio::piped());
+                true
+            }
+        };
         cmd.kill_on_drop(true);
 
         let started_at = (self.time_factory)();
@@ -325,6 +341,45 @@ impl Executor for ProcessExecutor {
             )
         })?;
 
+        // (6b) Stdin writer for `ToolInputMode::JsonStdin`. The
+        // task owns the child's stdin handle, serialises
+        // `ExecutionRequest::input` as JSON, writes the bytes,
+        // then drops the handle — closing the pipe and signalling
+        // EOF to the child. A failure to serialise is reported
+        // as an infrastructure error rather than a tool failure,
+        // because the tool never executed, and the same holds for a
+        // write error on the pipe: a tool that genuinely cannot
+        // build its input is not a tool that the runtime should
+        // retry. PHASE-1.md §7.
+        let stdin_task = if wants_stdin_payload {
+            let stdin_handle = child.stdin.take().ok_or_else(|| {
+                ExecutorError::new(
+                    ExecutorErrorKind::InfrastructureFailed,
+                    "child stdin pipe missing after spawn despite JsonStdin",
+                )
+            })?;
+            let payload = serde_json::to_vec(&request.input).map_err(|e| {
+                ExecutorError::new(
+                    ExecutorErrorKind::InfrastructureFailed,
+                    format!(
+                        "cannot serialise input for tool {}: {e}",
+                        request.tool_key.as_str()
+                    ),
+                )
+            })?;
+            Some(tokio::spawn(async move {
+                let mut stdin_handle = stdin_handle;
+                if let Err(e) = stdin_handle.write_all(&payload).await {
+                    return Err(format!("stdin write failed: {e}"));
+                }
+                // Dropping the handle closes the pipe. The child
+                // gets EOF.
+                Ok(())
+            }))
+        } else {
+            None
+        };
+
         // (7) Read stdout/stderr concurrently through bounded readers.
         //
         // Each reader gets a spill channel. `bounded_read` keeps at
@@ -366,6 +421,9 @@ impl Executor for ProcessExecutor {
                 let _ = stderr_task.await;
                 let _ = stdout_writer.await;
                 let _ = stderr_writer.await;
+                if let Some(task) = stdin_task {
+                    let _ = task.await;
+                }
                 return Err(ExecutorError::new(
                     ExecutorErrorKind::InfrastructureFailed,
                     format!("wait failed for tool {}: {e}", request.tool_key.as_str()),
@@ -379,6 +437,9 @@ impl Executor for ProcessExecutor {
                 let _ = stderr_task.await;
                 let _ = stdout_writer.await;
                 let _ = stderr_writer.await;
+                if let Some(task) = stdin_task {
+                    let _ = task.await;
+                }
                 return Err(ExecutorError::new(
                     ExecutorErrorKind::ToolFailed { timed_out: true },
                     format!(
@@ -389,6 +450,36 @@ impl Executor for ProcessExecutor {
                 ));
             }
         };
+
+        // The stdin writer finishes once it has written the JSON
+        // payload and dropped the pipe; the child has been waiting
+        // on EOF since `spawn`. A failure here is reported as an
+        // infrastructure error: the tool never received the input
+        // the runtime said it would receive, and that is not a
+        // tool-level outcome the runtime can act on.
+        if let Some(task) = stdin_task {
+            match task.await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    return Err(ExecutorError::new(
+                        ExecutorErrorKind::InfrastructureFailed,
+                        format!(
+                            "stdin writer failed for tool {}: {e}",
+                            request.tool_key.as_str()
+                        ),
+                    ));
+                }
+                Err(join) => {
+                    return Err(ExecutorError::new(
+                        ExecutorErrorKind::InfrastructureFailed,
+                        format!(
+                            "stdin writer task panicked for tool {}: {join}",
+                            request.tool_key.as_str()
+                        ),
+                    ));
+                }
+            }
+        }
 
         let (stdout_bytes, stdout_truncated): (Vec<u8>, bool) =
             stdout_task.await.unwrap_or_default();

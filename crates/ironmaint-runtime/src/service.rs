@@ -2362,7 +2362,7 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         }
 
         let cap_key = check.capability.clone();
-        let _tool = self.registry.get(&cap_key).ok_or_else(|| {
+        let tool = self.registry.get(&cap_key).ok_or_else(|| {
             RuntimeError::new(
                 RuntimeErrorKind::InvalidInput,
                 format!(
@@ -2372,12 +2372,19 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             )
         })?;
 
-        let request = ExecutionRequest::new(
-            job_id,
-            cap_key.clone(),
-            retry_class,
-            serde_json::Value::Null,
-        );
+        // PHASE-1.md §7: a tool that declares `ToolInputMode::JsonStdin`
+        // receives the runtime-built candidate context on its
+        // stdin. The default mode (`None`) keeps the PHASE-0B §22
+        // behaviour where the child gets `Stdio::null()` and the
+        // payload is `Value::Null`. The fixture keys registered in
+        // 0B do not opt in, so this branch is dormant until the
+        // first Phase 1 inspection tool lands in 1C.x.
+        let input = match tool.input_mode() {
+            ironmaint_executor::ToolInputMode::None => serde_json::Value::Null,
+            ironmaint_executor::ToolInputMode::JsonStdin => build_candidate_input(&source, &check)?,
+        };
+
+        let request = ExecutionRequest::new(job_id, cap_key.clone(), retry_class, input);
 
         let started_at = self.clock.now_utc();
         // A real executor reports a wall-clock timeout and a
@@ -2745,6 +2752,50 @@ fn outcome_to_state(outcome: ironmaint_executor::Outcome) -> ToolOutcome {
         ironmaint_executor::Outcome::Interrupted => ToolOutcome::Interrupted,
         ironmaint_executor::Outcome::InfrastructureFailed => ToolOutcome::InfrastructureFailed,
     }
+}
+
+/// Build the JSON payload the runtime hands to a tool whose
+/// `ToolInputMode` is `JsonStdin` (PHASE-1.md §7).
+///
+/// The shape is what the Phase 1 inspection tools (1C.x) need to
+/// understand which candidate they are about to inspect: the
+/// `job_id`, the `SourceCandidate`'s package family / name /
+/// repository URL / commit OID / tree OID, the candidate's
+/// BLAKE3 fingerprint, and the check's own `id` (so a tool that
+/// produces multiple artefacts can identify which gate's
+/// evidence row the runtime will persist).
+///
+/// A failure to serialise is reported as `RuntimeError::Store` —
+/// serialising a fixed-shape value from already-validated
+/// internals is not a tool-level outcome, and the runtime
+/// should not pretend it is.
+fn build_candidate_input(
+    source: &SourceCandidate,
+    check: &CheckDefinition,
+) -> Result<serde_json::Value, RuntimeError> {
+    use ironmaint_core::GitObjectId;
+
+    let commit: &GitObjectId = source.commit();
+    let tree: &GitObjectId = source.tree();
+    let package = source.package();
+    let repo = source.repository();
+
+    serde_json::to_value(serde_json::json!({
+        "schema": "ironmaint.candidate_input.v1",
+        "job_id": source.job_id().to_string(),
+        "check_id": check.id.to_string(),
+        "package": {
+            "name": package.package.source_name.as_str(),
+            "version": package.version.as_str(),
+        },
+        "repository": {
+            "url": repo.url().as_str(),
+        },
+        "commit": commit.as_str(),
+        "tree": tree.as_str(),
+        "fingerprint": source.fingerprint().as_str(),
+    }))
+    .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))
 }
 
 /// Pure projection helper: maps the current `JobState` into the
