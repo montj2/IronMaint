@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use ironmaint_adapter_api::ToolCapabilityKey;
 
+use crate::input::ToolInputMode;
 use crate::limits::{ExecutionClass, ExecutionLimits};
 use crate::normalizer::ResultNormalizer;
 use crate::registry::ToolDefinition;
@@ -15,7 +16,9 @@ use crate::registry::ToolDefinition;
 /// Concrete [`ToolDefinition`] built from spec §27 fields. Construct
 /// via [`ToolDefinitionRecord::new`], then optionally call
 /// [`ToolDefinitionRecord::with_normalizer`] to attach a result
-/// normalizer.
+/// normalizer, or [`ToolDefinitionRecord::with_input_mode`] to
+/// declare that the tool wants `ExecutionRequest::input` written to
+/// its stdin (PHASE-1.md §7).
 #[derive(Clone)]
 pub struct ToolDefinitionRecord {
     key: ToolCapabilityKey,
@@ -24,11 +27,14 @@ pub struct ToolDefinitionRecord {
     class: ExecutionClass,
     limits: ExecutionLimits,
     normalizer: Option<Arc<dyn ResultNormalizer>>,
+    input_mode: ToolInputMode,
 }
 
 impl ToolDefinitionRecord {
     /// Build a record without a normalizer. Call
-    /// [`Self::with_normalizer`] to attach one.
+    /// [`Self::with_normalizer`] to attach one, or
+    /// [`Self::with_input_mode`] to declare how the child should
+    /// receive its input payload.
     #[must_use]
     pub fn new(
         key: ToolCapabilityKey,
@@ -44,6 +50,7 @@ impl ToolDefinitionRecord {
             class,
             limits,
             normalizer: None,
+            input_mode: ToolInputMode::default(),
         }
     }
 
@@ -51,6 +58,19 @@ impl ToolDefinitionRecord {
     #[must_use]
     pub fn with_normalizer(mut self, normalizer: Arc<dyn ResultNormalizer>) -> Self {
         self.normalizer = Some(normalizer);
+        self
+    }
+
+    /// Declare how the child receives its input payload. Returns
+    /// `self` for chaining.
+    ///
+    /// The default is [`ToolInputMode::None`], which preserves
+    /// the PHASE-0B §22 behaviour (the child gets
+    /// `Stdio::null()`). Tools that want the runtime-built input
+    /// pass [`ToolInputMode::JsonStdin`].
+    #[must_use]
+    pub fn with_input_mode(mut self, input_mode: ToolInputMode) -> Self {
+        self.input_mode = input_mode;
         self
     }
 }
@@ -78,6 +98,10 @@ impl ToolDefinition for ToolDefinitionRecord {
 
     fn normalizer(&self) -> Option<Arc<dyn ResultNormalizer>> {
         self.normalizer.clone()
+    }
+
+    fn input_mode(&self) -> ToolInputMode {
+        self.input_mode
     }
 }
 

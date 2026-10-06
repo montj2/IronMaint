@@ -108,6 +108,31 @@ fn main() -> ExitCode {
             ExitCode::from(130)
         }
         "synthetic.build.infra_fail" => ExitCode::from(127),
+        "synthetic.build.echo_input" => {
+            // PR 1A.2 teeth-check tool. Reads the JSON payload
+            // the executor wrote to our stdin and writes it back
+            // to stdout verbatim. The executor's `JsonStdin`
+            // wiring is what populates stdin in the first place,
+            // so this tool is useless without it — a child reading
+            // `/dev/null` sees EOF immediately and prints nothing.
+            //
+            // We do not cache modules in `main.rs`: `ironmaint-fixture`
+            // is a control-flow shell, not domain code.
+            use std::io::Read;
+            let mut buf = Vec::new();
+            if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
+                let _ = writeln!(stderr, "echo_input: stdin read failed: {e}");
+                return ExitCode::from(2);
+            }
+            // Write the bytes verbatim — including any trailing
+            // newline the runtime may or may not have written.
+            if let Err(e) = stdout.write_all(&buf) {
+                let _ = writeln!(stderr, "echo_input: stdout write failed: {e}");
+                return ExitCode::from(2);
+            }
+            let _ = stdout.flush();
+            ExitCode::from(0)
+        }
         other => {
             let _ = writeln!(stderr, "unknown synthetic tool: {other}");
             ExitCode::from(2)
