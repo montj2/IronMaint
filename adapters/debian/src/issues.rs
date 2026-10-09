@@ -48,26 +48,36 @@ impl IssueCapability for DebianIssues {
     }
 
     fn supported_actions(&self) -> Vec<IssueActionKind> {
-        // 1B.3 RED: the production adapter advertises `IssueRead`
+        // 1B.3 GREEN: the production adapter advertises `IssueRead`
         // and not `IssueWrite`. The conformance arm
         // `assert_issues_conforms` requires `supported_actions`
-        // to be non-empty; the GREEN commit adds a single
-        // read-side observable kind (`Comment`) so the arm
-        // passes without changing the conformance suite.
-        Vec::new()
+        // to be non-empty. `Comment` is the read-side observable
+        // kind: the BTS snapshot a future PR (1E.x) produces
+        // contains comments. The production adapter does not
+        // *execute* a `Comment` action today (it only reads),
+        // but it can *describe* the action kind.
+        vec![IssueActionKind::Comment]
     }
 
     fn validate_action(&self, action: &IssueAction) -> Result<(), AdapterError> {
-        // 1B.3 RED: every action is rejected because
-        // `supported_actions` is empty. The GREEN commit accepts
-        // `Comment` (the single read-side kind) and rejects
-        // everything else.
-        let _ = action;
-        Err(AdapterError {
-            kind: AdapterErrorKind::Unsupported,
-            message: "debian production adapter: no actions supported in 1B.3 (read-only-intake)"
-                .to_string(),
-        })
+        // 1B.3 GREEN: `Comment` is the single read-side kind the
+        // adapter supports. Anything else is rejected. The
+        // production adapter does not execute actions; this
+        // method is the contract for what the BTS *could* do
+        // if the runtime asked, and the answer today is
+        // "Comment is a valid kind, everything else is not."
+        if action.kind == IssueActionKind::Comment {
+            Ok(())
+        } else {
+            Err(AdapterError {
+                kind: AdapterErrorKind::Unsupported,
+                message: format!(
+                    "debian production adapter: action kind {:?} is not in the \
+                     1B.3 read-side set (Comment only)",
+                    action.kind
+                ),
+            })
+        }
     }
 }
 
@@ -94,19 +104,33 @@ mod tests {
     }
 
     #[test]
-    fn supported_actions_is_empty_in_red() {
-        // 1B.3 RED. The GREEN commit changes this to one read-side
-        // kind (`Comment`).
+    fn supported_actions_is_a_single_read_side_kind() {
+        // 1B.3 GREEN: `Comment` is the single read-side kind the
+        // adapter supports. Anything else (Close, Reopen,
+        // SetSeverity, ...) is rejected by `validate_action`.
         let i = DebianIssues::new();
-        assert!(i.supported_actions().is_empty());
+        let kinds = i.supported_actions();
+        assert_eq!(kinds, vec![IssueActionKind::Comment]);
     }
 
     #[test]
-    fn validate_action_rejects_everything_in_red() {
-        // 1B.3 RED. The GREEN commit accepts `Comment`.
+    fn validate_action_accepts_comment_and_rejects_everything_else() {
+        // 1B.3 GREEN: `Comment` is accepted; `MarkPending` and
+        // `Forward` (the kinds the stub's `DebianIssues` accepts)
+        // are rejected. The production adapter does not execute
+        // any action; `validate_action` is the contract for
+        // what the BTS *could* do.
         let i = DebianIssues::new();
+        i.validate_action(&action(IssueActionKind::Comment))
+            .expect("Comment is the single read-side kind");
+
         let err = i
-            .validate_action(&action(IssueActionKind::Comment))
+            .validate_action(&action(IssueActionKind::MarkPending))
+            .unwrap_err();
+        assert_eq!(err.kind, AdapterErrorKind::Unsupported);
+
+        let err = i
+            .validate_action(&action(IssueActionKind::Forward))
             .unwrap_err();
         assert_eq!(err.kind, AdapterErrorKind::Unsupported);
     }

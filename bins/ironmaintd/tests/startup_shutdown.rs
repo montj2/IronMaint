@@ -752,13 +752,25 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
         "capture must report the activation: {notes:?}"
     );
     assert!(
-        notes.iter().any(|n| n.contains("materialized 4 check(s)")),
-        "the debian stub plans one build and three QA checks; all four \
-         must reach the store: {notes:?}"
+        notes.iter().any(|n| n.contains("materialized 1 check(s)")),
+        "the production Debian adapter (1B.3) plans one check \
+         (`debian.inspect.source_preparation`); it must reach the store: {notes:?}"
     );
+    // The production adapter does not advertise `PolicyDerivation`
+    // (PHASE-1 §11) and so derives no obligations. The runtime
+    // (`service.rs:1920`) only logs the obligation count when
+    // `count > 0`, so an empty derivation is the absence of a
+    // "derived N obligation(s)" line. The reverse shape
+    // (a "derived 2 obligation(s)" line) would indicate the
+    // stub is back in the registration, which is the §32
+    // regression the test guards.
     assert!(
-        notes.iter().any(|n| n.contains("derived 2 obligation(s)")),
-        "the debian policy plan carries two templates: {notes:?}"
+        !notes
+            .iter()
+            .any(|n| n.contains("obligation(s) for fingerprint")),
+        "the production Debian adapter does not advertise \
+         `PolicyDerivation` (PHASE-1 §11); a 'derived N obligation(s)' \
+         line would mean the stub is back in the registration: {notes:?}"
     );
 
     // 1. The job now knows which candidate it is evaluating.
@@ -791,9 +803,10 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
         .collect();
     assert_eq!(
         run_checks.len(),
-        4,
-        "the debian stub plans one build and three QA checks, so exactly \
-         four must be offered: {next}"
+        1,
+        "the production Debian adapter (1B.3) plans one check \
+         (`debian.inspect.source_preparation`); exactly one \
+         `run_check` action must be offered: {next}"
     );
     assert!(
         run_checks.iter().all(|id| !id.is_empty()),
@@ -835,8 +848,8 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
         .as_str()
         .unwrap_or_default();
     assert!(
-        message.contains("debian.build.sbuild"),
-        "an unrunnable 0B tool must be reported by name, so the agent \
+        message.contains("debian.inspect.source_preparation"),
+        "an unrunnable 1B.3 tool must be reported by name, so the agent \
          knows which gate it is blocked on rather than guessing: {message}"
     );
     d.shutdown().await;

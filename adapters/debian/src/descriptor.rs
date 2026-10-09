@@ -13,11 +13,9 @@ use ironmaint_core::DistributionFamily;
 
 /// The production adapter's static descriptor.
 ///
-/// 1B.3 RED: `BuildPlanning` is in the capability set. The
-/// `verify-seams` S6 check (added in the same RED commit) reports
-/// `debian advertises BuildPlanning` against this file. The GREEN
-/// commit deletes the `BuildPlanning` insertion; the seam check
-/// goes green.
+/// 1B.3 GREEN: the capability set is exactly §11 "Expected" —
+/// no Phase 2 capabilities are advertised. The S6 seam check
+/// (`xtask/src/seams/adapters.rs`) is the structural guard.
 #[allow(clippy::expect_used, clippy::unwrap_used)]
 fn build_descriptor() -> AdapterDescriptor {
     let mut caps = AdapterCapabilities::new();
@@ -25,10 +23,6 @@ fn build_descriptor() -> AdapterDescriptor {
     caps.insert(AdapterCapability::SourceInspection);
     caps.insert(AdapterCapability::VersionComparison);
     caps.insert(AdapterCapability::IssueRead);
-    // 1B.3 RED ONLY: this is the deliberate violation that
-    // makes the broken-then-fixed pattern visible. The
-    // GREEN commit deletes this line.
-    caps.insert(AdapterCapability::BuildPlanning);
 
     AdapterDescriptor {
         family: DistributionFamily::new("debian")
@@ -52,11 +46,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn descriptor_advertises_the_phase1_expected_set_plus_build_planning_red() {
-        // 1B.3 RED: the descriptor advertises `BuildPlanning` in
-        // addition to the §11 "Expected" set. The GREEN commit
-        // removes `BuildPlanning`; this test changes name and
-        // assertion in the same step.
+    fn descriptor_advertises_the_phase1_expected_set_only() {
+        // 1B.3 GREEN: the descriptor advertises exactly the §11
+        // "Expected" set. The S6 seam check is the structural
+        // guard against re-introducing a Phase 2 capability
+        // in a future PR.
         let d = debian_descriptor();
         assert!(
             d.capabilities
@@ -67,7 +61,17 @@ mod tests {
                 .contains(&AdapterCapability::VersionComparison)
         );
         assert!(d.capabilities.contains(&AdapterCapability::IssueRead));
-        assert!(d.capabilities.contains(&AdapterCapability::BuildPlanning));
+        assert!(!d.capabilities.contains(&AdapterCapability::BuildPlanning));
+        assert!(
+            !d.capabilities
+                .contains(&AdapterCapability::PackageQaPlanning)
+        );
+        assert!(!d.capabilities.contains(&AdapterCapability::IssueWrite));
+        assert!(!d.capabilities.contains(&AdapterCapability::ReleaseMetadata));
+        assert!(
+            !d.capabilities
+                .contains(&AdapterCapability::PublicationPlanning)
+        );
     }
 
     #[test]
