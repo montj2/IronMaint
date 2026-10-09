@@ -2021,8 +2021,7 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         // — the early-return on missing `build()` is intentionally
         // gone, replaced by per-capability `if let Some(...)` blocks
         // that contribute zero tuples when the capability is absent.
-        let mut out: Vec<(ToolCapabilityKey, ironmaint_evidence::EvidenceKind, bool)> =
-            Vec::new();
+        let mut out: Vec<(ToolCapabilityKey, ironmaint_evidence::EvidenceKind, bool)> = Vec::new();
         let ctx = ironmaint_adapter_api::contexts::CandidateContext {
             package: candidate.package(),
             candidate,

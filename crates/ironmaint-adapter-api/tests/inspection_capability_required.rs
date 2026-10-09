@@ -25,7 +25,9 @@ fn fedora_stub_advertised_source_inspection_is_backed_by_inspection() {
     let fedora = fedora_stub::FedoraStubAdapter::new();
     let descriptor: AdapterDescriptor = fedora.descriptor();
     assert!(
-        descriptor.capabilities.contains(&AdapterCapability::SourceInspection),
+        descriptor
+            .capabilities
+            .contains(&AdapterCapability::SourceInspection),
         "precondition: the Fedora stub advertises SourceInspection"
     );
     assert!(
@@ -43,7 +45,9 @@ fn debian_stub_does_not_advertise_source_inspection() {
     let debian = debian_stub::DebianStubAdapter::new();
     let descriptor: AdapterDescriptor = debian.descriptor();
     assert!(
-        !descriptor.capabilities.contains(&AdapterCapability::SourceInspection),
+        !descriptor
+            .capabilities
+            .contains(&AdapterCapability::SourceInspection),
         "precondition: the Debian stub does NOT advertise SourceInspection \
          (descriptor_families_differ::source_inspection_only_fedora_advertises_it \
          pins this asymmetry; 1B.1 leaves it intact)"

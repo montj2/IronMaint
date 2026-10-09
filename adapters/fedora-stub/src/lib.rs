@@ -25,6 +25,10 @@
 //!   `SetSeverity / Reopen / AddLabels / RemoveLabels / Comment`.
 //! - [`release`] plans `fedora/release` metadata + push + koji submit +
 //!   bodhi update.
+//! - [`inspection`] is the read-only source-intake plan (PHASE-1.md
+//!   §12). The stub returns a hermetic no-op plan with one
+//!   `PlannedCheck`; real Fedora inspection work is out of scope for
+//!   Phase 1, which is Debian-only.
 
 #![forbid(unsafe_code)]
 // Tests legitimately `.unwrap()` / `.expect()` on validated inputs.
@@ -32,6 +36,7 @@
 
 pub mod build;
 pub mod descriptor;
+pub mod inspection;
 pub mod issues;
 pub mod package_model;
 pub mod policy_cap;
@@ -42,8 +47,8 @@ pub mod versioning;
 mod fixtures;
 
 use ironmaint_adapter_api::{
-    BuildCapability, DistributionAdapter, IssueCapability, PackageModelCapability,
-    PolicyCapability, ReleaseCapability, VersioningCapability,
+    BuildCapability, DistributionAdapter, InspectionCapability, IssueCapability,
+    PackageModelCapability, PolicyCapability, ReleaseCapability, VersioningCapability,
 };
 
 /// Fedora stub adapter orchestrator (§45).
@@ -86,13 +91,15 @@ impl DistributionAdapter for FedoraStubAdapter {
         Some(release::fedora_release())
     }
 
-    fn inspection(&self) -> Option<&dyn ironmaint_adapter_api::InspectionCapability> {
+    fn inspection(&self) -> Option<&dyn InspectionCapability> {
         // The Fedora stub advertises `AdapterCapability::SourceInspection`
-        // (PHASE-1.md §11 / descriptor.rs), but the inspection
-        // *implementation* lands in 1B.1's GREEN commit. This RED
-        // commit wires the trait surface and tightens the conformance
-        // suite; returning `None` here is what the GREEN commit will
-        // replace with the no-op `InspectionPlan` impl.
-        None
+        // (PHASE-1.md §11 / descriptor.rs), so the conformance suite
+        // (`ironmaint_testkit::conformance::assert_descriptor_is_valid`)
+        // requires this method to return `Some`. The real Debian
+        // adapter's source-intake content lands in 1C.x; this stub
+        // returns a hermetic no-op plan with one `PlannedCheck` so
+        // the plan-to-materialise path is exercised end-to-end
+        // without a real upstream VCS dependency.
+        Some(inspection::fedora_inspection())
     }
 }
