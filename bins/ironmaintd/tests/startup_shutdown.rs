@@ -813,14 +813,18 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
         "each offered check must carry the id check.run needs: {next}"
     );
 
-    // 3. Running one of them is refused cleanly, not silently, and
-    //    names the tool that is missing. `debian.build.sbuild` is a
-    //    real planned key with no registered tool behind it in 0B,
-    //    and the agent should be told that rather than left to
-    //    wonder why its capture did not move the job.
-    //    `d.call` panics on an error response, which is the right
-    //    default but the wrong tool here: the refusal *is* the
-    //    assertion. Go in at the JSON-RPC level.
+    // 3. Running one of them reports the gate as blocked. From 1C.1
+    //    onward, the tool is *registered* (it is the production
+    //    `debian.inspect.source_preparation` entry); on a build
+    //    that does not yet include the binary, the executor's
+    //    pre-flight `check_launchable` rejects the path and the
+    //    evidence row is `infrastructure_error` with the gate
+    //    blocked. The previous 1B.3 RED state — "the tool is
+    //    completely unknown, so `check.run` is a tool error" —
+    //    became obsolete the moment 1C.1 RED registered the tool;
+    //    the RED→GREEN transition is then between
+    //    `infrastructure_error` (no binary) and
+    //    `pass`/`fail` (the real binary, on a real fixture).
     let body: Value = d
         .post(
             json!({
@@ -841,16 +845,28 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
     assert_eq!(
         body["error"],
         Value::Null,
-        "an unknown tool is a tool error, not a protocol error: {body}"
+        "an unrunnable tool is a tool-level outcome, not a protocol error: {body}"
     );
-    assert_eq!(body["result"]["isError"], true, "{body}");
-    let message = body["result"]["structuredContent"]["error"]["message"]
-        .as_str()
-        .unwrap_or_default();
+    let structured = &body["result"]["structuredContent"];
+    assert_eq!(
+        structured["evidence_status"], "infrastructure_error",
+        "an unrunnable 1C.1 tool must be reported as infrastructure_error, \
+         so the agent knows the gate is blocked by a missing binary rather \
+         than a failed check: {structured}"
+    );
+    assert_eq!(
+        structured["gate_status"], "blocked",
+        "the gate must be blocked, not left pending, when the check cannot \
+         establish its fact: {structured}"
+    );
     assert!(
-        message.contains("debian.inspect.source_preparation"),
-        "an unrunnable 1B.3 tool must be reported by name, so the agent \
-         knows which gate it is blocked on rather than guessing: {message}"
+        structured["check_id"].is_string(),
+        "the response must carry the check_id the runtime used: {structured}"
+    );
+    assert!(
+        structured["evidence_id"].is_string(),
+        "the response must carry the evidence_id of the new evidence row, so \
+         the agent can read the report (PHASE-1.md §31): {structured}"
     );
     d.shutdown().await;
 }

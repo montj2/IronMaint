@@ -92,6 +92,18 @@ pub struct RuntimeConfig {
     /// The `ironmaint-fixture` binary the synthetic tool
     /// definitions point at.
     pub fixture_bin: PathBuf,
+    /// The `ironmaint-debian-tool` binary that backs the
+    /// `debian.inspect.source_preparation` real check
+    /// (PHASE-1.md §13, §16, 1C.1). The registration is
+    /// unconditional — the tool is part of the production
+    /// tool surface from 1C.1 onward — but the binary path
+    /// defaults to `/nonexistent/ironmaint-debian-tool` so
+    /// a pre-1C.1 build cannot accidentally run a binary
+    /// it does not have. A `check.run` against the key on
+    /// a build without the binary returns
+    /// `InfrastructureFailed` (the executor's pre-flight
+    /// `check_launchable` rejects the path).
+    pub debian_tool_bin: PathBuf,
     /// `tracing` filter directive (e.g. `info`, `ironmaintd=debug`).
     pub log_filter: String,
 }
@@ -119,6 +131,7 @@ impl RuntimeConfig {
         let mut workspace_root: Option<PathBuf> = None;
         let mut artifacts_root: Option<PathBuf> = None;
         let mut fixture_bin: Option<PathBuf> = None;
+        let mut debian_tool_bin: Option<PathBuf> = None;
         let mut log_filter: Option<String> = None;
 
         // Flags whose value may be given as `--flag=value` or
@@ -174,6 +187,9 @@ impl RuntimeConfig {
                     artifacts_root = Some(PathBuf::from(take("--artifacts-root")?));
                 }
                 "--fixture-bin" => fixture_bin = Some(PathBuf::from(take("--fixture-bin")?)),
+                "--debian-tool-bin" => {
+                    debian_tool_bin = Some(PathBuf::from(take("--debian-tool-bin")?));
+                }
                 "--log" => log_filter = Some(take("--log")?),
                 other => {
                     return Err(ConfigError::Argument(format!("unknown flag `{other}`")));
@@ -222,6 +238,17 @@ impl RuntimeConfig {
         let fixture_bin = fixture_bin
             .or_else(|| get_env("IRONMAINT_FIXTURE_BIN").map(PathBuf::from))
             .unwrap_or_else(|| default_fixture_bin_for(None));
+        // The default `/nonexistent/...` is deliberate: 1C.1 makes
+        // the `debian.inspect.source_preparation` registration part
+        // of the production tool surface, but a build without the
+        // binary must not silently run a different one. The
+        // executor's pre-flight `check_launchable` rejects the
+        // missing path and the tool reports
+        // `InfrastructureFailed` — the same refusal the agent
+        // would see if the binary were ever deleted in production.
+        let debian_tool_bin = debian_tool_bin
+            .or_else(|| get_env("IRONMAINT_DEBIAN_TOOL_BIN").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("/nonexistent/ironmaint-debian-tool"));
         let log_filter = log_filter
             .or_else(|| get_env("IRONMAINT_LOG"))
             .unwrap_or_else(|| "info".to_string());
@@ -250,6 +277,7 @@ impl RuntimeConfig {
             workspace_root,
             artifacts_root,
             fixture_bin,
+            debian_tool_bin,
             log_filter,
         }))
     }
@@ -340,6 +368,12 @@ OPTIONS:
                            [IRONMAINT_ARTIFACTS_ROOT, <state-dir>/artifacts]
     --fixture-bin PATH     The synthetic build tool binary.
                            [IRONMAINT_FIXTURE_BIN, <exe-dir>/ironmaint-fixture]
+    --debian-tool-bin PATH The real Debian inspection tool binary
+                           (1C.1). The daemon registers
+                           `debian.inspect.source_preparation` against
+                           this path; a missing binary reports
+                           `InfrastructureFailed`.
+                           [IRONMAINT_DEBIAN_TOOL_BIN, /nonexistent/ironmaint-debian-tool]
     --log FILTER           tracing filter directive.
                            [IRONMAINT_LOG, info]
     -h, --help             Print this help.

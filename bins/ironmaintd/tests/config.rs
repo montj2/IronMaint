@@ -347,6 +347,7 @@ fn usage_names_every_flag_the_parser_accepts() {
         "--workspace-root",
         "--artifacts-root",
         "--fixture-bin",
+        "--debian-tool-bin",
         "--log",
         "--help",
         "--version",
