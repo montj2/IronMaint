@@ -1,0 +1,37 @@
+[package]
+name = "ironmaint-debian-tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+description = "IronMaint real Debian inspection tool (PHASE-1). Subcommands: source-preparation (1C.1), source-analysis (1C.2), maintenance-context (1C.3), policy-delta (1D.2), bts-snapshot (1E.x). Reads ironmaint.candidate_input.v2 on stdin, emits a versioned JSON report on stdout."
+license.workspace = true
+
+[lib]
+# Both a binary (`src/main.rs`) and a library so the daemon and the
+# integration tests can import the normalizer and the report types
+# without shelling back into the binary. Same pattern as
+# `bins/ironmaintd/` (the daemon's `main.rs` imports
+# `ironmaintd::config::RuntimeConfig` from the daemon's own lib).
+path = "src/lib.rs"
+
+[[bin]]
+name = "ironmaint-debian-tool"
+path = "src/main.rs"
+
+[dependencies]
+ironmaint-adapter-api = { path = "../../crates/ironmaint-adapter-api" }
+ironmaint-core = { path = "../../crates/ironmaint-core" }
+ironmaint-evidence = { path = "../../crates/ironmaint-evidence" }
+ironmaint-executor = { path = "../../crates/ironmaint-executor" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
+clap = { workspace = true }
+time = { workspace = true }
+url = { workspace = true }
+debversion = { workspace = true }
+deb822-lossless = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }

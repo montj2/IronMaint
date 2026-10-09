@@ -28,6 +28,7 @@ debian = { path = "../../adapters/debian" }
 fedora-stub = { path = "../../adapters/fedora-stub" }
 ironmaint-adapter-api = { path = "../../crates/ironmaint-adapter-api" }
 ironmaint-artifacts = { path = "../../crates/ironmaint-artifacts" }
+ironmaint-debian-tool = { path = "../ironmaint-debian-tool" }
 ironmaint-executor = { path = "../../crates/ironmaint-executor" }
 ironmaint-mcp = { path = "../../crates/ironmaint-mcp" }
 ironmaint-runtime = { path = "../../crates/ironmaint-runtime" }

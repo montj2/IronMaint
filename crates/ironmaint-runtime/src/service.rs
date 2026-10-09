@@ -3206,21 +3206,18 @@ async fn build_candidate_input<S: IronMaintStore + ?Sized>(
     // §17 distinction from `verdict: "fail"` (a present-but-
     // wrong workspace).
     if let (Some(ws), Some(obj)) = (workspace, payload.as_object_mut()) {
-        match ws.id_for_job(source.job_id()).await {
-            Ok(id) => {
-                let path = ws.root().join(format!("{id}"));
-                obj.insert(
-                    "workspace_path".to_string(),
-                    serde_json::Value::String(path.display().to_string()),
-                );
-            }
-            // No workspace for this job — leave the field out.
-            // The tool's contract (PHASE-1.md §17) maps
-            // "workspace_path missing" to
-            // `verdict: "infrastructure_error"`, which is the
-            // right answer for "the runtime did not materialise
-            // a working tree, so the check cannot run."
-            Err(_) => {}
+        // No workspace for this job — leave the field out.
+        // The tool's contract (PHASE-1.md §17) maps
+        // "workspace_path missing" to
+        // `verdict: "infrastructure_error"`, which is the
+        // right answer for "the runtime did not materialise
+        // a working tree, so the check cannot run."
+        if let Ok(id) = ws.id_for_job(source.job_id()).await {
+            let path = ws.root().join(format!("{id}"));
+            obj.insert(
+                "workspace_path".to_string(),
+                serde_json::Value::String(path.display().to_string()),
+            );
         }
     }
 

@@ -43,11 +43,11 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_artifacts::{ArtifactRoot, ArtifactStore};
 use ironmaint_executor::{
     LimitsConfig, ProcessEnvironment, ProcessExecutor, ToolRegistry, factory_from_config,
 };
-use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_mcp::{IronMaintMcpServer, McpRuntime, TokenValidator, default_config, router};
 use ironmaint_runtime::{AdapterRegistry, RuntimeService, SystemClock};
 use ironmaint_store_sqlite::{SqliteStore, SqliteStoreConfig};
@@ -96,7 +96,7 @@ fn main() -> ExitCode {
         }
     };
 
-    match runtime.block_on(run(config)) {
+    match runtime.block_on(run(*config)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(StartupError::Config(e)) => {
             eprintln!("ironmaintd: {e}");
@@ -237,7 +237,10 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
             stderr_max_bytes: 64 * 1024,
         },
     )
-    .with_input_mode(ironmaint_executor::ToolInputMode::JsonStdin);
+    .with_input_mode(ironmaint_executor::ToolInputMode::JsonStdin)
+    .with_normalizer(std::sync::Arc::new(
+        ironmaint_debian_tool::DebianSourcePreparationNormalizer::new(),
+    ));
     tools
         .register(Box::new(source_preparation))
         .map_err(|e| StartupError::Serve(format!("debian.inspect.source_preparation: {e}")))?;

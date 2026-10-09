@@ -269,7 +269,7 @@ impl RuntimeConfig {
             });
         }
 
-        Ok(ConfigOutcome::Run(RuntimeConfig {
+        Ok(ConfigOutcome::Run(Box::new(RuntimeConfig {
             state_dir,
             migrations_dir,
             bind,
@@ -279,7 +279,7 @@ impl RuntimeConfig {
             fixture_bin,
             debian_tool_bin,
             log_filter,
-        }))
+        })))
     }
 }
 
@@ -287,7 +287,7 @@ impl RuntimeConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ConfigOutcome {
     /// Start with this configuration.
-    Run(RuntimeConfig),
+    Run(Box<RuntimeConfig>),
     /// Print usage and exit 0.
     Help,
     /// Print the version and exit 0.

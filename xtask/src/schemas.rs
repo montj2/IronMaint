@@ -134,6 +134,12 @@ fn generate_all() -> Result<BTreeMap<String, String>, Box<dyn Error>> {
         "ReconcileOutcome.json".into(),
         serde_json::to_string_pretty(&schemars::schema_for!(ironmaint_runtime::ReconcileOutcome))?,
     );
+    out.insert(
+        "DebianSourcePreparationV1.json".into(),
+        serde_json::to_string_pretty(&schemars::schema_for!(
+            ironmaint_debian_tool::DebianSourcePreparationV1
+        ))?,
+    );
     Ok(out)
 }
 

@@ -77,6 +77,8 @@ fn command_for(tmp: &tempfile::TempDir) -> tokio::process::Command {
         .arg(tmp.path().join("artifacts"))
         .arg("--fixture-bin")
         .arg(fixture_bin())
+        .arg("--debian-tool-bin")
+        .arg(ironmaint_debian_tool::binary_path())
         .arg("--bind")
         .arg("127.0.0.1:0");
     // Without this, dropping the `Child` neither kills nor reaps:
@@ -848,16 +850,26 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
         "an unrunnable tool is a tool-level outcome, not a protocol error: {body}"
     );
     let structured = &body["result"]["structuredContent"];
+    // 1C.1 GREEN: the binary is real. The empty
+    // workspace (no `debian/` directory) drives the
+    // tool's verdict to `fail` and the normalizer to
+    // `EvidenceStatus::Fail` — the tool ran, the
+    // *content* is the problem, not the toolchain.
+    // The two new tests below cover both
+    // `evidence_status == "pass"` (good fixture) and
+    // `evidence_status == "fail"` (mismatched fixture).
     assert_eq!(
-        structured["evidence_status"], "infrastructure_error",
-        "an unrunnable 1C.1 tool must be reported as infrastructure_error, \
-         so the agent knows the gate is blocked by a missing binary rather \
-         than a failed check: {structured}"
+        structured["evidence_status"], "fail",
+        "an empty workspace has no `debian/` directory; the source_preparation \
+         tool's verdict is `fail` (the §17 fail path, distinct from \
+         `infrastructure_error`). The 1B.3/1C.1 RED state \
+         (`infrastructure_error` because the binary was missing) becomes \
+         obsolete once 1C.1 GREEN installs the real binary: {structured}"
     );
     assert_eq!(
-        structured["gate_status"], "blocked",
-        "the gate must be blocked, not left pending, when the check cannot \
-         establish its fact: {structured}"
+        structured["gate_status"], "fail",
+        "a fail propagates to the gate; the agent sees a concrete fail, not \
+         a silent stall: {structured}"
     );
     assert!(
         structured["check_id"].is_string(),
@@ -921,5 +933,247 @@ async fn a_family_the_daemon_has_no_adapter_for_still_captures() {
         fetched["projection"]["active_candidate"].is_string(),
         "activation is a fact about the job, not about the adapter: {fetched}"
     );
+    d.shutdown().await;
+}
+
+// ---------------------------------------------------------------------
+// 1C.1 GREEN: `debian.inspect.source_preparation` is the first
+// non-synthetic Phase 1 check. The two tests below drive the
+// hermetic fixtures through a real daemon and assert the tool's
+// verdict on the workspace (Pass for a well-formed Debian source
+// tree, Fail for a tree whose changelog's source name disagrees
+// with the candidate). The earlier 1B.3 test above asserts the
+// fail-when-empty-workspace path.
+// ---------------------------------------------------------------------
+
+/// Recursively copy a directory tree, used to stage the
+/// hermetic fixtures into the workspace directory the
+/// daemon allocated.
+fn copy_recursive(src: &std::path::Path, dst: &std::path::Path) {
+    if src.is_dir() {
+        std::fs::create_dir_all(dst).expect("mkdir copy dst");
+        for entry in std::fs::read_dir(src).expect("readdir src") {
+            let entry = entry.expect("readdir entry");
+            let from = entry.path();
+            let to = dst.join(entry.file_name());
+            copy_recursive(&from, &to);
+        }
+    } else {
+        std::fs::copy(src, dst).expect("copy file");
+    }
+}
+
+/// Build a candidate-capture payload that uses the
+/// `debian` family (so the production `adapters/debian/`
+/// adapter — registered in 1B.3 — plans the
+/// `debian.inspect.source_preparation` check) and the
+/// given `source_name`. The `source_version` is not part
+/// of the `candidate.capture` MCP input shape: the
+/// workspace's `capture_candidate` derives the version
+/// from the candidate's `PackageRevision` constructor,
+/// which currently uses the placeholder
+/// `0+ironmaint` (PHASE-0B §6.7). The hermetic fixture's
+/// `debian/changelog` is written to use the same
+/// placeholder so the version cross-check passes; see
+/// `containers/fixtures/debian/example-1.0/debian/changelog`.
+fn candidate_capture_args(job_id: &str, source_name: &str) -> Value {
+    json!({
+        "job_id": job_id,
+        "package": {
+            "distribution": {"family": "debian", "release": "sid"},
+            "source_name": source_name,
+            "binary_names": [],
+        },
+        "repository_url": "https://example.invalid/ironmaint-debian-tool-fixture.git",
+    })
+}
+
+/// The `debian.inspect.source_preparation` check passes
+/// when the candidate's workspace contains a well-formed
+/// Debian 3.0 (quilt) source tree whose `Source:`,
+/// `Version:`, and `debian/source/format` all match.
+#[tokio::test]
+async fn debian_inspect_source_preparation_passes_against_the_hermetic_fixture() {
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    // Create a job, capture a candidate whose identity
+    // matches the good fixture.
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+    let _captured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+    // The candidate's `check_id` is not in
+    // `candidate.capture`'s response (it carries
+    // `fingerprint` and `notes` only); it is
+    // advertised through `job.next_actions`, which is
+    // the tool the agent uses to discover what to run.
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let check_id = next["actions"]["allowed"]
+        .as_array()
+        .and_then(|a| {
+            a.iter().find_map(|a| {
+                a.get("run_check")?.get("check_id")?.as_str().map(String::from)
+            })
+        })
+        .expect("job.next_actions should list a run_check action for the planned source_preparation check");
+
+    // The candidate capture auto-provisions a workspace
+    // directory at `<workspace_root>/<handle>/`. Find
+    // the (only) subdir under `workspaces/` and stage
+    // the good fixture into it.
+    let workspaces_root = tmp.path().join("workspaces");
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        handles.len(),
+        1,
+        "expected exactly one workspace handle; got {handles:?}"
+    );
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+
+    // Run the check. The MCP `tools/call` response wraps
+    // the `RunCheckOutput` in `body["result"]` (not
+    // `body["result"]["structuredContent"]`); the
+    // higher-level `Daemon::call` helper unwraps
+    // `structuredContent` for tools that emit it, but
+    // `check.run` emits the run output at the result
+    // root. Use `Daemon::post` and inspect the JSON-RPC
+    // response directly.
+    let response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {
+                        "job_id": job_id,
+                        "check_id": check_id.clone(),
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(response.status(), 200, "check.run was not served");
+    let body: Value = response.json().await.expect("json body");
+    assert_eq!(
+        body["error"],
+        Value::Null,
+        "check.run returned a protocol error: {body}"
+    );
+    let result = &body["result"]["structuredContent"];
+    assert_eq!(
+        result["evidence_status"], "pass",
+        "the good fixture's §17 checks all hold; the source_preparation tool's \
+         verdict is `pass` and the normalizer maps it to EvidenceStatus::Pass: {result}"
+    );
+    assert_eq!(
+        result["gate_status"], "pass",
+        "a pass lets the gate open: {result}"
+    );
+
+    d.shutdown().await;
+}
+
+/// The check fails when the candidate's identity
+/// disagrees with the source tree's `debian/changelog`
+/// first-entry source name. The §17 fail path is
+/// distinct from the `infrastructure_error` path
+/// exercised by the 1B.3 test above (no `debian/`
+/// at all in the workspace).
+#[tokio::test]
+async fn debian_inspect_source_preparation_fails_on_a_mismatched_changelog() {
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    // Create a job, capture a candidate whose identity
+    // says `example`, but stage the broken fixture whose
+    // changelog says `broken-example`.
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+    let _captured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let check_id = next["actions"]["allowed"]
+        .as_array()
+        .and_then(|a| {
+            a.iter().find_map(|a| {
+                a.get("run_check")?.get("check_id")?.as_str().map(String::from)
+            })
+        })
+        .expect("job.next_actions should list a run_check action for the planned source_preparation check");
+
+    let workspaces_root = tmp.path().join("workspaces");
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(handles.len(), 1);
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-broken-1.0.0");
+    copy_recursive(&fixture_root, &workspace_path);
+
+    let response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {
+                        "job_id": job_id,
+                        "check_id": check_id.clone(),
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(response.status(), 200, "check.run was not served");
+    let body: Value = response.json().await.expect("json body");
+    assert_eq!(
+        body["error"],
+        Value::Null,
+        "check.run returned a protocol error: {body}"
+    );
+    let result = &body["result"]["structuredContent"];
+    assert_eq!(
+        result["evidence_status"], "fail",
+        "the broken fixture's changelog says `broken-example` while the \
+         candidate says `example`; the cross-check fails and the verdict is \
+         `fail` (not `infrastructure_error`, which is reserved for the tool \
+         itself being unable to run): {result}"
+    );
+    assert_eq!(
+        result["gate_status"], "fail",
+        "a fail makes the gate fail (the agent cannot progress to the next stage): {result}"
+    );
+
     d.shutdown().await;
 }

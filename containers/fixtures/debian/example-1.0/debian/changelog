@@ -1,0 +1,14 @@
+example (0+ironmaint) unstable; urgency=medium
+
+  * Initial release. (Closes: #1)
+  * Trivial 1C.1 fixture; see README.
+  *
+  * The version `0+ironmaint` matches the placeholder the
+  * workspace's `capture_candidate` sets (PHASE-0B §6.7, the
+  * "real version is set by the runtime after the package
+  * policy baseline is resolved" invariant). 1F.1 will
+  * introduce the real version once the runtime resolves
+  * the policy baseline; 1C.1 only checks that the
+  * candidate's recorded version agrees with the changelog.
+
+ -- IronMaint Test <test@example.invalid>  Thu, 09 Oct 2026 00:00:00 +0000

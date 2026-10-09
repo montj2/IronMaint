@@ -71,7 +71,7 @@ impl Fixture {
         let mut args = self.args();
         args.extend(extra.iter().map(OsString::from));
         match RuntimeConfig::from_env_and_args(&args, |name| map.get(name).cloned())? {
-            ConfigOutcome::Run(c) => Ok(c),
+            ConfigOutcome::Run(c) => Ok(*c),
             other => panic!("expected Run, got {other:?}"),
         }
     }
