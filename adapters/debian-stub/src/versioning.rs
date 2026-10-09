@@ -1,10 +1,21 @@
-//! Debian versioning capability (§46, §66).
+//! Debian versioning capability (§46, §66, §15).
 //!
-//! Phase 0A stub: implements a simplified `epoch:upstream-debian_revision`
-//! split that is enough to exercise the §46 acceptance test against
-//! the Fedora stub (which uses `epoch:version-release`). Real
-//! `dpkg --compare-versions` semantics are explicitly out of scope
-//! for 0A (§89).
+//! 1B.2: real `dpkg --compare-versions` semantics. The `validate`
+//! and `compare` methods delegate to the `debversion` crate
+//! (jelmer/debversion-rs, crates.io `debversion`), which
+//! implements the dpkg §5.6.12 algorithm directly. The crate
+//! accepts the full grammar: `epoch:upstream-debian_revision`
+//! with `~` (pre-release marker), `+` (separates upstream from
+//! debian_revision and is a binNMU-style marker), `:` (epoch),
+//! binNMU `+bN` in debian_revision, and the numeric-runs-as-
+//! integers lex-order rule.
+//!
+//! Per §15, "Do not reimplement Debian version ordering casually."
+//! The crate is the named candidate and is actively maintained
+//! (last published 2026-06-16, Apache-2.0). The acceptance corpus
+//! in `tests/oracle_compare_versions.rs` compares the comparator
+//! against `dpkg --compare-versions` when `dpkg` is on `$PATH`
+//! (true inside the §97 gate's `ironmaint/workspace:0.1` image).
 
 use std::cmp::Ordering;
 use std::sync::LazyLock;
@@ -37,19 +48,16 @@ impl Default for DebianVersioning {
 impl VersioningCapability for DebianVersioning {
     fn validate(&self, version: &PackageVersion) -> Result<(), AdapterError> {
         let raw = version.as_str();
-        if raw.contains('~') {
-            return Err(AdapterError {
+        // `debversion::Version`'s `FromStr` impl is the dpkg §5.6.12
+        // parser. It accepts the full grammar (epoch, upstream,
+        // debian_revision, ~, +, :, binNMU `+bN`) and rejects
+        // malformed inputs.
+        raw.parse::<debversion::Version>()
+            .map_err(|parse_err| AdapterError {
                 kind: AdapterErrorKind::InvalidVersion,
-                message: format!("{FAMILY}: tilde (~) not supported by stub comparator"),
-            });
-        }
-        if raw.is_empty() {
-            return Err(AdapterError {
-                kind: AdapterErrorKind::InvalidVersion,
-                message: format!("{FAMILY}: empty version"),
-            });
-        }
-        Ok(())
+                message: format!("{FAMILY}: invalid version string {raw:?}: {parse_err}"),
+            })
+            .map(|_| ())
     }
 
     fn compare(
@@ -57,17 +65,36 @@ impl VersioningCapability for DebianVersioning {
         left: &PackageVersion,
         right: &PackageVersion,
     ) -> Result<Ordering, AdapterError> {
-        // 1B.2 RED: the comparator is provably insufficient. Any two
-        // valid versions compare Equal. The unit corpus, the dpkg
-        // oracle (gated on `dpkg` availability), and the cross-adapter
-        // tilde-sort test in `version_comparison_differs.rs` all
-        // expect Less/Greater here and go red. The GREEN commit
-        // adopts `debversion` and the tests pass.
-        self.validate(left)?;
-        self.validate(right)?;
-        let _lp = parse(left.as_str());
-        let _rp = parse(right.as_str());
-        Ok(Ordering::Equal)
+        // 1B.2 GREEN: real dpkg --compare-versions semantics. The
+        // `debversion` crate implements the §5.6.12 algorithm
+        // (numeric-runs-as-integers, `~` before non-`~`, end-of-
+        // string before any non-digit, binNMU `+bN` ordering,
+        // epoch as numeric prefix). `Version` implements `Ord`
+        // and `Eq` to match dpkg's transitive equality (1.0 ==
+        // 1.0-0, etc.).
+        let l = left
+            .as_str()
+            .parse::<debversion::Version>()
+            .map_err(|parse_err| AdapterError {
+                kind: AdapterErrorKind::InvalidVersion,
+                message: format!(
+                    "{FAMILY}: invalid version string {:?}: {}",
+                    left.as_str(),
+                    parse_err
+                ),
+            })?;
+        let r = right
+            .as_str()
+            .parse::<debversion::Version>()
+            .map_err(|parse_err| AdapterError {
+                kind: AdapterErrorKind::InvalidVersion,
+                message: format!(
+                    "{FAMILY}: invalid version string {:?}: {}",
+                    right.as_str(),
+                    parse_err
+                ),
+            })?;
+        Ok(l.cmp(&r))
     }
 }
 
@@ -76,36 +103,6 @@ impl VersioningCapability for DebianVersioning {
 #[must_use]
 pub fn debian_versioning() -> &'static DebianVersioning {
     &DEBIAN_VERSIONING
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct SplitVersion {
-    epoch: u32,
-    upstream: String,
-    debian_revision: String,
-}
-
-fn parse(raw: &str) -> SplitVersion {
-    // epoch may be present as a leading "N:" marker.
-    let (epoch, after_epoch) = match raw.find(':') {
-        Some(idx) => {
-            let head = &raw[..idx];
-            let epoch = head.parse::<u32>().unwrap_or(0);
-            (epoch, &raw[idx + 1..])
-        }
-        None => (0u32, raw),
-    };
-
-    // The "debian_revision" is whatever appears after the last "-".
-    let (upstream, debian_revision) = match after_epoch.rfind('-') {
-        Some(idx) => (&after_epoch[..idx], after_epoch[idx + 1..].to_string()),
-        None => (after_epoch, String::new()),
-    };
-    SplitVersion {
-        epoch,
-        upstream: upstream.to_string(),
-        debian_revision,
-    }
 }
 
 #[cfg(test)]
@@ -147,11 +144,50 @@ mod tests {
     }
 
     #[test]
-    fn tilde_versions_rejected() {
+    fn tilde_accepted_and_sorts_before_release() {
+        // 1B.2: tilde is the dpkg pre-release marker. It validates,
+        // and `1.0.0~rc1 < 1.0.0` (the `~` sorts before any non-`~`
+        // character and before end-of-string).
         let v = DebianVersioning::new();
-        let err = v.validate(&pv("1.0.0~rc1")).unwrap_err();
-        assert_eq!(err.kind, AdapterErrorKind::InvalidVersion);
-        assert!(err.message.contains('~'));
+        assert!(v.validate(&pv("1.0.0~rc1")).is_ok());
+        assert_eq!(
+            v.compare(&pv("1.0.0~rc1"), &pv("1.0.0")).unwrap(),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn bin_nmu_sorts_above_base() {
+        // 1B.2: binNMU `+bN` in debian_revision sorts after the
+        // un-bumped revision. `2.1-1 < 2.1-1+b1 < 2.1-1+b2`.
+        let v = DebianVersioning::new();
+        assert_eq!(
+            v.compare(&pv("2.1-1"), &pv("2.1-1+b1")).unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            v.compare(&pv("2.1-1+b1"), &pv("2.1-1+b2")).unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            v.compare(&pv("2.1-1"), &pv("2.1-1+b2")).unwrap(),
+            Ordering::Less
+        );
+    }
+
+    #[test]
+    fn numeric_runs_compare_as_integers() {
+        // 1B.2: dpkg lex-order compares numeric runs as integers;
+        // bytewise String::cmp would say 1.0.0-10 < 1.0.0-2.
+        let v = DebianVersioning::new();
+        assert_eq!(
+            v.compare(&pv("1.0.0-2"), &pv("1.0.0-10")).unwrap(),
+            Ordering::Less
+        );
+        assert_eq!(
+            v.compare(&pv("1.0.0-2"), &pv("1.0.0-2")).unwrap(),
+            Ordering::Equal
+        );
     }
 
     #[test]
@@ -163,7 +199,8 @@ mod tests {
         let v = DebianVersioning::new();
         let cmp = v.compare(&pv("1.9.0-1.fc45"), &pv("1.9.0-1")).unwrap();
         // Debian split: upstream "1.9.0" = "1.9.0", then
-        // debian_revision "1.fc45" > "1" lexicographically.
+        // debian_revision "1.fc45" > "1" per dpkg lex-order
+        // (non-digit char sorts after end of string).
         assert_eq!(cmp, Ordering::Greater);
     }
 

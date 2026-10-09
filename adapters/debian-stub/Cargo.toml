@@ -7,13 +7,14 @@ license.workspace = true
 authors.workspace = true
 repository.workspace = true
 publish = false
-description = "DistributionAdapter stub for Debian. Phase 0A skeleton — no real dpkg / Debian Policy mechanics."
+description = "DistributionAdapter stub for Debian. Real dpkg --compare-versions semantics (PHASE-1 §15) via the debversion crate; no real Debian Policy mechanics yet."
 
 [dependencies]
 ironmaint-adapter-api = { path = "../../crates/ironmaint-adapter-api" }
 ironmaint-core = { path = "../../crates/ironmaint-core" }
 ironmaint-evidence = { path = "../../crates/ironmaint-evidence" }
 ironmaint-policy = { path = "../../crates/ironmaint-policy" }
+debversion = { workspace = true }
 
 [dev-dependencies]
 ironmaint-testkit = { path = "../../crates/ironmaint-testkit" }

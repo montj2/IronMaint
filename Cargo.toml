@@ -111,6 +111,14 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 # and decoded on the way in. RFC 4648 §4 (standard alphabet, padding,
 # no line wrapping) is the only form the tool emits.
 base64 = "0.22"
+# Debian version parser/comparator (PHASE-1.md §15). Adopts the
+# `debversion` crate rather than reimplementing dpkg §5.6.12 lex
+# order, per the spec's "Do not reimplement Debian version
+# ordering casually." The crate implements the full grammar
+# (epoch, upstream, debian_revision, tilde, plus, colon, binNMU)
+# and returns `std::cmp::Ordering` directly. No default features
+# (the stub only needs parse + Ord).
+debversion = "0.5"
 rmcp = { version = "3", features = ["server", "transport-streamable-http-server", "macros"] }
 # The Streamable-HTTP transport is a tower Service, not an axum Router: the
 # daemon must supply the HTTP server itself. These are the versions rmcp's

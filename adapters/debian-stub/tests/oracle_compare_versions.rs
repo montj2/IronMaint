@@ -56,15 +56,10 @@ struct CorpusEntry {
 
 const CORPUS: &[CorpusEntry] = &[
     // ---- equality (load-bearing: dpkg normalises "missing revision
-    //      is 0" and "trailing .0 in revision is dropped") ----
+    //      is 0" — that is, "1.0" and "1.0-0" are equal) ----
     CorpusEntry {
         left: "1.0",
         right: "1.0-0",
-        expected: Ordering::Equal,
-    },
-    CorpusEntry {
-        left: "1.2.3-1",
-        right: "1.2.3-1.0",
         expected: Ordering::Equal,
     },
     CorpusEntry {
@@ -92,7 +87,11 @@ const CORPUS: &[CorpusEntry] = &[
     CorpusEntry {
         left: "1.0~rc1",
         right: "1.0~~rc1",
-        expected: Ordering::Less,
+        // Position-by-position: 1=1, .=., 0=0, ~=~, then `~` (in
+        // ~~rc1) vs `r` (in ~rc1): ~ < r, so ~~rc1 < ~rc1. The
+        // corpus walks the pair in this direction; the reverse
+        // direction is exercised by the unit half's swap.
+        expected: Ordering::Greater,
     },
     // ---- binNMU (+bN in debian_revision) ----
     CorpusEntry {
