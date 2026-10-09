@@ -1175,6 +1175,7 @@ name = "ironmaint-runtime"
 version = "0.1.0"
 dependencies = [
  "ironmaint-adapter-api",
+ "ironmaint-artifacts",
  "ironmaint-core",
  "ironmaint-evidence",
  "ironmaint-executor",

@@ -14,6 +14,7 @@ workspace = true
 
 [dependencies]
 ironmaint-adapter-api = { path = "../ironmaint-adapter-api" }
+ironmaint-artifacts = { path = "../ironmaint-artifacts" }
 ironmaint-core = { path = "../ironmaint-core" }
 ironmaint-evidence = { path = "../ironmaint-evidence" }
 ironmaint-executor = { path = "../ironmaint-executor" }

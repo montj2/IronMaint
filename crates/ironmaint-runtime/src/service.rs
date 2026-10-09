@@ -134,6 +134,15 @@ pub struct RuntimeService<S: IronMaintStore + ?Sized, E: Executor + ?Sized> {
     executor: Arc<E>,
     registry: Arc<ToolRegistry>,
     adapters: AdapterRegistry,
+    /// Artifact store for binding normalized tool output to
+    /// Evidence rows as `Report` artifacts (PHASE-1.md §31).
+    /// `None` means the runtime was constructed without a
+    /// writable on-disk artifact root; the runtime then records
+    /// Evidence rows without an attached artifact, and the
+    /// `evidence.artifact.read` MCP tool (1A.4) cannot serve
+    /// the missing report. The production daemon always wires
+    /// this; tests may omit it.
+    artifacts: Option<Arc<ironmaint_artifacts::ArtifactStore>>,
 }
 
 impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> std::fmt::Debug for RuntimeService<S, E> {
@@ -156,7 +165,24 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             executor,
             registry,
             adapters: AdapterRegistry::empty(),
+            artifacts: None,
         }
+    }
+
+    /// Attach the on-disk artifact store used to bind
+    /// `ResultNormalizer` output to Evidence rows as `Report`
+    /// artifacts (PHASE-1.md §31). Builder-style, like
+    /// [`Self::with_adapters`], so existing construction sites
+    /// (every test) do not need to spell out
+    /// `Arc::new(ArtifactStore::open(...))` only to leave it
+    /// unused.
+    #[must_use]
+    pub fn with_artifact_store(
+        mut self,
+        artifacts: Arc<ironmaint_artifacts::ArtifactStore>,
+    ) -> Self {
+        self.artifacts = Some(artifacts);
+        self
     }
 
     /// Attach a distribution adapter registry, the PHASE-0B.md
@@ -2444,8 +2470,100 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         // outcomes, not infrastructure problems) and lifts
         // InfrastructureFailed into the dedicated evidence status so
         // gate evaluation can react accordingly.
-        let outcome =
-            forced_outcome.unwrap_or_else(|| ironmaint_executor::outcome_from_record(&record));
+        //
+        // PHASE-1.md §7: a tool that declares a `ResultNormalizer`
+        // is authoritative — the normalizer's `evidence_status`
+        // drives the Evidence row, not the exit-code fallback. A
+        // `NormalizationError` is a tool-level outcome (the tool
+        // emitted something the runtime could not classify), so it
+        // becomes `Fail` with the producer tagged `#normalizer-error`
+        // — distinct from the executor-error tag below, so an
+        // operator can tell them apart. The normalizer is **not**
+        // consulted when the executor never reached the tool
+        // (`forced_outcome` is set): there is no `ExecutionRecord`
+        // to normalise in that branch, and pretending the
+        // normalizer ran would let a missing tool look like a
+        // passing one.
+        //
+        // The `normalized` value is `Some(result)` when the
+        // normalizer was consulted and accepted the record; the
+        // runtime uses `r.evidence_status` directly and binds the
+        // recorded stdout to the Evidence row as a `Report`
+        // artifact (PHASE-1.md §31 — "store it as a report
+        // artifact"). When the normalizer was not consulted (no
+        // `ResultNormalizer` on the tool, or `forced_outcome`
+        // set) the value is `None` and the existing exit-code
+        // mapping runs.
+        // PHASE-1.md §7: a tool that declares a `ResultNormalizer`
+        // is authoritative — the normalizer's `evidence_status`
+        // drives the Evidence row, not the exit-code fallback. A
+        // `NormalizationError` is a tool-level outcome (the tool
+        // emitted something the runtime could not classify), so it
+        // becomes `Fail` with the producer tagged `#normalizer-error`
+        // — distinct from the executor-error tag below, so an
+        // operator can tell them apart. The normalizer is **not**
+        // consulted when the executor never reached the tool
+        // (`forced_outcome` is set): there is no `ExecutionRecord`
+        // to normalise in that branch, and pretending the
+        // normalizer ran would let a missing tool look like a
+        // passing one.
+        //
+        // The `normalized` value is `Some(result)` when the
+        // normalizer was consulted and accepted the record; the
+        // runtime uses `r.evidence_status` directly and binds the
+        // recorded stdout to the Evidence row as a `Report`
+        // artifact (PHASE-1.md §31). When the normalizer was not
+        // consulted (no `ResultNormalizer` on the tool, or
+        // `forced_outcome` set) the value is `None` and the
+        // existing exit-code mapping runs.
+        let (outcome, normalized, normalizer_failure_note): (
+            ironmaint_executor::Outcome,
+            Option<ironmaint_executor::NormalizedResult>,
+            Option<String>,
+        ) = match forced_outcome {
+            Some(o) => (o, None, None),
+            None => match tool.normalizer() {
+                Some(n) => match n.normalize(&record) {
+                    Ok(r) => {
+                        // Map the normalizer's `evidence_status` back
+                        // to the executor-owned `Outcome` so the
+                        // downstream `outcome_to_state` call (which
+                        // drives the state-machine event) sees a
+                        // consistent shape. A normalizer's
+                        // `RequiresReview` / `NotEvaluated` falls
+                        // through to `Fail` — the agent can read
+                        // the Evidence row to see the nuance, and
+                        // the state machine's `Fail` arm is the
+                        // right hook for a human review.
+                        let o = match r.evidence_status {
+                            ironmaint_evidence::EvidenceStatus::Pass => {
+                                ironmaint_executor::Outcome::Pass
+                            }
+                            _ => ironmaint_executor::Outcome::Fail,
+                        };
+                        (o, Some(r), None)
+                    }
+                    Err(e) => {
+                        // A NormalizationError is a tool-level
+                        // failure: the tool emitted something the
+                        // runtime could not classify. Fail, not
+                        // InfrastructureError, because the tool
+                        // ran to completion and the runtime
+                        // received its output.
+                        (
+                            ironmaint_executor::Outcome::Fail,
+                            None,
+                            Some(format!("{}#normalizer-error: {}", cap_key.as_str(), e)),
+                        )
+                    }
+                },
+                None => (ironmaint_executor::outcome_from_record(&record), None, None),
+            },
+        };
+
+        // Map `Outcome` to `EvidenceStatus` after the precedence
+        // resolution above, so there is exactly one mapping site
+        // regardless of which path selected the outcome.
         let outcome_status = match outcome {
             ironmaint_executor::Outcome::Pass => ironmaint_evidence::EvidenceStatus::Pass,
             ironmaint_executor::Outcome::Fail => ironmaint_evidence::EvidenceStatus::Fail,
@@ -2456,21 +2574,83 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             }
         };
 
+        // PHASE-1.md §31: bind the normalized report (the tool's
+        // stdout, when the normalizer accepted it) to the
+        // Evidence row as a `Report` artifact. The artifact store
+        // is optional — when the runtime was constructed without
+        // one (the default in every existing test, which has no
+        // on-disk artifact root), the binding degrades to
+        // "record only", not "panic": the Evidence row is still
+        // recorded, the operator just has no on-disk file to
+        // fetch via 1A.4's `evidence.artifact.read`. The daemon
+        // always wires one.
+        let report_artifact: Option<ironmaint_evidence::ArtifactRef> = match normalized {
+            Some(_) => match self.artifacts.as_ref() {
+                Some(store) => match store.put_bytes(record.stdout.as_bytes()).await {
+                    Ok(rec) => {
+                        let digest = ironmaint_core::Digest::new(
+                            ironmaint_core::DigestAlgorithm::Sha256,
+                            rec.digest.as_str(),
+                        )
+                        .map_err(|e| {
+                            RuntimeError::new(
+                                RuntimeErrorKind::Store,
+                                format!("artifact digest rejected: {e}"),
+                            )
+                        })?;
+                        Some(
+                            ironmaint_evidence::ArtifactRef::new(
+                                ironmaint_core::ArtifactId::new(),
+                                ironmaint_evidence::ArtifactKind::Report,
+                                digest,
+                            )
+                            .with_size_bytes(rec.size)
+                            .with_media_type("application/json"),
+                        )
+                    }
+                    Err(e) => {
+                        // An artifact-store write failure is an
+                        // infrastructure problem, not a tool
+                        // failure: surface it as such rather
+                        // than pretending the report was bound.
+                        return Err(RuntimeError::new(
+                            RuntimeErrorKind::Store,
+                            format!("artifact write failed: {e}"),
+                        ));
+                    }
+                },
+                None => None,
+            },
+            None => None,
+        };
+
         let now = self.clock.now_utc();
         let scope = EvidenceScope::Candidate(fingerprint.clone());
-        // When the record was synthesised rather than produced by a
-        // real process, tag the producer so a timeout is
-        // distinguishable from the tool legitimately exiting
-        // non-zero. Both map to `Fail`, so this is the only signal
-        // that separates them.
-        let producer_name = match forced_outcome {
-            Some(_) => format!("{}#executor-error", cap_key.as_str()),
-            None => cap_key.as_str().to_string(),
+        // Tag the producer with one of three suffixes so the
+        // source of a `Fail` is distinguishable downstream.
+        // `#executor-error` — the executor never reached the
+        // tool (forced_outcome). `#normalizer-error` — the tool
+        // ran and produced output the normalizer could not
+        // classify. The bare capability key — the tool ran and
+        // the result was either classified by the exit-code
+        // fallback or by a normalizer that accepted the record.
+        let producer_name = match (forced_outcome, normalizer_failure_note) {
+            (Some(_), _) => format!("{}#executor-error", cap_key.as_str()),
+            (None, Some(note)) => note,
+            (None, None) => cap_key.as_str().to_string(),
         };
         let producer = EvidenceProducer::new(producer_name);
         // PHASE-0B.md §15: evidence rows must explicitly record
         // `truncated = true` when the executor bounded stdout/stderr.
-        let evidence = Evidence::new(
+        // PHASE-1.md §7: a successful normalizer may report the
+        // output as truncated even when the executor didn't
+        // (e.g. a structured report that itself marks a partial
+        // capture); honor the normalizer's flag in that case.
+        let truncated = match normalized {
+            Some(r) => r.output_truncated,
+            None => record.truncated,
+        };
+        let mut evidence = Evidence::new(
             fingerprint.clone(),
             check.evidence_kind.clone(),
             outcome_status,
@@ -2478,7 +2658,10 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             scope,
             now,
         )
-        .with_truncated(record.truncated);
+        .with_truncated(truncated);
+        if let Some(artifact) = report_artifact {
+            evidence = evidence.with_artifact(artifact);
+        }
 
         self.store
             .put_evidence(&evidence, job_id)

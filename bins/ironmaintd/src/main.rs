@@ -246,7 +246,7 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
     let executor = Arc::new(
         ProcessExecutor::new(
             Arc::clone(&registry),
-            artifact_store,
+            Arc::clone(&artifact_store),
             ProcessEnvironment::new(),
         )
         .with_guard_factory(factory_from_config(LimitsConfig::default())),
@@ -291,7 +291,8 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
             executor,
             registry,
         )
-        .with_adapters(adapters),
+        .with_adapters(adapters)
+        .with_artifact_store(Arc::clone(&artifact_store)),
     );
 
     let runtime = McpRuntime::new(service).with_workspace(workspace);
