@@ -71,6 +71,11 @@ const FORBIDDEN_EDGES: &[(&str, &str, &str)] = &[
         "§98.5 adapter may not depend on a store backend",
     ),
     (
+        "debian",
+        "ironmaint-store-sqlite",
+        "§98.5 adapter may not depend on a store backend",
+    ),
+    (
         "ironmaint-mcp",
         "ironmaint-store-sqlite",
         "§98.6 MCP must reach persistence through the runtime",

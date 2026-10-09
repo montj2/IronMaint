@@ -276,7 +276,12 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
     // point: the alternative was a job that silently never left
     // `EventDetected` (doc/DEBT.md D-03).
     let mut adapters = AdapterRegistry::empty();
-    adapters.register(Arc::new(debian_stub::DebianStubAdapter::new()));
+    // 1B.3: the production Debian adapter replaces the Debian stub
+    // in the daemon's adapter registration. The stub stays in the
+    // workspace as a Phase 0 test fixture (the shared conformance
+    // suite still walks it; §101's synthetic scenario uses it).
+    // No production code path may instantiate `DebianStubAdapter`.
+    adapters.register(Arc::new(debian::DebianAdapter::new()));
     adapters.register(Arc::new(fedora_stub::FedoraStubAdapter::new()));
     tracing::info!(
         families = ?adapters.families(),

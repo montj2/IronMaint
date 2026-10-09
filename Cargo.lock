@@ -375,6 +375,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "debian"
+version = "0.1.0"
+dependencies = [
+ "debversion",
+ "ironmaint-adapter-api",
+ "ironmaint-core",
+ "ironmaint-evidence",
+ "ironmaint-policy",
+ "ironmaint-testkit",
+ "time",
+ "url",
+]
+
+[[package]]
 name = "debian-stub"
 version = "0.1.0"
 dependencies = [
@@ -1337,7 +1351,7 @@ name = "ironmaintd"
 version = "0.1.0"
 dependencies = [
  "axum",
- "debian-stub",
+ "debian",
  "fedora-stub",
  "ironmaint-adapter-api",
  "ironmaint-artifacts",
