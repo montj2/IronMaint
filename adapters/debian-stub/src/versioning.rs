@@ -57,23 +57,17 @@ impl VersioningCapability for DebianVersioning {
         left: &PackageVersion,
         right: &PackageVersion,
     ) -> Result<Ordering, AdapterError> {
+        // 1B.2 RED: the comparator is provably insufficient. Any two
+        // valid versions compare Equal. The unit corpus, the dpkg
+        // oracle (gated on `dpkg` availability), and the cross-adapter
+        // tilde-sort test in `version_comparison_differs.rs` all
+        // expect Less/Greater here and go red. The GREEN commit
+        // adopts `debversion` and the tests pass.
         self.validate(left)?;
         self.validate(right)?;
-        let lp = parse(left.as_str());
-        let rp = parse(right.as_str());
-        // Epoch comparison (numeric); absent epoch = 0.
-        match lp.epoch.cmp(&rp.epoch) {
-            Ordering::Equal => {}
-            other => return Ok(other),
-        }
-        // Upstream / debian_revision comparison (bytewise; stub does
-        // not implement dpkg's special lex-order rules — the visible
-        // difference vs Fedora's comparator is what §46 demands).
-        match lp.upstream.cmp(&rp.upstream) {
-            Ordering::Equal => {}
-            other => return Ok(other),
-        }
-        Ok(lp.debian_revision.cmp(&rp.debian_revision))
+        let _lp = parse(left.as_str());
+        let _rp = parse(right.as_str());
+        Ok(Ordering::Equal)
     }
 }
 
