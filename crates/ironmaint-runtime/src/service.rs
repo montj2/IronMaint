@@ -2009,21 +2009,44 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         candidate: &SourceCandidate,
     ) -> Result<Vec<(ToolCapabilityKey, ironmaint_evidence::EvidenceKind, bool)>, RuntimeError>
     {
-        let Some(build) = adapter.build() else {
-            return Ok(Vec::new());
-        };
+        // PHASE-1.md §12: "The runtime aggregates inspection checks
+        // during candidate capture exactly as it already aggregates
+        // build/QA checks." The signature of `handle_materialize_checks`
+        // is unchanged: every capability contributes tuples into the
+        // same stream, and the materialise step doesn't care which
+        // capability each tuple came from. An adapter that advertises
+        // only `SourceInspection` (no build capability) still has its
+        // inspection checks materialised; an adapter that advertises
+        // only `BuildPlanning` still has its build checks materialised
+        // — the early-return on missing `build()` is intentionally
+        // gone, replaced by per-capability `if let Some(...)` blocks
+        // that contribute zero tuples when the capability is absent.
+        let mut out: Vec<(ToolCapabilityKey, ironmaint_evidence::EvidenceKind, bool)> = Vec::new();
         let ctx = ironmaint_adapter_api::contexts::CandidateContext {
             package: candidate.package(),
             candidate,
         };
-        let build_plan = build.build_plan(&ctx).map_err(adapter_error)?;
-        let qa_plan = build.qa_plan(&ctx).map_err(adapter_error)?;
-        Ok(build_plan
-            .checks
-            .into_iter()
-            .chain(qa_plan.checks)
-            .map(|p| (p.key, p.evidence_kind, p.mandatory))
-            .collect())
+        if let Some(build) = adapter.build() {
+            let build_plan = build.build_plan(&ctx).map_err(adapter_error)?;
+            let qa_plan = build.qa_plan(&ctx).map_err(adapter_error)?;
+            out.extend(
+                build_plan
+                    .checks
+                    .into_iter()
+                    .chain(qa_plan.checks)
+                    .map(|p| (p.key, p.evidence_kind, p.mandatory)),
+            );
+        }
+        if let Some(inspection) = adapter.inspection() {
+            let inspection_plan = inspection.inspection_plan(&ctx).map_err(adapter_error)?;
+            out.extend(
+                inspection_plan
+                    .checks
+                    .into_iter()
+                    .map(|p| (p.key, p.evidence_kind, p.mandatory)),
+            );
+        }
+        Ok(out)
     }
 
     /// Ask `adapter`'s policy capability for the obligations this

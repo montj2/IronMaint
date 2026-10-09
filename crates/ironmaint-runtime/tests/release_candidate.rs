@@ -100,6 +100,9 @@ impl DistributionAdapter for SnapshotAdapter {
     fn release(&self) -> Option<&dyn ReleaseCapability> {
         None
     }
+    fn inspection(&self) -> Option<&dyn ironmaint_adapter_api::InspectionCapability> {
+        None
+    }
 }
 
 impl BuildCapability for SnapshotAdapter {

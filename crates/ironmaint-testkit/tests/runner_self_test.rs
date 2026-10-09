@@ -244,6 +244,9 @@ mod local {
             static R: LocalRelease = LocalRelease;
             Some(&R)
         }
+        fn inspection(&self) -> Option<&dyn ironmaint_adapter_api::InspectionCapability> {
+            None
+        }
     }
 }
 
@@ -616,6 +619,14 @@ mod broken {
                     Some(&R)
                 }
             }
+        }
+        fn inspection(&self) -> Option<&dyn ironmaint_adapter_api::InspectionCapability> {
+            // The runner self-test exercises the conformance suite
+            // for the local stub, which does not advertise
+            // `AdapterCapability::SourceInspection` (its
+            // `descriptor.capabilities` is empty by default).
+            // Returning `None` is the contract.
+            None
         }
     }
 }

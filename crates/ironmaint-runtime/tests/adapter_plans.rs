@@ -43,9 +43,10 @@ use std::sync::Arc;
 
 use ironmaint_adapter_api::{
     AdapterCapabilities, AdapterDescriptor, AdapterError, AdapterErrorKind, BuildCapability,
-    BuildPlan, CandidateContext, DistributionAdapter, IssueCapability, ObligationTemplate,
-    PackageModelCapability, PlannedCheck, PolicyCapability, PolicyContext, PolicyPlan, QaPlan,
-    ReleaseCapability, ToolCapabilityKey, VersioningCapability, verdict_from_evidence_status,
+    BuildPlan, CandidateContext, DistributionAdapter, InspectionCapability, InspectionPlan,
+    IssueCapability, ObligationTemplate, PackageModelCapability, PlannedCheck, PolicyCapability,
+    PolicyContext, PolicyPlan, QaPlan, ReleaseCapability, ToolCapabilityKey, VersioningCapability,
+    verdict_from_evidence_status,
 };
 use ironmaint_core::{
     AuthorityId, DistributionFamily, DistributionRef, DistributionRelease, GitHashAlgorithm,
@@ -77,9 +78,11 @@ struct AdapterScript {
     family: Option<String>,
     build_checks: Vec<(&'static str, EvidenceKind, bool)>,
     qa_checks: Vec<(&'static str, EvidenceKind, bool)>,
+    inspection_checks: Vec<(&'static str, EvidenceKind, bool)>,
     obligations: Vec<(ObligationStrength, Applicability, &'static str)>,
     advertise_build: bool,
     advertise_policy: bool,
+    advertise_inspection: bool,
     fail_build: bool,
     fail_policy: bool,
 }
@@ -103,6 +106,12 @@ impl TestAdapter {
     fn with_qa_checks(mut self, checks: Vec<(&'static str, EvidenceKind, bool)>) -> Self {
         self.script.qa_checks = checks;
         self.script.advertise_build = true;
+        self
+    }
+
+    fn with_inspection_checks(mut self, checks: Vec<(&'static str, EvidenceKind, bool)>) -> Self {
+        self.script.inspection_checks = checks;
+        self.script.advertise_inspection = true;
         self
     }
 
@@ -179,6 +188,13 @@ impl DistributionAdapter for TestAdapter {
     fn release(&self) -> Option<&dyn ReleaseCapability> {
         None
     }
+    fn inspection(&self) -> Option<&dyn ironmaint_adapter_api::InspectionCapability> {
+        if self.script.advertise_inspection {
+            Some(self)
+        } else {
+            None
+        }
+    }
 }
 
 impl BuildCapability for TestAdapter {
@@ -206,6 +222,17 @@ impl BuildCapability for TestAdapter {
         let mut plan = QaPlan::new();
         for (key, kind, mandatory) in &self.script.qa_checks {
             plan = plan.with_check(PlannedCheck::new(tool_key(key), kind.clone(), *mandatory));
+        }
+        Ok(plan)
+    }
+}
+
+impl InspectionCapability for TestAdapter {
+    fn inspection_plan(&self, _ctx: &CandidateContext<'_>) -> Result<InspectionPlan, AdapterError> {
+        let mut plan = InspectionPlan::empty();
+        for (key, kind, mandatory) in &self.script.inspection_checks {
+            plan.checks
+                .push(PlannedCheck::new(tool_key(key), kind.clone(), *mandatory));
         }
         Ok(plan)
     }
@@ -445,6 +472,79 @@ async fn capture_materialises_exactly_the_adapters_planned_checks() {
     );
     let mandatory: Vec<bool> = checks.iter().map(|c| c.mandatory).collect();
     assert!(mandatory.contains(&true) && mandatory.contains(&false));
+}
+
+#[tokio::test]
+async fn capture_materialises_inspection_checks_alongside_build_and_qa() {
+    // PHASE-1.md §12: "The runtime aggregates inspection checks
+    // during candidate capture exactly as it already aggregates
+    // build/QA checks." This test pins that contract: when the
+    // adapter advertises `SourceInspection` (gated by
+    // `advertise_inspection` in `TestAdapter`) and returns an
+    // `InspectionPlan` with one or more `PlannedCheck` records,
+    // those records appear in the same materialised set as the
+    // build/QA plans — the runtime doesn't distinguish "this came
+    // from `inspection_plan`" at the materialise step. The
+    // evidence-kind field on each `PlannedCheck` is what puts the
+    // check on the right gate; `SourcePreparation` and
+    // `SourceIntegrity` map to gates that exist today.
+    let store = Arc::new(MockStore::new());
+    let adapter = TestAdapter::default()
+        .with_build_checks(vec![("test.build.compile", EvidenceKind::Build, true)])
+        .with_qa_checks(vec![("test.qa.lint", EvidenceKind::PackageQa, true)])
+        .with_inspection_checks(vec![
+            (
+                "test.inspect.source_walk",
+                EvidenceKind::SourcePreparation,
+                true,
+            ),
+            (
+                "test.inspect.source_verify",
+                EvidenceKind::SourceIntegrity,
+                false,
+            ),
+        ]);
+    let svc = build_service(store.clone(), registry_with(adapter));
+    let job_id = create_job(&svc).await;
+
+    capture(&svc, job_id, "1.0.0").await;
+
+    let checks = checks_for(&store, job_id).await;
+    let mut keys: Vec<&str> = checks.iter().map(|c| c.capability.as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        vec![
+            "test.build.compile",
+            "test.inspect.source_verify",
+            "test.inspect.source_walk",
+            "test.qa.lint",
+        ],
+        "inspection checks must materialise alongside build/qa checks in the same set"
+    );
+}
+
+#[tokio::test]
+async fn capture_without_inspection_capability_does_not_add_inspection_checks() {
+    // Negative control: when the adapter's `inspection()` returns
+    // `None` (the Debian stub case), the materialised set is
+    // exactly the build + qa plan — no inspection tuples leak in
+    // from somewhere else. This pins the "adapters that don't
+    // advertise SourceInspection contribute zero inspection
+    // tuples" half of §12.
+    let store = Arc::new(MockStore::new());
+    let adapter = TestAdapter::default()
+        .with_build_checks(vec![("test.build.compile", EvidenceKind::Build, true)])
+        .with_qa_checks(vec![("test.qa.lint", EvidenceKind::PackageQa, true)]);
+    let svc = build_service(store.clone(), registry_with(adapter));
+    let job_id = create_job(&svc).await;
+
+    capture(&svc, job_id, "1.0.0").await;
+
+    let checks = checks_for(&store, job_id).await;
+    let mut keys: Vec<&str> = checks.iter().map(|c| c.capability.as_str()).collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["test.build.compile", "test.qa.lint"]);
 }
 
 #[tokio::test]
