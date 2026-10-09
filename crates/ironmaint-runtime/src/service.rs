@@ -134,6 +134,15 @@ pub struct RuntimeService<S: IronMaintStore + ?Sized, E: Executor + ?Sized> {
     executor: Arc<E>,
     registry: Arc<ToolRegistry>,
     adapters: AdapterRegistry,
+    /// Artifact store for binding normalized tool output to
+    /// Evidence rows as `Report` artifacts (PHASE-1.md §31).
+    /// `None` means the runtime was constructed without a
+    /// writable on-disk artifact root; the runtime then records
+    /// Evidence rows without an attached artifact, and the
+    /// `evidence.artifact.read` MCP tool (1A.4) cannot serve
+    /// the missing report. The production daemon always wires
+    /// this; tests may omit it.
+    artifacts: Option<Arc<ironmaint_artifacts::ArtifactStore>>,
 }
 
 impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> std::fmt::Debug for RuntimeService<S, E> {
@@ -156,7 +165,24 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             executor,
             registry,
             adapters: AdapterRegistry::empty(),
+            artifacts: None,
         }
+    }
+
+    /// Attach the on-disk artifact store used to bind
+    /// `ResultNormalizer` output to Evidence rows as `Report`
+    /// artifacts (PHASE-1.md §31). Builder-style, like
+    /// [`Self::with_adapters`], so existing construction sites
+    /// (every test) do not need to spell out
+    /// `Arc::new(ArtifactStore::open(...))` only to leave it
+    /// unused.
+    #[must_use]
+    pub fn with_artifact_store(
+        mut self,
+        artifacts: Arc<ironmaint_artifacts::ArtifactStore>,
+    ) -> Self {
+        self.artifacts = Some(artifacts);
+        self
     }
 
     /// Attach a distribution adapter registry, the PHASE-0B.md
@@ -2444,8 +2470,55 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         // outcomes, not infrastructure problems) and lifts
         // InfrastructureFailed into the dedicated evidence status so
         // gate evaluation can react accordingly.
-        let outcome =
-            forced_outcome.unwrap_or_else(|| ironmaint_executor::outcome_from_record(&record));
+        //
+        // PHASE-1.md §7: a tool that declares a `ResultNormalizer`
+        // is authoritative — the normalizer's `evidence_status`
+        // drives the Evidence row, not the exit-code fallback. A
+        // `NormalizationError` is a tool-level outcome (the tool
+        // emitted something the runtime could not classify), so it
+        // becomes `Fail` with the producer tagged `#normalizer-error`
+        // — distinct from the executor-error tag below, so an
+        // operator can tell them apart. The normalizer is **not**
+        // consulted when the executor never reached the tool
+        // (`forced_outcome` is set): there is no `ExecutionRecord`
+        // to normalise in that branch, and pretending the
+        // normalizer ran would let a missing tool look like a
+        // passing one.
+        //
+        // The `normalized` value is `Some(result)` when the
+        // normalizer was consulted and accepted the record; the
+        // runtime uses `r.evidence_status` directly and binds the
+        // recorded stdout to the Evidence row as a `Report`
+        // artifact (PHASE-1.md §31 — "store it as a report
+        // artifact"). When the normalizer was not consulted (no
+        // `ResultNormalizer` on the tool, or `forced_outcome`
+        // set) the value is `None` and the existing exit-code
+        // mapping runs.
+        // RED (broken-then-fixed for 1A.3, see the follow-up
+        // commit). The runtime has been carrying
+        // `Option<Arc<dyn ResultNormalizer>>` on every tool
+        // since PHASE-0B.4 but has never consulted it. This
+        // block is the pre-1A.3 form: every record is
+        // classified by `outcome_from_record` regardless of
+        // whether the tool declared a normalizer. The
+        // `normalized` and `normalizer_failure_note` values
+        // are forced to `None` so the downstream code falls
+        // back to today's behavior; the GREEN commit
+        // replaces this with the precedence
+        // `forced_outcome > normalizer > outcome_from_record`
+        // mapping.
+        let outcome = match forced_outcome {
+            Some(o) => o,
+            None => ironmaint_executor::outcome_from_record(&record),
+        };
+        // RED placeholder bindings; the GREEN commit assigns
+        // them from the normalizer invocation.
+        let _normalized: Option<ironmaint_executor::NormalizedResult> = None;
+        let _normalizer_failure_note: Option<String> = None;
+
+        // Map `Outcome` to `EvidenceStatus` after the precedence
+        // resolution above, so there is exactly one mapping site
+        // regardless of which path selected the outcome.
         let outcome_status = match outcome {
             ironmaint_executor::Outcome::Pass => ironmaint_evidence::EvidenceStatus::Pass,
             ironmaint_executor::Outcome::Fail => ironmaint_evidence::EvidenceStatus::Fail,
@@ -2456,13 +2529,24 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             }
         };
 
+        // RED (broken-then-fixed for 1A.3, see the follow-up
+        // commit). The runtime has been carrying
+        // `Option<Arc<dyn ResultNormalizer>>` on every tool
+        // since PHASE-0B.4 but has never consulted it. This
+        // block is the pre-1A.3 form: no normalizer invocation,
+        // no report binding. The GREEN commit replaces this
+        // with the precedence
+        // `forced_outcome > normalizer > outcome_from_record`
+        // mapping and binds the report artifact.
+        let _report_artifact: Option<ironmaint_evidence::ArtifactRef> = None;
+
         let now = self.clock.now_utc();
         let scope = EvidenceScope::Candidate(fingerprint.clone());
-        // When the record was synthesised rather than produced by a
-        // real process, tag the producer so a timeout is
-        // distinguishable from the tool legitimately exiting
-        // non-zero. Both map to `Fail`, so this is the only signal
-        // that separates them.
+        // Tag the producer so a timeout is distinguishable
+        // from the tool legitimately exiting non-zero. Both
+        // map to `Fail`, so this is the only signal that
+        // separates them. The GREEN commit adds a third tag
+        // for `NormalizationError`.
         let producer_name = match forced_outcome {
             Some(_) => format!("{}#executor-error", cap_key.as_str()),
             None => cap_key.as_str().to_string(),
@@ -2470,6 +2554,7 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         let producer = EvidenceProducer::new(producer_name);
         // PHASE-0B.md §15: evidence rows must explicitly record
         // `truncated = true` when the executor bounded stdout/stderr.
+        let truncated = record.truncated;
         let evidence = Evidence::new(
             fingerprint.clone(),
             check.evidence_kind.clone(),
@@ -2478,7 +2563,7 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             scope,
             now,
         )
-        .with_truncated(record.truncated);
+        .with_truncated(truncated);
 
         self.store
             .put_evidence(&evidence, job_id)
