@@ -74,6 +74,7 @@ use syn::spanned::Spanned;
 
 use crate::seams::{
     actions::ActionsCheck,
+    adapters::AdaptersCheck,
     commands::{CheckOutcome, CommandsCheck},
     events::EventsCheck,
     reachability::ReachabilityCheck,
@@ -81,6 +82,7 @@ use crate::seams::{
 };
 
 mod actions;
+mod adapters;
 mod commands;
 mod events;
 mod reachability;
@@ -159,14 +161,15 @@ pub fn run() -> Result<Report, Box<dyn Error>> {
     let files = collect_source_files(&root)?;
     let mut report = Report::default();
 
-    // One walk, five checks. S2 and S8 read the same sources as the rest; only
-    // part of each comes from the tree, and that part is the part that needs
-    // reading.
+    // One walk, six checks. S2, S6, and S8 read the same sources as the
+    // rest; only part of each comes from the tree, and that part is the
+    // part that needs reading.
     let outcomes = [
         ("S1", CommandsCheck::run(&files)),
         ("S2", ActionsCheck::run(&files)),
         ("S4", EventsCheck::run(&files)),
         ("S5", StoresCheck::run(&files)),
+        ("S6", AdaptersCheck::run(&files)),
         ("S8", ReachabilityCheck::run(&files)),
     ];
     for (name, outcome) in outcomes {

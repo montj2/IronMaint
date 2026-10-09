@@ -1,0 +1,25 @@
+[package]
+name = "debian"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Production DistributionAdapter for Debian (PHASE-1 §10). 1B.3: real Debian version semantics, real package-name validation, InspectionCapability, read-only IssueCapability. Does not yet advertise build/QA/release/issue-write/publication."
+
+[dependencies]
+ironmaint-adapter-api = { path = "../../crates/ironmaint-adapter-api" }
+ironmaint-core = { path = "../../crates/ironmaint-core" }
+ironmaint-evidence = { path = "../../crates/ironmaint-evidence" }
+ironmaint-policy = { path = "../../crates/ironmaint-policy" }
+debversion = { workspace = true }
+
+[dev-dependencies]
+ironmaint-testkit = { path = "../../crates/ironmaint-testkit" }
+time = { workspace = true, features = ["macros"] }
+url = { workspace = true }
+
+[lints]
+workspace = true
