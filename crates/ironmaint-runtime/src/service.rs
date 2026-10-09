@@ -59,6 +59,39 @@ pub enum QueryResult {
     Operation(PrivilegedOperation),
     /// The §42 snapshot for a job's active candidate.
     ReleaseCandidate(ironmaint_policy::ReleaseCandidate),
+    /// PHASE-1.md §31 — `evidence.list`. A list of `Evidence`
+    /// rows for one job (optionally narrowed to one candidate
+    /// fingerprint).
+    EvidenceList(Vec<ironmaint_evidence::Evidence>),
+    /// PHASE-1.md §31 — `evidence.get`. A single `Evidence`
+    /// row, looked up by id.
+    Evidence(ironmaint_evidence::Evidence),
+    /// PHASE-1.md §31 — `evidence.artifact.read`. The bytes
+    /// of a `Report` artifact bound to an `Evidence` row,
+    /// plus the artifact's declared `media_type`. The bytes
+    /// are wrapped in `ArtifactBytes` so the schema can pin
+    /// the encoding (base64) at the wire boundary.
+    EvidenceArtifact(ArtifactBytes),
+}
+
+/// One artifact's bytes as the runtime returns them to a
+/// query caller.
+///
+/// `bytes` is the raw artifact payload (the on-disk
+/// content). The MCP transport carries it as base64 inside
+/// JSON, so the `MediaType` is what the wire contract
+/// promises to a client; the `bytes` field here is the
+/// already-decoded form, and a future non-JSON transport
+/// (gRPC, raw HTTP) would not need to re-encode.
+///
+/// `Digest` is the artifact's content-addressed identity,
+/// included so a caller can confirm the on-the-wire bytes
+/// are the bytes the runtime stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactBytes {
+    pub digest: ironmaint_core::Digest,
+    pub media_type: Option<String>,
+    pub bytes: Vec<u8>,
 }
 
 /// Why `TransitionContext::infrastructure_blocked` is hardcoded
@@ -330,6 +363,24 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             RuntimeQuery::GetReleaseCandidate { job_id } => {
                 self.get_release_candidate_for_job(job_id).await
             }
+            // PHASE-1.md §31 — 1A.4 stubs. The GREEN commit
+            // replaces these with real handlers that consult
+            // the store and (for `ReadEvidenceArtifact`) the
+            // on-disk artifact store. Until then the runtime
+            // rejects the queries with a typed error, which is
+            // what the broken-then-fixed tests assert against.
+            RuntimeQuery::ListEvidence { .. } => Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidInput,
+                "evidence.list is not yet wired (1A.4 RED stub)",
+            )),
+            RuntimeQuery::GetEvidence { .. } => Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidInput,
+                "evidence.get is not yet wired (1A.4 RED stub)",
+            )),
+            RuntimeQuery::ReadEvidenceArtifact { .. } => Err(RuntimeError::new(
+                RuntimeErrorKind::InvalidInput,
+                "evidence.artifact.read is not yet wired (1A.4 RED stub)",
+            )),
         }
     }
 

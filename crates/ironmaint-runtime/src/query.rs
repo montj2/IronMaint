@@ -1,6 +1,6 @@
 //! Runtime queries (read-only).
 
-use ironmaint_core::{CheckId, JobId, OperationId};
+use ironmaint_core::{ArtifactId, CandidateFingerprint, CheckId, EvidenceId, JobId, OperationId};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -40,5 +40,36 @@ pub enum RuntimeQuery {
     /// one has been assembled at all.
     GetReleaseCandidate {
         job_id: JobId,
+    },
+    /// PHASE-1.md §31 — the `evidence.list` MCP tool. List
+    /// `Evidence` rows for a job, optionally narrowed to one
+    /// candidate fingerprint. The job_id is required so a
+    /// caller can never enumerate evidence across jobs
+    /// without explicitly naming them; the optional
+    /// fingerprint is a second scope check, not a way to
+    /// widen.
+    ListEvidence {
+        job_id: JobId,
+        candidate_fingerprint: Option<CandidateFingerprint>,
+    },
+    /// PHASE-1.md §31 — the `evidence.get` MCP tool. Read a
+    /// single `Evidence` row by its `EvidenceId`. The
+    /// runtime resolves the id and returns the row verbatim.
+    GetEvidence {
+        evidence_id: EvidenceId,
+    },
+    /// PHASE-1.md §31 — the `evidence.artifact.read` MCP
+    /// tool. Read the bytes of a `Report` artifact bound to
+    /// a specific `Evidence` row. The runtime looks the
+    /// `ArtifactRef` up on the row, validates that the
+    /// caller named a real `ArtifactId` and not an
+    /// arbitrary digest, and returns the on-disk bytes
+    /// through the artifact store. The MCP layer receives
+    /// the bytes as base64 in a JSON object alongside the
+    /// artifact's declared `media_type` (PHASE-0B.md §15:
+    /// artifact refs carry the type, not just the digest).
+    ReadEvidenceArtifact {
+        evidence_id: EvidenceId,
+        artifact_id: ArtifactId,
     },
 }
