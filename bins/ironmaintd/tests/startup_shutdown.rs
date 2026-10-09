@@ -448,7 +448,13 @@ async fn the_daemon_advertises_every_tool_the_server_registers() {
     // (0B.10 C2), exists because an agent that lands in
     // `HumanReviewRequired` otherwise has no way out; the eleventh,
     // `release.candidate.create` (0B.10 C5), exists because §101
-    // steps 26-27 are not expressible without it.
+    // steps 26-27 are not expressible without it. The twelfth,
+    // thirteenth, and fourteenth — `evidence.list`, `evidence.get`,
+    // and `evidence.artifact.read` (PHASE-1.md §31 / PR 1A.4) —
+    // exist because 1A.3 writes `Evidence` rows with bound report
+    // artifacts, and an MCP client that ran `check.run` needs a way
+    // to read them back; without these the §31 exit-checkpoint
+    // ("have an MCP client read the report") is unmet.
     //
     // The e2e script hardcodes the same list. A missing tool here is
     // the exact failure that made `ironclaw-e2e.sh` unrunnable.
@@ -472,6 +478,9 @@ async fn the_daemon_advertises_every_tool_the_server_registers() {
         vec![
             "candidate.capture",
             "check.run",
+            "evidence.artifact.read",
+            "evidence.get",
+            "evidence.list",
             "job.create",
             "job.get",
             "job.next_actions",

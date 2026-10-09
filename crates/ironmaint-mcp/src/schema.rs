@@ -128,6 +128,34 @@ pub fn generate_all_schemas() -> BTreeMap<McpToolName, (Value, Value)> {
             serde_json::to_value(schema_for!(tools::release::CreateOutput)).unwrap_or(Value::Null),
         ),
     );
+    // PHASE-1.md §31 — the read-only evidence tools. 1A.3 wrote the
+    // `Evidence` rows; 1A.4 adds the read side, addressed through the
+    // runtime (PHASE-0B §98.6) so the MCP layer never holds a store
+    // handle. These are the tools the §31 exit-checkpoint from 1A.3
+    // names ("have an MCP client read the report").
+    out.insert(
+        McpToolName("evidence.list".to_string()),
+        (
+            serde_json::to_value(schema_for!(tools::evidence::ListInput)).unwrap_or(Value::Null),
+            serde_json::to_value(schema_for!(tools::evidence::ListOutput)).unwrap_or(Value::Null),
+        ),
+    );
+    out.insert(
+        McpToolName("evidence.get".to_string()),
+        (
+            serde_json::to_value(schema_for!(tools::evidence::GetInput)).unwrap_or(Value::Null),
+            serde_json::to_value(schema_for!(tools::evidence::GetOutput)).unwrap_or(Value::Null),
+        ),
+    );
+    out.insert(
+        McpToolName("evidence.artifact.read".to_string()),
+        (
+            serde_json::to_value(schema_for!(tools::evidence::ReadArtifactInput))
+                .unwrap_or(Value::Null),
+            serde_json::to_value(schema_for!(tools::evidence::ReadArtifactOutput))
+                .unwrap_or(Value::Null),
+        ),
+    );
     out
 }
 
@@ -175,6 +203,26 @@ pub fn tool_description(name: &str) -> Option<&'static str> {
         "release.candidate.create" => {
             "Assemble the release-candidate snapshot of the job's active candidate: the \
              gates and obligations it was validated against. Publishes nothing."
+        }
+        // PHASE-1.md §31 — the read-only evidence tools. 1A.4 closes
+        // the §31 exit-checkpoint from 1A.3 ("have an MCP client
+        // read the report") by giving agents a way to fetch the
+        // evidence rows and report bytes the run produced.
+        "evidence.list" => {
+            "List every evidence row attached to a job, optionally narrowed to one \
+             candidate fingerprint. Read-only; the runtime owns the rows."
+        }
+        "evidence.get" => {
+            "Read one evidence row by its id. Returns the durable form an MCP client \
+             can render, including the bound artifact references."
+        }
+        "evidence.artifact.read" => {
+            "Read the bytes of one report artifact bound to a specific evidence row. \
+             Returns the bytes base64-encoded under `bytes_base64` with the \
+             `media_type` the artifact was stored with. The runtime refuses to serve \
+             bytes for an `artifact_id` the named evidence row does not reference, so \
+             the tool exposes the bytes of that evidence row's artifacts, not an \
+             arbitrary digest."
         }
         _ => return None,
     })
@@ -370,13 +418,22 @@ mod tests {
         //   `ironmaint_obligation_list`; the snapshot is the join of
         //   those two, so withholding the join while handing over
         //   its parts would be backwards.
+        // - the twelfth, thirteenth, and fourteenth
+        //   (`evidence.list`, `evidence.get`,
+        //   `evidence.artifact.read`, PHASE-1.md §31 / PR 1A.4):
+        //   1A.3 writes `Evidence` rows with bound report artifacts.
+        //   The §31 exit-checkpoint names "have an MCP client read
+        //   the report" — the only way to read it is through these
+        //   three tools. The runtime is the only place that holds
+        //   the store handle (PHASE-0B §98.6); these are the read
+        //   side.
         //
         // The original note here said a tenth "would be a scope
         // change and a client-compatibility question, so it should
         // be a deliberate edit to this assertion, not a surprise."
-        // That was right about the process and both of these are
+        // That was right about the process and all of these are
         // deliberate edits. The guard stays: the next tool should
         // have to come through here too.
-        assert_eq!(tool_names().len(), 11);
+        assert_eq!(tool_names().len(), 14);
     }
 }

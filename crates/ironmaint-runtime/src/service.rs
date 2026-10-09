@@ -59,6 +59,39 @@ pub enum QueryResult {
     Operation(PrivilegedOperation),
     /// The §42 snapshot for a job's active candidate.
     ReleaseCandidate(ironmaint_policy::ReleaseCandidate),
+    /// PHASE-1.md §31 — `evidence.list`. A list of `Evidence`
+    /// rows for one job (optionally narrowed to one candidate
+    /// fingerprint).
+    EvidenceList(Vec<ironmaint_evidence::Evidence>),
+    /// PHASE-1.md §31 — `evidence.get`. A single `Evidence`
+    /// row, looked up by id.
+    Evidence(ironmaint_evidence::Evidence),
+    /// PHASE-1.md §31 — `evidence.artifact.read`. The bytes
+    /// of a `Report` artifact bound to an `Evidence` row,
+    /// plus the artifact's declared `media_type`. The bytes
+    /// are wrapped in `ArtifactBytes` so the schema can pin
+    /// the encoding (base64) at the wire boundary.
+    EvidenceArtifact(ArtifactBytes),
+}
+
+/// One artifact's bytes as the runtime returns them to a
+/// query caller.
+///
+/// `bytes` is the raw artifact payload (the on-disk
+/// content). The MCP transport carries it as base64 inside
+/// JSON, so the `MediaType` is what the wire contract
+/// promises to a client; the `bytes` field here is the
+/// already-decoded form, and a future non-JSON transport
+/// (gRPC, raw HTTP) would not need to re-encode.
+///
+/// `Digest` is the artifact's content-addressed identity,
+/// included so a caller can confirm the on-the-wire bytes
+/// are the bytes the runtime stored.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArtifactBytes {
+    pub digest: ironmaint_core::Digest,
+    pub media_type: Option<String>,
+    pub bytes: Vec<u8>,
 }
 
 /// Why `TransitionContext::infrastructure_blocked` is hardcoded
@@ -329,6 +362,112 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             }
             RuntimeQuery::GetReleaseCandidate { job_id } => {
                 self.get_release_candidate_for_job(job_id).await
+            }
+            // PHASE-1.md §31 — `evidence.list`. The
+            // job_id is required so a caller can never
+            // enumerate evidence across jobs without
+            // explicitly naming them; the optional
+            // `candidate_fingerprint` is a second scope
+            // check (filter, not widen).
+            RuntimeQuery::ListEvidence {
+                job_id,
+                candidate_fingerprint,
+            } => {
+                let mut rows = self
+                    .store
+                    .list_evidence_for_job(job_id)
+                    .await
+                    .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+                if let Some(fp) = candidate_fingerprint {
+                    rows.retain(|e| e.candidate == fp);
+                }
+                Ok(QueryResult::EvidenceList(rows))
+            }
+            // PHASE-1.md §31 — `evidence.get`. A
+            // `StoreErrorKind::NotFound` is mapped to
+            // `InvalidInput` so the MCP layer returns a
+            // typed "no such evidence id" error to the
+            // caller; everything else is a `Store`
+            // error.
+            RuntimeQuery::GetEvidence { evidence_id } => {
+                let evidence =
+                    self.store
+                        .get_evidence(evidence_id)
+                        .await
+                        .map_err(|e| match e.kind() {
+                            ironmaint_store::StoreErrorKind::NotFound => RuntimeError::new(
+                                RuntimeErrorKind::InvalidInput,
+                                format!("unknown evidence id {evidence_id}"),
+                            ),
+                            _ => RuntimeError::new(RuntimeErrorKind::Store, e.to_string()),
+                        })?;
+                Ok(QueryResult::Evidence(evidence))
+            }
+            // PHASE-1.md §31 — `evidence.artifact.read`.
+            // Look the row up, find the matching
+            // `ArtifactRef` (refuse a wrong `artifact_id`
+            // with `InvalidInput`), refuse if the runtime
+            // has no `ArtifactStore` configured, then
+            // call `store.get(&digest)` and return the
+            // bytes wrapped in `QueryResult::EvidenceArtifact`.
+            RuntimeQuery::ReadEvidenceArtifact {
+                evidence_id,
+                artifact_id,
+            } => {
+                let evidence =
+                    self.store
+                        .get_evidence(evidence_id)
+                        .await
+                        .map_err(|e| match e.kind() {
+                            ironmaint_store::StoreErrorKind::NotFound => RuntimeError::new(
+                                RuntimeErrorKind::InvalidInput,
+                                format!("unknown evidence id {evidence_id}"),
+                            ),
+                            _ => RuntimeError::new(RuntimeErrorKind::Store, e.to_string()),
+                        })?;
+                let artifact_ref = evidence
+                    .artifacts
+                    .iter()
+                    .find(|a| a.id == artifact_id)
+                    .ok_or_else(|| {
+                        RuntimeError::new(
+                            RuntimeErrorKind::InvalidInput,
+                            format!("evidence {evidence_id} has no artifact with id {artifact_id}"),
+                        )
+                    })?;
+                let store = self.artifacts.as_ref().ok_or_else(|| {
+                    RuntimeError::new(
+                        RuntimeErrorKind::InvalidInput,
+                        "evidence.artifact.read: runtime has no artifact store configured"
+                            .to_string(),
+                    )
+                })?;
+                // The artifact store's `get` takes
+                // `&Sha256Hex`, not `&Digest`. Convert
+                // the typed `Digest` to its hex form
+                // and validate it as a `Sha256Hex`.
+                // `Digest::algorithm` is `Sha256` here
+                // by construction (the runtime only
+                // stores `Report` artifacts under
+                // SHA-256), so any other algorithm
+                // would be a store invariant violation.
+                let hex = artifact_ref.digest.value.clone();
+                let sha256_hex =
+                    ironmaint_artifacts::hash::Sha256Hex::from_hex(&hex).ok_or_else(|| {
+                        RuntimeError::new(
+                            RuntimeErrorKind::Store,
+                            format!("artifact digest {hex} is not a valid SHA-256 hex string"),
+                        )
+                    })?;
+                let bytes = store
+                    .get(&sha256_hex)
+                    .await
+                    .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+                Ok(QueryResult::EvidenceArtifact(ArtifactBytes {
+                    digest: artifact_ref.digest.clone(),
+                    media_type: artifact_ref.media_type.clone(),
+                    bytes,
+                }))
             }
         }
     }

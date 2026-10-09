@@ -84,7 +84,7 @@ INIT_STATUS="${INIT##*$'\n'}"
 [[ "$INIT_STATUS" == "200" ]] || die "initialize returned HTTP $INIT_STATUS: $INIT_BODY" 1
 [[ "$INIT_BODY" == *'"protocolVersion"'* ]] || die "initialize returned no protocolVersion: $INIT_BODY" 1
 
-# 3. The eleven-tool surface (§94).
+# 3. The fourteen-tool surface (§94 + PHASE-1.md §31).
 TOOLS="$(rpc '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}')"
 TOOLS_BODY="${TOOLS%$'\n'*}"
 TOOLS_STATUS="${TOOLS##*$'\n'}"
@@ -92,16 +92,19 @@ TOOLS_STATUS="${TOOLS##*$'\n'}"
 
 for tool in job.create job.get job.next_actions job.reconcile job.resume \
             candidate.capture check.run workspace.apply_patch \
-            workspace.stat operation.get release.candidate.create; do
+            workspace.stat operation.get release.candidate.create \
+            evidence.list evidence.get evidence.artifact.read; do
     [[ "$TOOLS_BODY" == *"\"$tool\""* ]] \
         || die "tools/list does not advertise $tool: $TOOLS_BODY" 1
 done
 # §94 enumerates tool capabilities, not a count, so the tenth tool
-# (`job.resume`, 0B.10 C2) and the eleventh (`release.candidate.create`,
-# 0B.10 C5) are spec-compatible. The count is still pinned so a tool
-# disappearing is caught here rather than at first use.
+# (`job.resume`, 0B.10 C2), the eleventh (`release.candidate.create`,
+# 0B.10 C5), and the twelfth–fourteenth (`evidence.list`, `evidence.get`,
+# `evidence.artifact.read`, PHASE-1.md §31 / PR 1A.4) are
+# spec-compatible. The count is still pinned so a tool disappearing
+# is caught here rather than at first use.
 TOOL_COUNT="$(printf '%s' "$TOOLS_BODY" | json result.tools | python3 -c 'import json,sys; print(len(json.load(sys.stdin)))')"
-[[ "$TOOL_COUNT" == "11" ]] || die "expected 11 tools, got $TOOL_COUNT" 1
+[[ "$TOOL_COUNT" == "14" ]] || die "expected 14 tools, got $TOOL_COUNT" 1
 
 # 4. job.create -> job.get round-trip, over the wire.
 CREATED="$(rpc '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"job.create","arguments":{"orchestrator":{"kind":"ironclaw"},"package":{"distribution":{"family":"debian","release":"sid"},"source_name":"ironclaw-e2e-probe","binary_names":[]}}}}' | sed '$d')"

@@ -270,7 +270,12 @@ async fn tools_list_advertises_exactly_the_ten_known_tools() {
     advertised.sort();
     expected.sort();
     assert_eq!(advertised, expected);
-    assert_eq!(advertised.len(), 11);
+    // 1A.4 (PHASE-1.md §31) added `evidence.list`, `evidence.get`,
+    // and `evidence.artifact.read`, taking the surface from 11 to
+    // 14. The set-equality check above is the strong form: this
+    // count check is the one that fails loudly if a new tool is
+    // added but the snapshot is not refreshed.
+    assert_eq!(advertised.len(), 14);
     h.stop();
 }
 

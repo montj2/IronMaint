@@ -1,0 +1,104 @@
+[
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "description": "`evidence.artifact.read` input.\n\nThe `artifact_id` is the `ArtifactRef::id` of one of the artifacts bound to the named `evidence_id`. The runtime refuses to serve bytes for an `artifact_id` the named evidence row does not reference, so the tool exposes the bytes of *that evidence row's* artifacts, not an arbitrary digest.",
+    "properties": {
+      "artifact_id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "evidence_id": {
+        "format": "uuid",
+        "type": "string"
+      }
+    },
+    "required": [
+      "artifact_id",
+      "evidence_id"
+    ],
+    "title": "ReadArtifactInput",
+    "type": "object"
+  },
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "Digest": {
+        "description": "Content digest: `{ algorithm, hex_value }`.\n\n`value` must be the lowercase (or uppercase) hexadecimal string of length matching `algorithm.hex_length()`. Both cases are accepted at construction; the canonical lowercase form is stored.",
+        "properties": {
+          "algorithm": {
+            "$ref": "#/definitions/DigestAlgorithm"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "algorithm",
+          "value"
+        ],
+        "type": "object"
+      },
+      "DigestAlgorithm": {
+        "description": "Digest algorithm used by [`Digest`].",
+        "oneOf": [
+          {
+            "description": "BLAKE3-256. Default for `CandidateFingerprint` (PHASE-0A.md §12).",
+            "enum": [
+              "blake3"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "SHA-256. Default for artifact digests (PHASE-0A.md §11).",
+            "enum": [
+              "sha256"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Git SHA-1. Preserved when a digest points at a Git object address from a legacy SHA-1 repository.",
+            "enum": [
+              "git_sha1"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Git SHA-256. Preserved when a digest points at a Git object address from a SHA-256 repository.",
+            "enum": [
+              "git_sha256"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "`evidence.artifact.read` output: the bytes of one artifact plus the `media_type` the artifact was stored with.\n\n`bytes_base64` is the artifact payload encoded as standard base64 (RFC 4648, no URL-safe alphabet, no line wrapping). Clients decoding into a structured report (the only kind the runtime currently stores) should treat the result as a UTF-8 JSON document.",
+    "properties": {
+      "bytes_base64": {
+        "description": "The artifact bytes, base64-encoded.",
+        "type": "string"
+      },
+      "digest": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/Digest"
+          }
+        ],
+        "description": "The artifact's content-addressed identity, round-tripped so a client can confirm the on-the-wire bytes are the bytes the runtime stored."
+      },
+      "media_type": {
+        "description": "The `media_type` declared on the `ArtifactRef` at write time (PHASE-0B.md §15). `None` if the producer did not declare one — the tool passes the absence through rather than guessing.",
+        "type": [
+          "string",
+          "null"
+        ]
+      }
+    },
+    "required": [
+      "bytes_base64",
+      "digest"
+    ],
+    "title": "ReadArtifactOutput",
+    "type": "object"
+  }
+]
