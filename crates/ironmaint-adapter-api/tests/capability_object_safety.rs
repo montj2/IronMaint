@@ -6,8 +6,8 @@
 //! the root trait returns `&dyn Capability` for each one.
 
 use ironmaint_adapter_api::{
-    BuildCapability, DistributionAdapter, IssueCapability, PackageModelCapability,
-    PolicyCapability, ReleaseCapability, VersioningCapability,
+    BuildCapability, DistributionAdapter, InspectionCapability, IssueCapability,
+    PackageModelCapability, PolicyCapability, ReleaseCapability, VersioningCapability,
 };
 
 /// Each `fn accepts(_: &dyn Trait)` body must compile. If any
@@ -37,6 +37,7 @@ fn capability_traits_are_dyn_safe() {
     fn build(_: &dyn BuildCapability) {}
     fn issue(_: &dyn IssueCapability) {}
     fn release(_: &dyn ReleaseCapability) {}
+    fn inspection(_: &dyn InspectionCapability) {}
     fn root(_: &dyn DistributionAdapter) {}
 
     let _: fn(&dyn VersioningCapability) = versioning;
@@ -45,5 +46,6 @@ fn capability_traits_are_dyn_safe() {
     let _: fn(&dyn BuildCapability) = build;
     let _: fn(&dyn IssueCapability) = issue;
     let _: fn(&dyn ReleaseCapability) = release;
+    let _: fn(&dyn InspectionCapability) = inspection;
     let _: fn(&dyn DistributionAdapter) = root;
 }

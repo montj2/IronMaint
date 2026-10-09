@@ -37,6 +37,7 @@ pub mod build;
 pub mod contexts;
 pub mod descriptor;
 pub mod error;
+pub mod inspection;
 pub mod issues;
 pub mod package_model;
 pub mod policy_port;
@@ -48,6 +49,7 @@ pub use build::{BuildCapability, BuildPlan, PlannedCheck, QaPlan};
 pub use contexts::{CandidateContext, PolicyContext, PublicationContext, ReleaseContext};
 pub use descriptor::{AdapterCapabilities, AdapterCapability, AdapterDescriptor};
 pub use error::{AdapterError, AdapterErrorKind};
+pub use inspection::{InspectionCapability, InspectionPlan};
 pub use issues::{IssueCapability, IssuePlan};
 pub use package_model::{ChangedPath, PackageModelCapability, PathRole};
 pub use policy_port::{
@@ -129,6 +131,14 @@ pub trait DistributionAdapter: Send + Sync + 'static {
     /// [`AdapterCapability::ReleaseMetadata`] or
     /// [`AdapterCapability::PublicationPlanning`].
     fn release(&self) -> Option<&dyn ReleaseCapability>;
+    /// Read-only source-intake capability (PHASE-1.md §12).
+    /// Returned only when the adapter advertises
+    /// [`AdapterCapability::SourceInspection`]; if advertised,
+    /// this MUST return `Some`. The capability produces an
+    /// [`InspectionPlan`] whose `PlannedCheck` records are
+    /// aggregated into the same tuple stream as `build_plan` /
+    /// `qa_plan` at `handle_capture_candidate`.
+    fn inspection(&self) -> Option<&dyn InspectionCapability>;
 }
 
 #[cfg(test)]

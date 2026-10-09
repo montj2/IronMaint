@@ -120,11 +120,17 @@ fn assert_descriptor_is_valid(a: &dyn DistributionAdapter) -> AdapterDescriptor 
                 "advertised {cap:?} in descriptor.capabilities but \
                  adapter.release() returned None",
             ),
-            AdapterCapability::SourceInspection
-            | AdapterCapability::VersionComparison
-            | AdapterCapability::UpstreamDiscovery => {
-                // These are declarative; the root trait's required methods
-                // (descriptor / versioning) cover them, so no cross-check.
+            AdapterCapability::SourceInspection => assert!(
+                a.inspection().is_some(),
+                "advertised SourceInspection in descriptor.capabilities but \
+                 adapter.inspection() returned None",
+            ),
+            AdapterCapability::VersionComparison | AdapterCapability::UpstreamDiscovery => {
+                // Versioning is the root trait's required method; it is
+                // present on every adapter, and `versioning()` is part of
+                // the same exhaustive set. `UpstreamDiscovery` is a
+                // declarative advertisement for a capability that does
+                // not yet have a paired method on the trait surface.
             }
             // `AdapterCapability` is `#[non_exhaustive]`; future variants
             // added to the spec require no corresponding trait method, so

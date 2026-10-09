@@ -85,4 +85,14 @@ impl DistributionAdapter for FedoraStubAdapter {
     fn release(&self) -> Option<&dyn ReleaseCapability> {
         Some(release::fedora_release())
     }
+
+    fn inspection(&self) -> Option<&dyn ironmaint_adapter_api::InspectionCapability> {
+        // The Fedora stub advertises `AdapterCapability::SourceInspection`
+        // (PHASE-1.md §11 / descriptor.rs), but the inspection
+        // *implementation* lands in 1B.1's GREEN commit. This RED
+        // commit wires the trait surface and tightens the conformance
+        // suite; returning `None` here is what the GREEN commit will
+        // replace with the no-op `InspectionPlan` impl.
+        None
+    }
 }

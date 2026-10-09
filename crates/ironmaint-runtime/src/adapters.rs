@@ -153,6 +153,9 @@ mod tests {
         fn release(&self) -> Option<&dyn ReleaseCapability> {
             None
         }
+        fn inspection(&self) -> Option<&dyn ironmaint_adapter_api::InspectionCapability> {
+            None
+        }
     }
 
     fn family(s: &str) -> DistributionFamily {
