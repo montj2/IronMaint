@@ -48,11 +48,15 @@ fn epoch_takes_precedence_over_upstream() {
 }
 
 #[test]
-fn tilde_rejected_by_stub() {
+fn tilde_accepted_and_sorts_before_release() {
+    // 1B.2: the stub now follows dpkg §5.6.12, which accepts
+    // tilde as a pre-release marker. `1.0.0~rc1 < 1.0.0`.
     let a = DebianStubAdapter::new();
-    let err = a.versioning().validate(&pv("1.0.0~rc1")).unwrap_err();
+    assert!(a.versioning().validate(&pv("1.0.0~rc1")).is_ok());
     assert_eq!(
-        err.kind,
-        ironmaint_adapter_api::AdapterErrorKind::InvalidVersion
+        a.versioning()
+            .compare(&pv("1.0.0~rc1"), &pv("1.0.0"))
+            .unwrap(),
+        std::cmp::Ordering::Less
     );
 }
