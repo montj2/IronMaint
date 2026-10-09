@@ -123,6 +123,9 @@ pub async fn dispatch<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         "workspace.stat" => dispatch_workspace_stat(&runtime, input).await,
         "operation.get" => dispatch_operation_get(&runtime, input).await,
         "release.candidate.create" => dispatch_release_candidate_create(&runtime, input).await,
+        "evidence.list" => dispatch_evidence_list(&runtime, input).await,
+        "evidence.get" => dispatch_evidence_get(&runtime, input).await,
+        "evidence.artifact.read" => dispatch_evidence_artifact_read(&runtime, input).await,
         unknown => Err(McpError::Other(format!("unknown tool: {unknown}"))),
     }
 }
@@ -502,6 +505,102 @@ async fn dispatch_release_candidate_create<S: IronMaintStore + ?Sized, E: Execut
     };
     let out = crate::tools::release::CreateOutput {
         release_candidate: release,
+    };
+    serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
+}
+
+/// PHASE-1.md §31 — `evidence.list`.
+///
+/// Returns every `Evidence` row attached to a job,
+/// optionally narrowed to one candidate fingerprint.
+/// The runtime does the read; this tool is a thin
+/// schema-bounded shim over `RuntimeQuery::ListEvidence`.
+async fn dispatch_evidence_list<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let input: crate::tools::evidence::ListInput =
+        serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
+    let query = runtime
+        .service
+        .handle_query(RuntimeQuery::ListEvidence {
+            job_id: input.job_id,
+            candidate_fingerprint: input.candidate_fingerprint,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    let ironmaint_runtime::QueryResult::EvidenceList(rows) = query else {
+        return Err(McpError::Other(
+            "ListEvidence returned wrong variant".into(),
+        ));
+    };
+    let out = crate::tools::evidence::ListOutput { rows };
+    serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
+}
+
+/// PHASE-1.md §31 — `evidence.get`.
+///
+/// Reads one `Evidence` row by id. The runtime maps
+/// `StoreErrorKind::NotFound` to `RuntimeError::InvalidInput`
+/// with a message naming the unknown id; this dispatch
+/// forwards that as `McpError::InvalidInput` so a client
+/// can tell "no such evidence id" from a runtime crash.
+async fn dispatch_evidence_get<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    let input: crate::tools::evidence::GetInput =
+        serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
+    let query = runtime
+        .service
+        .handle_query(RuntimeQuery::GetEvidence {
+            evidence_id: input.evidence_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    let ironmaint_runtime::QueryResult::Evidence(evidence) = query else {
+        return Err(McpError::Other("GetEvidence returned wrong variant".into()));
+    };
+    let out = crate::tools::evidence::GetOutput { evidence };
+    serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
+}
+
+/// PHASE-1.md §31 — `evidence.artifact.read`.
+///
+/// Returns the bytes of one `Report` artifact bound to
+/// a specific `Evidence` row. The bytes are base64 in
+/// the JSON output; the `media_type` the artifact was
+/// stored with is passed through unchanged. The runtime
+/// refuses to serve bytes for an `artifact_id` the
+/// named evidence row does not reference, so the tool
+/// exposes *that evidence row's* artifacts, not an
+/// arbitrary digest.
+async fn dispatch_evidence_artifact_read<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    use base64::Engine;
+
+    let input: crate::tools::evidence::ReadArtifactInput =
+        serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
+    let query = runtime
+        .service
+        .handle_query(RuntimeQuery::ReadEvidenceArtifact {
+            evidence_id: input.evidence_id,
+            artifact_id: input.artifact_id,
+        })
+        .await
+        .map_err(|e| McpError::Runtime(e.message))?;
+    let ironmaint_runtime::QueryResult::EvidenceArtifact(art) = query else {
+        return Err(McpError::Other(
+            "ReadEvidenceArtifact returned wrong variant".into(),
+        ));
+    };
+    let bytes_base64 = base64::engine::general_purpose::STANDARD.encode(&art.bytes);
+    let out = crate::tools::evidence::ReadArtifactOutput {
+        digest: art.digest,
+        media_type: art.media_type,
+        bytes_base64,
     };
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }

@@ -363,24 +363,112 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             RuntimeQuery::GetReleaseCandidate { job_id } => {
                 self.get_release_candidate_for_job(job_id).await
             }
-            // PHASE-1.md §31 — 1A.4 stubs. The GREEN commit
-            // replaces these with real handlers that consult
-            // the store and (for `ReadEvidenceArtifact`) the
-            // on-disk artifact store. Until then the runtime
-            // rejects the queries with a typed error, which is
-            // what the broken-then-fixed tests assert against.
-            RuntimeQuery::ListEvidence { .. } => Err(RuntimeError::new(
-                RuntimeErrorKind::InvalidInput,
-                "evidence.list is not yet wired (1A.4 RED stub)",
-            )),
-            RuntimeQuery::GetEvidence { .. } => Err(RuntimeError::new(
-                RuntimeErrorKind::InvalidInput,
-                "evidence.get is not yet wired (1A.4 RED stub)",
-            )),
-            RuntimeQuery::ReadEvidenceArtifact { .. } => Err(RuntimeError::new(
-                RuntimeErrorKind::InvalidInput,
-                "evidence.artifact.read is not yet wired (1A.4 RED stub)",
-            )),
+            // PHASE-1.md §31 — `evidence.list`. The
+            // job_id is required so a caller can never
+            // enumerate evidence across jobs without
+            // explicitly naming them; the optional
+            // `candidate_fingerprint` is a second scope
+            // check (filter, not widen).
+            RuntimeQuery::ListEvidence {
+                job_id,
+                candidate_fingerprint,
+            } => {
+                let mut rows = self
+                    .store
+                    .list_evidence_for_job(job_id)
+                    .await
+                    .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+                if let Some(fp) = candidate_fingerprint {
+                    rows.retain(|e| e.candidate == fp);
+                }
+                Ok(QueryResult::EvidenceList(rows))
+            }
+            // PHASE-1.md §31 — `evidence.get`. A
+            // `StoreErrorKind::NotFound` is mapped to
+            // `InvalidInput` so the MCP layer returns a
+            // typed "no such evidence id" error to the
+            // caller; everything else is a `Store`
+            // error.
+            RuntimeQuery::GetEvidence { evidence_id } => {
+                let evidence =
+                    self.store
+                        .get_evidence(evidence_id)
+                        .await
+                        .map_err(|e| match e.kind() {
+                            ironmaint_store::StoreErrorKind::NotFound => RuntimeError::new(
+                                RuntimeErrorKind::InvalidInput,
+                                format!("unknown evidence id {evidence_id}"),
+                            ),
+                            _ => RuntimeError::new(RuntimeErrorKind::Store, e.to_string()),
+                        })?;
+                Ok(QueryResult::Evidence(evidence))
+            }
+            // PHASE-1.md §31 — `evidence.artifact.read`.
+            // Look the row up, find the matching
+            // `ArtifactRef` (refuse a wrong `artifact_id`
+            // with `InvalidInput`), refuse if the runtime
+            // has no `ArtifactStore` configured, then
+            // call `store.get(&digest)` and return the
+            // bytes wrapped in `QueryResult::EvidenceArtifact`.
+            RuntimeQuery::ReadEvidenceArtifact {
+                evidence_id,
+                artifact_id,
+            } => {
+                let evidence =
+                    self.store
+                        .get_evidence(evidence_id)
+                        .await
+                        .map_err(|e| match e.kind() {
+                            ironmaint_store::StoreErrorKind::NotFound => RuntimeError::new(
+                                RuntimeErrorKind::InvalidInput,
+                                format!("unknown evidence id {evidence_id}"),
+                            ),
+                            _ => RuntimeError::new(RuntimeErrorKind::Store, e.to_string()),
+                        })?;
+                let artifact_ref = evidence
+                    .artifacts
+                    .iter()
+                    .find(|a| a.id == artifact_id)
+                    .ok_or_else(|| {
+                        RuntimeError::new(
+                            RuntimeErrorKind::InvalidInput,
+                            format!("evidence {evidence_id} has no artifact with id {artifact_id}"),
+                        )
+                    })?;
+                let store = self.artifacts.as_ref().ok_or_else(|| {
+                    RuntimeError::new(
+                        RuntimeErrorKind::InvalidInput,
+                        "evidence.artifact.read: runtime has no artifact store configured"
+                            .to_string(),
+                    )
+                })?;
+                // The artifact store's `get` takes
+                // `&Sha256Hex`, not `&Digest`. Convert
+                // the typed `Digest` to its hex form
+                // and validate it as a `Sha256Hex`.
+                // `Digest::algorithm` is `Sha256` here
+                // by construction (the runtime only
+                // stores `Report` artifacts under
+                // SHA-256), so any other algorithm
+                // would be a store invariant violation.
+                let hex = artifact_ref.digest.value.clone();
+                let sha256_hex =
+                    ironmaint_artifacts::hash::Sha256Hex::from_hex(&hex).ok_or_else(|| {
+                        RuntimeError::new(
+                            RuntimeErrorKind::Store,
+                            format!("artifact digest {hex} is not a valid SHA-256 hex string"),
+                        )
+                    })?;
+                let bytes = store
+                    .get(&sha256_hex)
+                    .await
+                    .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))?;
+                Ok(QueryResult::EvidenceArtifact(ArtifactBytes {
+                    digest: artifact_ref.digest.clone(),
+                    media_type: artifact_ref.media_type.clone(),
+                    bytes,
+                }))
+            }
         }
     }
 

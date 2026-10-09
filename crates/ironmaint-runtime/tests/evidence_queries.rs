@@ -55,8 +55,8 @@ use ironmaint_evidence::{
 };
 use ironmaint_executor::{ExecutionRequest, Executor, ExecutorError, ToolRegistry};
 use ironmaint_runtime::{Clock, FixedClock, QueryResult, RuntimeQuery, RuntimeService};
-use ironmaint_store::mock::MockStore;
 use ironmaint_store::EvidenceStore;
+use ironmaint_store::mock::MockStore;
 use time::OffsetDateTime;
 
 fn fp(hex_byte: u8) -> CandidateFingerprint {
@@ -91,11 +91,7 @@ fn make_evidence_with_artifact(
     ev
 }
 
-async fn seed_evidence_rows(
-    store: &MockStore,
-    job_id: JobId,
-    rows: &[Evidence],
-) {
+async fn seed_evidence_rows(store: &MockStore, job_id: JobId, rows: &[Evidence]) {
     for ev in rows {
         store.put_evidence(ev, job_id).await.expect("put_evidence");
     }
@@ -149,7 +145,7 @@ async fn list_evidence_returns_rows_attached_to_the_job() {
     let fp_b = fp(0xB2);
     let row_a = make_evidence(&fp_a, "sbuild", EvidenceStatus::Pass);
     let row_b = make_evidence(&fp_b, "lintian", EvidenceStatus::Fail);
-    seed_evidence_rows(&*store, job_id, &[row_a.clone(), row_b.clone()]).await;
+    seed_evidence_rows(&store, job_id, &[row_a.clone(), row_b.clone()]).await;
 
     let svc = runtime_service(store.clone(), None);
 
@@ -182,7 +178,7 @@ async fn list_evidence_can_narrow_to_one_candidate() {
     let a1 = make_evidence(&fp_a, "sbuild", EvidenceStatus::Pass);
     let a2 = make_evidence(&fp_a, "lintian", EvidenceStatus::Fail);
     let b1 = make_evidence(&fp_b, "rpmlint", EvidenceStatus::Pass);
-    seed_evidence_rows(&*store, job_id, &[a1.clone(), a2.clone(), b1.clone()]).await;
+    seed_evidence_rows(&store, job_id, &[a1.clone(), a2.clone(), b1.clone()]).await;
 
     let svc = runtime_service(store.clone(), None);
 
@@ -196,7 +192,11 @@ async fn list_evidence_can_narrow_to_one_candidate() {
     let QueryResult::EvidenceList(rows) = result else {
         panic!("narrowed ListEvidence must return EvidenceList, got {result:?}");
     };
-    assert_eq!(rows.len(), 2, "only the A rows must come back; got {rows:?}");
+    assert_eq!(
+        rows.len(),
+        2,
+        "only the A rows must come back; got {rows:?}"
+    );
     let ids: std::collections::BTreeSet<_> = rows.iter().map(|e| e.id).collect();
     assert!(ids.contains(&a1.id));
     assert!(ids.contains(&a2.id));
@@ -215,7 +215,7 @@ async fn get_evidence_returns_one_row() {
     let job_id = JobId::new();
     let fp_a = fp(0xA1);
     let row = make_evidence(&fp_a, "sbuild", EvidenceStatus::Pass);
-    seed_evidence_rows(&*store, job_id, &[row.clone()]).await;
+    seed_evidence_rows(&store, job_id, std::slice::from_ref(&row)).await;
 
     let svc = runtime_service(store.clone(), None);
 
@@ -235,7 +235,9 @@ async fn get_evidence_returns_one_row() {
     // client can tell "no such row" from a runtime crash.
     let unknown = EvidenceId::new();
     let err = svc
-        .handle_query(RuntimeQuery::GetEvidence { evidence_id: unknown })
+        .handle_query(RuntimeQuery::GetEvidence {
+            evidence_id: unknown,
+        })
         .await
         .expect_err("unknown id must error");
     assert_eq!(err.kind, ironmaint_runtime::RuntimeErrorKind::InvalidInput);
@@ -262,13 +264,8 @@ async fn read_evidence_artifact_returns_bytes() {
     let store: Arc<MockStore> = Arc::new(MockStore::new());
     let job_id = JobId::new();
     let fp_a = fp(0xA1);
-    let row = make_evidence_with_artifact(
-        &fp_a,
-        "sbuild",
-        EvidenceStatus::Pass,
-        artifact_ref,
-    );
-    seed_evidence_rows(&*store, job_id, &[row.clone()]).await;
+    let row = make_evidence_with_artifact(&fp_a, "sbuild", EvidenceStatus::Pass, artifact_ref);
+    seed_evidence_rows(&store, job_id, std::slice::from_ref(&row)).await;
 
     let svc = runtime_service(store.clone(), Some(artifact_store.clone()));
 
@@ -307,13 +304,8 @@ async fn read_evidence_artifact_with_wrong_artifact_id_errors() {
     let store: Arc<MockStore> = Arc::new(MockStore::new());
     let job_id = JobId::new();
     let fp_a = fp(0xA1);
-    let row = make_evidence_with_artifact(
-        &fp_a,
-        "sbuild",
-        EvidenceStatus::Pass,
-        bound_ref,
-    );
-    seed_evidence_rows(&*store, job_id, &[row.clone()]).await;
+    let row = make_evidence_with_artifact(&fp_a, "sbuild", EvidenceStatus::Pass, bound_ref);
+    seed_evidence_rows(&store, job_id, std::slice::from_ref(&row)).await;
 
     let svc = runtime_service(store.clone(), Some(artifact_store));
 
@@ -335,16 +327,14 @@ async fn read_evidence_artifact_without_artifact_store_errors() {
     let store: Arc<MockStore> = Arc::new(MockStore::new());
     let job_id = JobId::new();
     let fp_a = fp(0xA1);
-    let digest = Digest::new(DigestAlgorithm::Sha256, &"0".repeat(64)).unwrap();
+    let digest = match Digest::new(DigestAlgorithm::Sha256, "0".repeat(64)) {
+        Ok(d) => d,
+        Err(_) => panic!("test setup: '0'.repeat(64) must be a valid SHA-256 digest"),
+    };
     let artifact_id = ArtifactId::new();
     let artifact_ref = ArtifactRef::new(artifact_id, ArtifactKind::Report, digest);
-    let row = make_evidence_with_artifact(
-        &fp_a,
-        "sbuild",
-        EvidenceStatus::Pass,
-        artifact_ref,
-    );
-    seed_evidence_rows(&*store, job_id, &[row.clone()]).await;
+    let row = make_evidence_with_artifact(&fp_a, "sbuild", EvidenceStatus::Pass, artifact_ref);
+    seed_evidence_rows(&store, job_id, std::slice::from_ref(&row)).await;
 
     let svc = runtime_service(store.clone(), None);
 

@@ -28,6 +28,24 @@ impl Sha256Hex {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// Construct a `Sha256Hex` from a hex string. Returns
+    /// `None` if `s` is not a 64-character lowercase hex
+    /// string; the artifact store's `get` takes a typed
+    /// `Sha256Hex` precisely so an unvalidated string
+    /// cannot be followed.
+    #[must_use]
+    pub fn from_hex(s: impl Into<String>) -> Option<Self> {
+        let s = s.into();
+        if s.len() != 64
+            || !s
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        {
+            return None;
+        }
+        Some(Self(s))
+    }
 }
 
 impl fmt::Display for Sha256Hex {

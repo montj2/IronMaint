@@ -21,6 +21,7 @@ ironmaint-runtime = { path = "../ironmaint-runtime" }
 ironmaint-store = { path = "../ironmaint-store" }
 ironmaint-workspace = { path = "../ironmaint-workspace" }
 axum = { workspace = true }
+base64 = { workspace = true }
 rmcp = { workspace = true }
 time = { workspace = true }
 tokio-util = { workspace = true }
