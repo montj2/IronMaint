@@ -43,6 +43,7 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
+use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_artifacts::{ArtifactRoot, ArtifactStore};
 use ironmaint_executor::{
     LimitsConfig, ProcessEnvironment, ProcessExecutor, ToolRegistry, factory_from_config,
@@ -95,7 +96,7 @@ fn main() -> ExitCode {
         }
     };
 
-    match runtime.block_on(run(config)) {
+    match runtime.block_on(run(*config)) {
         Ok(()) => ExitCode::SUCCESS,
         Err(StartupError::Config(e)) => {
             eprintln!("ironmaintd: {e}");
@@ -213,6 +214,36 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
     let mut tools = ToolRegistry::new();
     let keys = register_synthetic_tools(&mut tools, &config.fixture_bin)
         .map_err(|e| StartupError::Serve(format!("tool registry: {e}")))?;
+    // 1C.1: register the production Debian inspection tool.
+    // The path is the configured `--debian-tool-bin`, which
+    // defaults to `/nonexistent/ironmaint-debian-tool`; the
+    // executor's pre-flight `check_launchable` rejects that
+    // path, so a `check.run` against the key on a build that
+    // does not include the binary returns
+    // `InfrastructureFailed` rather than silently running a
+    // different tool. The 1B.3 GREEN test asserts the
+    // tool-not-found refusal still names the missing key
+    // (so an agent can tell which gate is blocked).
+    let source_preparation_key = ToolCapabilityKey::new("debian.inspect.source_preparation")
+        .map_err(|e| StartupError::Serve(format!("debian.inspect.source_preparation key: {e}")))?;
+    let source_preparation = ironmaint_executor::ToolDefinitionRecord::new(
+        source_preparation_key.clone(),
+        &config.debian_tool_bin,
+        vec![std::ffi::OsString::from("source-preparation")],
+        ironmaint_executor::ExecutionClass::Check,
+        ironmaint_executor::ExecutionLimits {
+            timeout: std::time::Duration::from_secs(30),
+            stdout_max_bytes: 256 * 1024,
+            stderr_max_bytes: 64 * 1024,
+        },
+    )
+    .with_input_mode(ironmaint_executor::ToolInputMode::JsonStdin)
+    .with_normalizer(std::sync::Arc::new(
+        ironmaint_debian_tool::DebianSourcePreparationNormalizer::new(),
+    ));
+    tools
+        .register(Box::new(source_preparation))
+        .map_err(|e| StartupError::Serve(format!("debian.inspect.source_preparation: {e}")))?;
     tracing::info!(
         validate = %keys.validate,
         fail = %keys.fail,
@@ -220,7 +251,9 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
         truncate = %keys.truncate,
         interrupt = %keys.interrupt,
         infra_fail = %keys.infra_fail,
+        source_preparation = %source_preparation_key,
         fixture = %config.fixture_bin.display(),
+        debian_tool_bin = %config.debian_tool_bin.display(),
         "tool registry loaded"
     );
 
@@ -297,7 +330,8 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
             registry,
         )
         .with_adapters(adapters)
-        .with_artifact_store(Arc::clone(&artifact_store)),
+        .with_artifact_store(Arc::clone(&artifact_store))
+        .with_workspace(Arc::clone(&workspace)),
     );
 
     let runtime = McpRuntime::new(service).with_workspace(workspace);

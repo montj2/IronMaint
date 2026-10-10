@@ -33,3 +33,11 @@ toml_edit = "0.22"
 # failure points at the construction rather than at the file.
 syn = { version = "2", features = ["visit", "visit-mut", "full", "extra-traits"] }
 proc-macro2 = { version = "1", features = ["span-locations"] }
+# `verify-schemas` snapshots the wire format of the
+# `debian.inspect.source_preparation` tool (PHASE-1.md
+# §13, 1C.1). A regular dep is the right shape —
+# xtask is a build-time tool, not a runtime
+# library, so "production dep of xtask" is not a
+# boundary violation: no downstream crate depends
+# on xtask at runtime.
+ironmaint-debian-tool = { path = "../bins/ironmaint-debian-tool" }

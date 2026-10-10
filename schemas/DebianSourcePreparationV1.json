@@ -1,0 +1,211 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DebianSourcePreparationV1",
+  "description": "The full `DebianSourcePreparationV1` report.\n\nThe runtime binds this to the Evidence row as a `Report` artifact (PHASE-1.md §31, 1A.3). The `evidence.artifact.read` MCP tool (1A.4) reads it back.",
+  "type": "object",
+  "required": [
+    "candidate_fingerprint",
+    "diagnostics",
+    "findings",
+    "report_kind",
+    "schema_version",
+    "verdict"
+  ],
+  "properties": {
+    "candidate_fingerprint": {
+      "description": "The candidate the tool was invoked against. Echoed back so the Evidence row is self-describing without a join.",
+      "type": "string"
+    },
+    "diagnostics": {
+      "description": "Per-check failure / informational lines. Empty when `verdict` is `pass`.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Diagnostic"
+      }
+    },
+    "findings": {
+      "description": "Per-check results. Populated even when the verdict is `fail`; the agent can see *which* check failed.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/SourcePreparationFindings"
+        }
+      ]
+    },
+    "identity": {
+      "description": "The first-entry identity from `debian/changelog`. `None` when `changelog_parsable` is `false`.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/ChangelogIdentity"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "report_kind": {
+      "description": "Always `debian.source_preparation`. Discriminates this report from `debian.source_analysis_v1` (1C.2) and `debian.maintenance_context_v1` (1C.3). Stored as `String` rather than `&'static str` so the deserialised struct can be a normal owned value (a `&'static str` field forces the deserialiser to require `'static` lifetime on its input).",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Always `1` for this revision. Bump on incompatible wire-format changes.",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "verdict": {
+      "description": "The §17 tri-state.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Verdict"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "ChangelogIdentity": {
+      "description": "The first-entry identity block from `debian/changelog`.",
+      "type": "object",
+      "required": [
+        "distribution",
+        "source",
+        "urgency",
+        "version"
+      ],
+      "properties": {
+        "distribution": {
+          "type": "string"
+        },
+        "source": {
+          "type": "string"
+        },
+        "urgency": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    },
+    "Diagnostic": {
+      "description": "A single failure or informational line from the tool.",
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "description": "A stable, machine-readable error code, e.g. `E_DEBIAN_DIR_MISSING`. Future tools can match on this without parsing the message.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Human-readable explanation. The tool does not embed the offending value (a) to keep PII out of the report and (b) so the same diagnostic text can serve any fixture.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The on-disk path that triggered the diagnostic, when applicable (e.g. `debian/`, `debian/changelog`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "SourcePreparationFindings": {
+      "description": "Per-check results. The fields are populated whether the tool's `verdict` is `pass`, `fail`, or `infrastructure_error`; the agent (or the next normalizer down the line) can use them to decide what to do. A `false` flag here is *not* a re-statement of the verdict — the verdict aggregates the flags plus any cross-checks (e.g. a `Fail` is set even when all flags are `true` if the changelog says version `1.0.0-1` but the candidate says `1.0.0`).",
+      "type": "object",
+      "required": [
+        "changelog_parsable",
+        "changelog_source_name_matches_candidate",
+        "changelog_version_matches_candidate",
+        "control_parsable",
+        "control_source_name_matches_candidate",
+        "debian_directory_present",
+        "format_identifiable",
+        "rules_executable"
+      ],
+      "properties": {
+        "changelog_parsable": {
+          "type": "boolean"
+        },
+        "changelog_source_name": {
+          "description": "Source name parsed from `debian/changelog` (the first-entry's name field). The value is always present when `changelog_parsable` is `true`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "changelog_source_name_matches_candidate": {
+          "type": "boolean"
+        },
+        "changelog_version": {
+          "description": "Version parsed from `debian/changelog` (the first-entry's version field). The value is always present when `changelog_parsable` is `true`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "changelog_version_matches_candidate": {
+          "type": "boolean"
+        },
+        "control_parsable": {
+          "type": "boolean"
+        },
+        "control_source_name": {
+          "description": "Source name parsed from `debian/control`. The value is always present when `control_parsable` is `true`; `None` otherwise.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "control_source_name_matches_candidate": {
+          "description": "Whether the control-parsed source name matches the candidate's `source_name`.",
+          "type": "boolean"
+        },
+        "debian_directory_present": {
+          "type": "boolean"
+        },
+        "format_identifiable": {
+          "type": "boolean"
+        },
+        "rules_executable": {
+          "description": "`debian/rules` exists and is executable. Read but not enforced for the 1C.1 verdict (a non-executable rules is a build-time concern, not a source-preparation one).",
+          "type": "boolean"
+        },
+        "source_format": {
+          "description": "`3.0 (quilt)`, `3.0 (native)`, `1.0`, or `unrecognised` (the literal value of `debian/source/format`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Verdict": {
+      "description": "The §17 tri-state.",
+      "oneOf": [
+        {
+          "description": "Every check in §17 succeeded.",
+          "type": "string",
+          "enum": [
+            "pass"
+          ]
+        },
+        {
+          "description": "At least one §17 check failed (mismatched name, mismatched version, unparsable `debian/control`, unparsable `debian/changelog`, missing `debian/`, unidentifiable source format, unparsable mandatory metadata). Diagnostics list the specific failure.",
+          "type": "string",
+          "enum": [
+            "fail"
+          ]
+        },
+        {
+          "description": "The tool could not establish the fact at all: the workspace path is unreadable, an IO error occurred, a parser binary is missing. The §17 rule \"parser binary missing → InfrastructureError\" lives here.",
+          "type": "string",
+          "enum": [
+            "infrastructure_error"
+          ]
+        }
+      ]
+    }
+  }
+}

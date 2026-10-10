@@ -176,6 +176,18 @@ pub struct RuntimeService<S: IronMaintStore + ?Sized, E: Executor + ?Sized> {
     /// the missing report. The production daemon always wires
     /// this; tests may omit it.
     artifacts: Option<Arc<ironmaint_artifacts::ArtifactStore>>,
+    /// Per-job workspace, used to compute the on-disk path the
+    /// runtime hands to tools that read a checked-out source
+    /// tree (PHASE-1.md §16, 1C.1). Mirrors
+    /// `ironmaint_mcp::McpRuntime::with_workspace`: the
+    /// `McpRuntime` already holds the manager for the
+    /// `workspace.*` MCP tools, and a `check.run` dispatch
+    /// reaches `build_candidate_input` *through* the runtime
+    /// service, so the runtime needs the same manager. `None`
+    /// in tests that never `check.run` against a tool with
+    /// `ToolInputMode::JsonStdin`; the production daemon
+    /// always wires it.
+    workspace: Option<Arc<ironmaint_workspace::WorkspaceManager<Arc<S>>>>,
 }
 
 impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> std::fmt::Debug for RuntimeService<S, E> {
@@ -199,6 +211,7 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
             registry,
             adapters: AdapterRegistry::empty(),
             artifacts: None,
+            workspace: None,
         }
     }
 
@@ -233,6 +246,28 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
     #[must_use]
     pub fn with_adapters(mut self, adapters: AdapterRegistry) -> Self {
         self.adapters = adapters;
+        self
+    }
+
+    /// Attach the workspace manager so `build_candidate_input`
+    /// (1C.1) can include the on-disk path of the candidate's
+    /// working tree in the JSON payload handed to tools that
+    /// opt into `ToolInputMode::JsonStdin`. The runtime is the
+    /// right home for this: `check.run` reaches
+    /// `build_candidate_input` through the service, not through
+    /// the `McpRuntime` that already holds the manager for the
+    /// `workspace.*` MCP tools.
+    ///
+    /// Optional because tests that never exercise
+    /// `ToolInputMode::JsonStdin` (most of the existing
+    /// conformance suite) do not need it; the production
+    /// daemon always wires it.
+    #[must_use]
+    pub fn with_workspace(
+        mut self,
+        workspace: Arc<ironmaint_workspace::WorkspaceManager<Arc<S>>>,
+    ) -> Self {
+        self.workspace = Some(workspace);
         self
     }
 
@@ -2569,7 +2604,9 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         // first Phase 1 inspection tool lands in 1C.x.
         let input = match tool.input_mode() {
             ironmaint_executor::ToolInputMode::None => serde_json::Value::Null,
-            ironmaint_executor::ToolInputMode::JsonStdin => build_candidate_input(&source, &check)?,
+            ironmaint_executor::ToolInputMode::JsonStdin => {
+                build_candidate_input(&source, &check, self.workspace.as_deref()).await?
+            }
         };
 
         let request = ExecutionRequest::new(job_id, cap_key.clone(), retry_class, input);
@@ -3106,17 +3143,32 @@ fn outcome_to_state(outcome: ironmaint_executor::Outcome) -> ToolOutcome {
 /// understand which candidate they are about to inspect: the
 /// `job_id`, the `SourceCandidate`'s package family / name /
 /// repository URL / commit OID / tree OID, the candidate's
-/// BLAKE3 fingerprint, and the check's own `id` (so a tool that
+/// BLAKE3 fingerprint, the check's own `id` (so a tool that
 /// produces multiple artefacts can identify which gate's
-/// evidence row the runtime will persist).
+/// evidence row the runtime will persist), and — from 1C.1
+/// onward, in `ironmaint.candidate_input.v2` — the on-disk
+/// path of the candidate's working tree.
+///
+/// `workspace`, when `Some`, lets the runtime compute the
+/// per-job workspace directory the tool needs in order to read
+/// the candidate's source files. It is `None` for tools whose
+/// `ToolInputMode` is `None` (the tool never receives the
+/// payload) and may also be `None` for tests that build the
+/// service without a manager; in that case the
+/// `workspace_path` field is omitted from the payload, and
+/// any tool that depends on it reports
+/// `verdict: "infrastructure_error"` (the §17 rule for
+/// "workspace path missing"). The production daemon always
+/// wires it.
 ///
 /// A failure to serialise is reported as `RuntimeError::Store` —
 /// serialising a fixed-shape value from already-validated
 /// internals is not a tool-level outcome, and the runtime
 /// should not pretend it is.
-fn build_candidate_input(
+async fn build_candidate_input<S: IronMaintStore + ?Sized>(
     source: &SourceCandidate,
     check: &CheckDefinition,
+    workspace: Option<&ironmaint_workspace::WorkspaceManager<Arc<S>>>,
 ) -> Result<serde_json::Value, RuntimeError> {
     use ironmaint_core::GitObjectId;
 
@@ -3125,8 +3177,12 @@ fn build_candidate_input(
     let package = source.package();
     let repo = source.repository();
 
-    serde_json::to_value(serde_json::json!({
-        "schema": "ironmaint.candidate_input.v1",
+    // The v2 payload. The only addition over v1 is
+    // `workspace_path`; every other field is identical so an
+    // old tool that does not look at `workspace_path` keeps
+    // working.
+    let mut payload = serde_json::json!({
+        "schema": "ironmaint.candidate_input.v2",
         "job_id": source.job_id().to_string(),
         "check_id": check.id.to_string(),
         "package": {
@@ -3139,8 +3195,34 @@ fn build_candidate_input(
         "commit": commit.as_str(),
         "tree": tree.as_str(),
         "fingerprint": source.fingerprint().as_str(),
-    }))
-    .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))
+    });
+
+    // Resolve the per-job working tree. `id_for_job` is the
+    // store-backed lookup; the per-job handle is the directory
+    // the runtime created (via `ensure_workspace`) when
+    // `candidate.capture` activated the candidate. A lookup
+    // failure is reported as a missing field — the tool then
+    // reports `verdict: "infrastructure_error"`, which is the
+    // §17 distinction from `verdict: "fail"` (a present-but-
+    // wrong workspace).
+    if let (Some(ws), Some(obj)) = (workspace, payload.as_object_mut()) {
+        // No workspace for this job — leave the field out.
+        // The tool's contract (PHASE-1.md §17) maps
+        // "workspace_path missing" to
+        // `verdict: "infrastructure_error"`, which is the
+        // right answer for "the runtime did not materialise
+        // a working tree, so the check cannot run."
+        if let Ok(id) = ws.id_for_job(source.job_id()).await {
+            let path = ws.root().join(format!("{id}"));
+            obj.insert(
+                "workspace_path".to_string(),
+                serde_json::Value::String(path.display().to_string()),
+            );
+        }
+    }
+
+    serde_json::to_value(payload)
+        .map_err(|e| RuntimeError::new(RuntimeErrorKind::Store, e.to_string()))
 }
 
 /// Pure projection helper: maps the current `JobState` into the

@@ -22,6 +22,7 @@ members = [
     "bins/ironmaintctl",
     "bins/ironmaint-fixture",
     "bins/ironmaintd",
+    "bins/ironmaint-debian-tool",
 ]
 
 [workspace.package]
@@ -120,6 +121,18 @@ base64 = "0.22"
 # and returns `std::cmp::Ordering` directly. No default features
 # (the stub only needs parse + Ord).
 debversion = "0.5"
+# `deb822-lossless` for parsing `debian/control` and
+# `debian/copyright` (DEP-5). The crate is small, focused on the
+# RFC 822 dialect Debian uses, and is the same library
+# `debian-policy-compliance` tools adopt (1C.1).
+deb822-lossless = "0.5"
+# `clap` derive for the subcommand enum. The daemon's CLI is
+# hand-rolled (PHASE-0B §86 does not sanction a CLI-parsing
+# dependency), but the 1C.1 tool's surface is *only* its
+# subcommands; a tool that takes no other arguments does not
+# need a hand-rolled parser.
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
 rmcp = { version = "3", features = ["server", "transport-streamable-http-server", "macros"] }
 # The Streamable-HTTP transport is a tower Service, not an axum Router: the
 # daemon must supply the HTTP server itself. These are the versions rmcp's
