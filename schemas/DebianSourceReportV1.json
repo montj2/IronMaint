@@ -1,29 +1,45 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "DebianSourceReportV1",
-  "description": "The §18 comprehensive `DebianSourceReportV1`.\n\nIn the RED commit, the struct is the minimal shape: the §17 tri-state plus the candidate identity and the first-entry changelog block. The GREEN commit extends the struct with the §18 sub-structs (`source_metadata`, `binary_packages`, `source_format`, `patches`, `tests`, `watch`, `gbp`, `maintainer_scripts`, `rules`).",
+  "description": "The §18 comprehensive `DebianSourceReportV1`.\n\nThis is the GREEN commit's struct: every §18 top-level group is present, every field the spec names under each group is typed and serialized. The 1C.2 RED commit's struct was the minimal shape; this commit extends it.",
   "type": "object",
   "required": [
-    "candidate_commit",
-    "candidate_fingerprint",
-    "candidate_tree",
     "diagnostics",
+    "provenance",
     "report_kind",
     "schema_version",
+    "source_format",
     "verdict"
   ],
   "properties": {
-    "candidate_commit": {
-      "description": "The candidate's Git commit OID. Carried per §18 (lines 842-846) so the report is candidate-bound.",
-      "type": "string"
+    "binary_packages": {
+      "description": "`binary packages` — every binary package stanza in `debian/control`.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/BinaryPackage"
+      }
     },
-    "candidate_fingerprint": {
-      "description": "The candidate the tool was invoked against.",
-      "type": "string"
+    "build_metadata": {
+      "description": "`build metadata` — the source paragraph's `Build-Depends`, `Build-Depends-Indep`, `Build-Conflicts`, and the parsed `debhelper-compat` version.",
+      "default": {},
+      "allOf": [
+        {
+          "$ref": "#/definitions/BuildMetadata"
+        }
+      ]
     },
-    "candidate_tree": {
-      "description": "The candidate's Git tree OID. Carried per §18 (lines 842-846).",
-      "type": "string"
+    "copyright": {
+      "description": "`copyright` — the parsed `debian/copyright` DEP-5 file.",
+      "default": {
+        "files_stanza_count": 0,
+        "machine_readable": false
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/CopyrightInfo"
+        }
+      ]
     },
     "diagnostics": {
       "description": "Per-check failure / informational lines. Empty when `verdict` is `pass`.",
@@ -32,8 +48,20 @@
         "$ref": "#/definitions/Diagnostic"
       }
     },
+    "gbp": {
+      "description": "`GBP` — presence of `debian/gbp.conf` and `debian/gbp-dch.conf` and the parsed `[BUILD-DEFAULTS]` branch settings.",
+      "default": {
+        "gbp_conf_present": false,
+        "gbp_dch_conf_present": false
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/GbpConfig"
+        }
+      ]
+    },
     "identity": {
-      "description": "The first-entry identity from `debian/changelog`, extended in 1C.2 with `maintainer` and `timestamp`.",
+      "description": "`identity` — the first-entry changelog block plus the trailer's `Maintainer:` and `Date:` fields.",
       "anyOf": [
         {
           "$ref": "#/definitions/ChangelogIdentity"
@@ -43,15 +71,86 @@
         }
       ]
     },
+    "maintainer_scripts": {
+      "description": "`maintainer scripts` — presence + executable bit for the four canonical scripts, the `triggers` file, and other recognized scripts.",
+      "default": {},
+      "allOf": [
+        {
+          "$ref": "#/definitions/MaintainerScripts"
+        }
+      ]
+    },
+    "maintainers": {
+      "description": "`maintainers` — the source paragraph's `Maintainer:` and `Uploaders:` fields.",
+      "default": {},
+      "allOf": [
+        {
+          "$ref": "#/definitions/MaintainerInfo"
+        }
+      ]
+    },
+    "patches": {
+      "description": "`patches` — every patch in `debian/patches/series` with its DEP-3 header.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Patch"
+      }
+    },
+    "provenance": {
+      "description": "`provenance` — the candidate's fingerprint, Git commit, Git tree, and the inspector binary's version.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Provenance"
+        }
+      ]
+    },
     "report_kind": {
       "description": "Always `debian.source_analysis_v1`.",
       "type": "string"
+    },
+    "rules": {
+      "description": "`rules` — the `debian/rules` executable bit, the `dh`-style indicator, and the list of `override_*:` targets.",
+      "default": {
+        "dh_style": false,
+        "executable": false
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/RulesInfo"
+        }
+      ]
     },
     "schema_version": {
       "description": "Always `1` for this revision. Bump on incompatible wire-format changes.",
       "type": "integer",
       "format": "uint32",
       "minimum": 0.0
+    },
+    "source_format": {
+      "description": "`source format` — the value of `debian/source/format`.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/SourceFormat"
+        }
+      ]
+    },
+    "source_metadata": {
+      "description": "`source metadata` — the source paragraph's `Standards-Version`, `Rules-Requires-Root`, `Section`, `Priority`, `Homepage`, `Vcs-Git`, `Vcs-Browser` fields.",
+      "default": {},
+      "allOf": [
+        {
+          "$ref": "#/definitions/SourceMetadata"
+        }
+      ]
+    },
+    "tests": {
+      "description": "`tests` — every autopkgtest stanza in `debian/tests/control`.",
+      "default": [],
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Autopkgtest"
+      }
     },
     "verdict": {
       "description": "The §17 tri-state.",
@@ -60,9 +159,171 @@
           "$ref": "#/definitions/Verdict"
         }
       ]
+    },
+    "watch": {
+      "description": "`watch` — the parsed `debian/watch` file. `None` when the file is absent.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WatchConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
     }
   },
   "definitions": {
+    "Autopkgtest": {
+      "description": "One autopkgtest stanza from `debian/tests/control` (§18 tests group).",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "command": {
+          "description": "Subsequent tokens on the `Tests:` line (the command to run, when it's not the `debian/tests/<name>` default). `None` when the `Tests:` line is just the test name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "depends": {
+          "description": "The `Depends:` field, split into individual entries. Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "features": {
+          "description": "The `Features:` field, split into individual tokens. Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "The `Tests:` field, first token (the test name).",
+          "type": "string"
+        },
+        "restrictions": {
+          "description": "The `Restrictions:` field, split into individual tokens (e.g. `[\"rw-build-tree\"]`). Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "BinaryPackage": {
+      "description": "One binary package stanza from `debian/control` (§18 binary packages group).",
+      "type": "object",
+      "required": [
+        "architecture",
+        "name"
+      ],
+      "properties": {
+        "architecture": {
+          "description": "The `Architecture:` field (e.g. `any`, `all`, `amd64`, `any-amd64`).",
+          "type": "string"
+        },
+        "breaks": {
+          "description": "The `Breaks:` field, split into individual entries. Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "conflicts": {
+          "description": "The `Conflicts:` field, split into individual entries. Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "depends": {
+          "description": "The `Depends:` field, split into individual entries. Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "description": {
+          "description": "The `Description:` field, first paragraph only (the synopsis). Multi-paragraph descriptions are concatenated by dpkg-gencontrol at build time; the report captures the synopsis for observational use.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "maintainer": {
+          "description": "The `Maintainer:` field (may differ from the source paragraph's `Maintainer`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "multi_arch": {
+          "description": "The `Multi-Arch:` field (e.g. `same`, `foreign`, `allowed`). `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The `Package:` field.",
+          "type": "string"
+        },
+        "provides": {
+          "description": "The `Provides:` field, split into individual entries. Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "replaces": {
+          "description": "The `Replaces:` field, split into individual entries. Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "BuildMetadata": {
+      "description": "The source paragraph's build-related fields (§18 build metadata group).\n\n`Build-Depends` and friends are RFC 822 comma-separated alternation lists; the tool splits them on `,` and trims each entry.",
+      "type": "object",
+      "properties": {
+        "build_conflicts": {
+          "description": "The `Build-Conflicts:` field, split into individual entries. Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "build_depends": {
+          "description": "The `Build-Depends:` field, split into individual entries (e.g. `[\"debhelper-compat (= 13)\", \"libfoo-dev\"]`). Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "build_depends_indep": {
+          "description": "The `Build-Depends-Indep:` field, split into individual entries. Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "debhelper_compat": {
+          "description": "The `debhelper-compat (= N)` value, parsed out of the `Build-Depends` list. `None` when no `debhelper-compat` entry is present.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      }
+    },
     "ChangelogIdentity": {
       "description": "The first-entry identity block from `debian/changelog`.\n\n1C.2 extends this with `maintainer` and `timestamp` (the closing-paren trailer's `Maintainer:` and `Date:` lines). Both new fields are `Option<String>` so a changelog whose trailer is malformed still parses (the report's `diagnostics` carries the `E_CHANGELOG_TRAILER_MALFORMED` line; the verdict aggregates it).",
       "type": "object",
@@ -101,6 +362,40 @@
         }
       }
     },
+    "CopyrightInfo": {
+      "description": "The parsed `debian/copyright` DEP-5 file (§18 copyright group).\n\nThe report captures the machine-readable indicator, the `Format:` URL, the count of `Files:` stanzas, and the set of `License:` identifiers across all stanzas (deduplicated, order-preserving).",
+      "type": "object",
+      "required": [
+        "files_stanza_count",
+        "machine_readable"
+      ],
+      "properties": {
+        "files_stanza_count": {
+          "description": "The number of `Files:` stanzas in the file. Zero for a header-only copyright file.",
+          "type": "integer",
+          "format": "uint",
+          "minimum": 0.0
+        },
+        "format_declaration": {
+          "description": "The `Format:` URL, when present. `None` when the copyright file omits the field.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "license_identifiers": {
+          "description": "The set of `License:` values, deduplicated in declaration order. Empty when no `License:` field is present in any stanza.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "machine_readable": {
+          "description": "`true` when the `Format:` field's value is a URL (i.e. DEP-5 machine-readable form). `false` for legacy \"paragraph prose\" form.",
+          "type": "boolean"
+        }
+      }
+    },
     "Diagnostic": {
       "description": "A single failure or informational line from the tool.",
       "type": "object",
@@ -119,6 +414,372 @@
         },
         "path": {
           "description": "The on-disk path that triggered the diagnostic, when applicable (e.g. `debian/`, `debian/changelog`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "GbpBranchSettings": {
+      "description": "The branch / tag settings from `debian/gbp.conf`'s `[BUILD-DEFAULTS]` section.",
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "debian_branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "debian_tag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream_branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream_tag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "GbpConfig": {
+      "description": "The GBP config inventory (§18 GBP group).\n\nThe tool reports presence of `debian/gbp.conf` and `debian/gbp-dch.conf` and, when present, the branch / tag settings from the INI-formatted `[BUILD-DEFAULTS]` / `[DCH]` sections. The `branch_settings` block is a structural mirror of the most-commonly-used keys; it is not a full parse of every gbp.conf key.",
+      "type": "object",
+      "required": [
+        "gbp_conf_present",
+        "gbp_dch_conf_present"
+      ],
+      "properties": {
+        "branch_settings": {
+          "description": "The branch / tag settings parsed from `gbp.conf`. `None` when `gbp.conf` is absent or has no `[BUILD-DEFAULTS]` section.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GbpBranchSettings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gbp_conf_present": {
+          "description": "`true` when `debian/gbp.conf` exists.",
+          "type": "boolean"
+        },
+        "gbp_dch_conf_present": {
+          "description": "`true` when `debian/gbp-dch.conf` exists.",
+          "type": "boolean"
+        }
+      }
+    },
+    "MaintainerInfo": {
+      "description": "The source paragraph's `Maintainer:` and `Uploaders:` fields from `debian/control` (§18 maintainers group).\n\n`Maintainer` is the primary contact for the source package; `Uploaders` is a comma-separated list of additional maintainers. The split into a `Vec<String>` makes downstream analysis (e.g. \"is this upload co-maintained?\") straightforward.",
+      "type": "object",
+      "properties": {
+        "maintainer": {
+          "description": "The `Maintainer:` field, e.g. `IronMaint Test <test@example.invalid>`. Empty when the source paragraph omits it (the `Maintainer` field is mandatory by Policy, but the tool reports what is there).",
+          "type": "string"
+        },
+        "uploaders": {
+          "description": "The `Uploaders:` field, split on the RFC 822 comma separator. Empty when the source paragraph has no `Uploaders:` field.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "MaintainerScripts": {
+      "description": "The full maintainer-script inventory (§18 maintainer scripts group).\n\nThe four canonical scripts are `preinst`/`postinst`/`prerm`/`postrm`. The `triggers` file (a non-executable control file) and \"other recognized scripts\" (e.g. `postinst-config`, `preinst-base`) are observational — the report captures what is there without claiming anything about what *should* be there.",
+      "type": "object",
+      "properties": {
+        "other_scripts": {
+          "description": "Other recognized scripts in `debian/` (e.g. `preinst-base`, `postinst-config`). Each entry is a `ScriptPresence` keyed by the script's name. Excluded: the four canonical scripts (above), `rules` (covered separately), and the patch series (also covered separately).",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/NamedScript"
+          }
+        },
+        "postinst": {
+          "description": "`Some` when `debian/postinst` exists.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScriptPresence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "postrm": {
+          "description": "`Some` when `debian/postrm` exists.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScriptPresence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preinst": {
+          "description": "`Some` when `debian/preinst` exists.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScriptPresence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prerm": {
+          "description": "`Some` when `debian/prerm` exists.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScriptPresence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "triggers": {
+          "description": "`Some` when `debian/triggers` exists. The `triggers` file is a control file (not executable) that declares the package's interest in dpkg triggers.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScriptPresence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "NamedScript": {
+      "description": "A named maintainer script entry for the `other_scripts` list.",
+      "type": "object",
+      "required": [
+        "name",
+        "presence"
+      ],
+      "properties": {
+        "name": {
+          "description": "The script's file name (e.g. `preinst-base`).",
+          "type": "string"
+        },
+        "presence": {
+          "description": "Presence + executable bit.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ScriptPresence"
+            }
+          ]
+        }
+      }
+    },
+    "Patch": {
+      "description": "One patch in `debian/patches/series` with its DEP-3 header (§18 patches group).",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "author": {
+          "description": "The DEP-3 `Author:` header. `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "The DEP-3 `Description:` header. `None` when the patch file has no DEP-3 header.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "forwarded": {
+          "description": "The DEP-3 `Forwarded:` header (e.g. `yes`, `no`, `not-needed`). `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_update": {
+          "description": "The DEP-3 `Last-Update:` header (ISO 8601 date). `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The patch file name as listed in `series` (e.g. `01-fix-typo.patch`).",
+          "type": "string"
+        }
+      }
+    },
+    "Provenance": {
+      "description": "The provenance block (§18 provenance group).\n\nThe candidate fingerprint, Git commit, and Git tree are the candidate's identity (the §18 lines 842-846 requirement). `inspector_version` is the version of the `ironmaint-debian-tool` binary that produced the report, so a downstream consumer can tell which parser version emitted the report.",
+      "type": "object",
+      "required": [
+        "candidate_commit",
+        "candidate_fingerprint",
+        "candidate_tree",
+        "inspector_version"
+      ],
+      "properties": {
+        "candidate_commit": {
+          "description": "The candidate's Git commit OID.",
+          "type": "string"
+        },
+        "candidate_fingerprint": {
+          "description": "The candidate's BLAKE3 fingerprint.",
+          "type": "string"
+        },
+        "candidate_tree": {
+          "description": "The candidate's Git tree OID.",
+          "type": "string"
+        },
+        "inspector_version": {
+          "description": "The `ironmaint-debian-tool` binary's version (e.g. `0.1.0`).",
+          "type": "string"
+        }
+      }
+    },
+    "RulesInfo": {
+      "description": "The `debian/rules` presence + analysis (§18 rules group).",
+      "type": "object",
+      "required": [
+        "executable"
+      ],
+      "properties": {
+        "dh_style": {
+          "description": "`true` when the rules file's first line is `#!/usr/bin/make -f` and the body contains a `dh` invocation. The standard `debhelper` style. The tool's detection is a simple substring check; it does not parse the makefile.",
+          "default": false,
+          "type": "boolean"
+        },
+        "executable": {
+          "description": "`true` when `debian/rules` is executable.",
+          "type": "boolean"
+        },
+        "override_targets": {
+          "description": "The names of `override_*:` targets in the rules file. Empty when no override targets are detected.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ScriptPresence": {
+      "description": "One maintainer script's presence + executable bit (§18 maintainer scripts group).",
+      "type": "object",
+      "required": [
+        "executable"
+      ],
+      "properties": {
+        "executable": {
+          "description": "`true` when the script file exists and the executable bit is set.",
+          "type": "boolean"
+        }
+      }
+    },
+    "SourceFormat": {
+      "description": "The canonical string form of `debian/source/format`.\n\nSerialized as the literal file value (`\"3.0 (quilt)\"`, `\"3.0 (native)\"`, or the catch-all `\"other/legacy\"`), not the Rust variant name. A custom `Serialize`/`Deserialize` impl carries the canonical string through; schemars gets the same surface.",
+      "oneOf": [
+        {
+          "description": "The `3.0 (quilt)` source format. The default for modern Debian source packages.",
+          "type": "string",
+          "enum": [
+            "ThreeZeroQuilt"
+          ]
+        },
+        {
+          "description": "The `3.0 (native)` source format. Used when the upstream tarball is itself the Debian source.",
+          "type": "string",
+          "enum": [
+            "ThreeZeroNative"
+          ]
+        },
+        {
+          "description": "Any other value in `debian/source/format` (e.g. `1.0`, the native format pre-3.0). The raw string is preserved so an agent can tell what the tool saw.",
+          "type": "object",
+          "required": [
+            "OtherLegacy"
+          ],
+          "properties": {
+            "OtherLegacy": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "SourceMetadata": {
+      "description": "The source paragraph's metadata fields from `debian/control` (§18 source metadata group).",
+      "type": "object",
+      "properties": {
+        "homepage": {
+          "description": "The `Homepage:` field. `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "priority": {
+          "description": "The `Priority:` field (e.g. `optional`, `required`, `standard`, `important`). `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "rules_requires_root": {
+          "description": "The `Rules-Requires-Root:` field (e.g. `no`, `binary-targets`). `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "section": {
+          "description": "The `Section:` field (e.g. `utils`, `devel`). `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "standards_version": {
+          "description": "The `Standards-Version:` field (e.g. `4.6.2`). §22's Standards-Version delta evaluator (1D.2) reads this.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vcs_browser": {
+          "description": "The `Vcs-Browser:` field. `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vcs_git": {
+          "description": "The `Vcs-Git:` field. `None` when absent.",
           "type": [
             "string",
             "null"
@@ -151,6 +812,33 @@
           ]
         }
       ]
+    },
+    "WatchConfig": {
+      "description": "The parsed `debian/watch` file (§18 watch group).\n\nThe Debian watch file is a small RFC 822-ish grammar: `version=N\\n<url-pattern>` with optional `pgpsigurlmangle=` and `opts=...` directives. The tool captures the version, the URL pattern, and any PGP-signature-mangling directive.",
+      "type": "object",
+      "required": [
+        "url_pattern",
+        "version"
+      ],
+      "properties": {
+        "pgpsig": {
+          "description": "The `pgpsigurlmangle=...` directive, when present. `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url_pattern": {
+          "description": "The watch file's URL pattern (the first non-comment, non-directive line).",
+          "type": "string"
+        },
+        "version": {
+          "description": "The watch file's `version=N` directive (typically `4`).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      }
     }
   }
 }
