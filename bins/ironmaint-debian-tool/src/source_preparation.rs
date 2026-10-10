@@ -219,6 +219,7 @@ pub fn run(input: &CandidateInput) -> DebianSourcePreparationV1 {
                     version: entry.version,
                     distribution: entry.distribution,
                     urgency: entry.urgency,
+                    ..ChangelogIdentity::default()
                 });
             }
             Err(PrepError::Infra(msg)) => {

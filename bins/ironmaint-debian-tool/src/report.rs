@@ -121,12 +121,31 @@ pub struct SourcePreparationFindings {
 }
 
 /// The first-entry identity block from `debian/changelog`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+///
+/// 1C.2 extends this with `maintainer` and `timestamp`
+/// (the closing-paren trailer's `Maintainer:` and `Date:`
+/// lines). Both new fields are `Option<String>` so a
+/// changelog whose trailer is malformed still parses
+/// (the report's `diagnostics` carries the
+/// `E_CHANGELOG_TRAILER_MALFORMED` line; the verdict
+/// aggregates it).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ChangelogIdentity {
     pub source: String,
     pub version: String,
     pub distribution: String,
     pub urgency: String,
+    /// The trailer's `Maintainer:` line, e.g.
+    /// `IronMaint Test <test@example.invalid>`. `None`
+    /// when the trailer has no `Maintainer:` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub maintainer: Option<String>,
+    /// The trailer's `Date:` line, in the RFC 2822
+    /// form `dpkg-parsechangelog` emits (e.g.
+    /// `Thu, 09 Oct 2026 00:00:00 +0000`). `None` when
+    /// the trailer has no `Date:` field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timestamp: Option<String>,
 }
 
 /// The full `DebianSourcePreparationV1` report.
@@ -201,4 +220,72 @@ impl DebianSourcePreparationV1 {
             identity,
         }
     }
+}
+
+// =============================================================================
+// 1C.2 — `debian.inspect.source_analysis` + the comprehensive
+// `DebianSourceReportV1` schema (PHASE-1.md §18).
+//
+// The 1C.1 report is a six-check summary; the 1C.2 report is
+// the *comprehensive* source-tree inventory: source metadata,
+// binary packages, source format, patches (DEP-3), tests
+// (DEP-8), watch file (v4), GBP config, maintainer scripts,
+// and rules. The verdict tri-state is the same; the
+// observational rule (§18 lines 847-849) is the same: this
+// report does not claim Policy compliance.
+//
+// The struct shape in this RED commit is **deliberately
+// minimal** — the schema-snapshot tool pins the wire format,
+// and the broken-then-fixed pattern is "the integration and
+// unit tests assert the comprehensive fields are populated,
+// the minimal struct cannot satisfy them, the GREEN commit
+// extends the struct, regenerates the snapshot, and emits
+// the comprehensive report." The §97 schema-snapshot tool
+// catches the drift if the snapshot is not regenerated.
+// =============================================================================
+
+/// Discriminator for the 1C.2 report. Always
+/// `"debian.source_analysis_v1"` — 1C.1's
+/// `REPORT_KIND = "debian.source_preparation"` is the
+/// `debian.inspect.source_preparation` discriminator;
+/// 1C.2's is the comprehensive source-tree inventory.
+pub const SOURCE_ANALYSIS_REPORT_KIND: &str = "debian.source_analysis_v1";
+
+/// Wire-format version for the 1C.2 report. Independent of
+/// the 1C.1 `SCHEMA_VERSION` constant; both happen to be
+/// `1` but they may diverge.
+pub const SOURCE_ANALYSIS_SCHEMA_VERSION: u32 = 1;
+
+/// The §18 comprehensive `DebianSourceReportV1`.
+///
+/// In the RED commit, the struct is the minimal shape: the
+/// §17 tri-state plus the candidate identity and the
+/// first-entry changelog block. The GREEN commit extends
+/// the struct with the §18 sub-structs (`source_metadata`,
+/// `binary_packages`, `source_format`, `patches`, `tests`,
+/// `watch`, `gbp`, `maintainer_scripts`, `rules`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DebianSourceReportV1 {
+    /// Always `1` for this revision. Bump on incompatible
+    /// wire-format changes.
+    pub schema_version: u32,
+    /// Always `debian.source_analysis_v1`.
+    pub report_kind: String,
+    /// The candidate the tool was invoked against.
+    pub candidate_fingerprint: String,
+    /// The candidate's Git commit OID. Carried per §18
+    /// (lines 842-846) so the report is candidate-bound.
+    pub candidate_commit: String,
+    /// The candidate's Git tree OID. Carried per §18
+    /// (lines 842-846).
+    pub candidate_tree: String,
+    /// The §17 tri-state.
+    pub verdict: Verdict,
+    /// Per-check failure / informational lines. Empty when
+    /// `verdict` is `pass`.
+    pub diagnostics: Vec<Diagnostic>,
+    /// The first-entry identity from `debian/changelog`,
+    /// extended in 1C.2 with `maintainer` and `timestamp`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub identity: Option<ChangelogIdentity>,
 }

@@ -30,7 +30,7 @@ use ironmaint_executor::{
     ExecutionRecord, NormalizationError, NormalizedResult, Observation, ResultNormalizer,
 };
 
-use crate::report::{DebianSourcePreparationV1, Verdict};
+use crate::report::{DebianSourcePreparationV1, DebianSourceReportV1, Verdict};
 
 /// The 1C.1 normalizer. Stateless; cheap to construct.
 #[derive(Debug, Default, Clone, Copy)]
@@ -148,6 +148,7 @@ mod tests {
                 version: "1.0.0-1".to_string(),
                 distribution: "unstable".to_string(),
                 urgency: "medium".to_string(),
+                ..ChangelogIdentity::default()
             }),
         };
         let json = serde_json::to_string(&report).unwrap();
@@ -258,5 +259,66 @@ mod tests {
             .normalize(&make_record("not valid json"))
             .unwrap_err();
         assert!(matches!(err, NormalizationError::Malformed(_)));
+    }
+}
+
+// =============================================================================
+// 1C.2 — `DebianSourceAnalysisNormalizer` (PHASE-1.md §17, §18).
+//
+// Mirrors the 1C.1 normalizer; the verdict tri-state mapping
+// is identical. The unclassifiable message is the
+// 1C.2-specific string so a runtime log / observation can
+// distinguish the two normalizers.
+// =============================================================================
+
+/// The 1C.2 normalizer. Stateless; cheap to construct.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DebianSourceAnalysisNormalizer;
+
+impl DebianSourceAnalysisNormalizer {
+    /// Constructor used by the daemon's tool registry:
+    /// `Arc::new(DebianSourceAnalysisNormalizer::new())`.
+    /// The body is `Self::default()`; the constructor
+    /// exists for call-site readability.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl ResultNormalizer for DebianSourceAnalysisNormalizer {
+    fn normalize(&self, record: &ExecutionRecord) -> Result<NormalizedResult, NormalizationError> {
+        let report: DebianSourceReportV1 = serde_json::from_str(record.stdout.as_str())
+            .map_err(|e| {
+                NormalizationError::Malformed(format!(
+                    "could not parse DebianSourceReportV1 from tool stdout: {e}"
+                ))
+            })?;
+
+        let observations = report
+            .diagnostics
+            .iter()
+            .map(|d| Observation {
+                kind: d.code.clone(),
+                message: d.message.clone(),
+            })
+            .collect();
+
+        let evidence_status = match report.verdict {
+            Verdict::Pass => EvidenceStatus::Pass,
+            Verdict::Fail => EvidenceStatus::Fail,
+            Verdict::InfrastructureError => {
+                return Err(NormalizationError::Unclassifiable(
+                    "debian.inspect.source_analysis: infrastructure error".to_string(),
+                ));
+            }
+        };
+
+        Ok(NormalizedResult {
+            evidence_status,
+            output_truncated: record.truncated,
+            observations,
+            invalidations: Vec::new(),
+        })
     }
 }

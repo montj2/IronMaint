@@ -35,6 +35,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 
+use ironmaint_debian_tool::source_analysis::{self as source_analysis_run, CandidateInput as AnalysisInput};
 use ironmaint_debian_tool::source_preparation::{self, CandidateInput};
 
 /// CLI entry point. The clap derive is sufficient — the
@@ -103,7 +104,13 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Sub::SourceAnalysis => not_yet_implemented("source-analysis", "1C.2"),
+        Sub::SourceAnalysis => match run_source_analysis() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("ironmaint-debian-tool: source-analysis: {err:#}");
+                ExitCode::FAILURE
+            }
+        },
         Sub::MaintenanceContext => not_yet_implemented("maintenance-context", "1C.3"),
         Sub::PolicyDelta => not_yet_implemented("policy-delta", "1D.2"),
         Sub::BtsSnapshot => not_yet_implemented("bts-snapshot", "1E.x"),
@@ -127,6 +134,18 @@ fn run_source_preparation() -> Result<()> {
         read_stdin_json().context("reading ironmaint.candidate_input.v2 from stdin")?;
     let report = source_preparation::run(&input);
     write_stdout_json(&report).context("writing DebianSourcePreparationV1 to stdout")?;
+    Ok(())
+}
+
+/// Run the `source-analysis` subcommand. Reads
+/// `ironmaint.candidate_input.v3` from stdin, walks the
+/// source tree, emits the comprehensive
+/// `DebianSourceReportV1` on stdout.
+fn run_source_analysis() -> Result<()> {
+    let input: AnalysisInput =
+        read_stdin_json().context("reading ironmaint.candidate_input.v3 from stdin")?;
+    let report = source_analysis_run::run(&input);
+    write_stdout_json(&report).context("writing DebianSourceReportV1 to stdout")?;
     Ok(())
 }
 
