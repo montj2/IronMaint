@@ -35,7 +35,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 
-use ironmaint_debian_tool::source_analysis::{self as source_analysis_run, CandidateInput as AnalysisInput};
+use ironmaint_debian_tool::source_analysis::{
+    self as source_analysis_run, CandidateInput as AnalysisInput,
+};
 use ironmaint_debian_tool::source_preparation::{self, CandidateInput};
 
 /// CLI entry point. The clap derive is sufficient — the

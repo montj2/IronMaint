@@ -288,8 +288,8 @@ impl DebianSourceAnalysisNormalizer {
 
 impl ResultNormalizer for DebianSourceAnalysisNormalizer {
     fn normalize(&self, record: &ExecutionRecord) -> Result<NormalizedResult, NormalizationError> {
-        let report: DebianSourceReportV1 = serde_json::from_str(record.stdout.as_str())
-            .map_err(|e| {
+        let report: DebianSourceReportV1 =
+            serde_json::from_str(record.stdout.as_str()).map_err(|e| {
                 NormalizationError::Malformed(format!(
                     "could not parse DebianSourceReportV1 from tool stdout: {e}"
                 ))

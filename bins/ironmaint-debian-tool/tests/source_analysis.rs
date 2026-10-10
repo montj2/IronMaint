@@ -16,18 +16,19 @@
 //!
 //! The hermetic fixture at
 //! `containers/fixtures/debian/example-1.0/` provides a
-//! real Debian 3.0 (quilt) source tree with all the
-//! §18 fields a real package has: source paragraph
-//! + 1 binary package, `patches/series` with 1 DEP-3
-//! patch, `tests/control` with 1 autopkgtest, a
-//! `debian/watch` v4, and `debian/rules` (executable).
+//! real Debian 3.0 (quilt) source tree. It includes a
+//! source paragraph plus one binary package, a
+//! `patches/series` with one DEP-3 patch, a
+//! `tests/control` with one autopkgtest, a `debian/watch`
+//! v4, and an executable `debian/rules` — every §18 field
+//! a real package has.
 
 #![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use std::path::PathBuf;
 
-use ironmaint_debian_tool::source_analysis::{run, CandidateInput};
 use ironmaint_debian_tool::report::Verdict;
+use ironmaint_debian_tool::source_analysis::{CandidateInput, run};
 
 /// The 1C.1 fixture's path. Resolved against the
 /// workspace root so the test runs in any working
@@ -157,19 +158,19 @@ fn comprehensive_findings_are_populated() {
     );
 }
 
-/// The §18 report carries the candidate's Git
-/// identity (commit and tree) so a downstream
-/// consumer can correlate the report to a specific
-/// source tree. In the 1C.2 RED commit, the
-/// minimal struct does carry these two fields
-/// (they're part of the minimal shape); the
-/// GREEN commit also carries them. The test
-/// passes in both states.
+/// The §18 report's `provenance` block carries the
+/// candidate's Git identity (commit and tree) so a
+/// downstream consumer can correlate the report to
+/// a specific source tree. The 1C.2 RED commit's
+/// minimal struct had these at the top level; the
+/// 1C.2 GREEN commit moves them into `provenance`
+/// (per the §18 "provenance" group's spec text).
+/// The test now reads through the new path.
 #[test]
 fn candidate_commit_and_tree_are_carried() {
     let report = run(&good_input());
-    assert_eq!(report.candidate_commit, "a".repeat(40));
-    assert_eq!(report.candidate_tree, "b".repeat(40));
+    assert_eq!(report.provenance.candidate_commit, "a".repeat(40));
+    assert_eq!(report.provenance.candidate_tree, "b".repeat(40));
 }
 
 /// The §17 fail path: the broken fixture's
@@ -216,7 +217,12 @@ fn missing_workspace_path_yields_infrastructure_error() {
     input.workspace_path = None;
     let report = run(&input);
     assert_eq!(report.verdict, Verdict::InfrastructureError);
-    assert!(report.diagnostics.iter().any(|d| d.code == "E_WORKSPACE_PATH_MISSING"));
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "E_WORKSPACE_PATH_MISSING")
+    );
 }
 
 /// The §17 `infrastructure_error` path:
@@ -231,7 +237,12 @@ fn workspace_path_pointing_at_a_file_yields_infrastructure_error() {
     input.workspace_path = Some(manifest.join("Cargo.toml"));
     let report = run(&input);
     assert_eq!(report.verdict, Verdict::InfrastructureError);
-    assert!(report.diagnostics.iter().any(|d| d.code == "E_WORKSPACE_NOT_DIR"));
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "E_WORKSPACE_NOT_DIR")
+    );
 }
 
 /// The §17 fail path: a workspace that is a
@@ -249,5 +260,10 @@ fn missing_debian_directory_yields_fail_verdict() {
     input.workspace_path = Some(manifest.join("src"));
     let report = run(&input);
     assert_eq!(report.verdict, Verdict::Fail);
-    assert!(report.diagnostics.iter().any(|d| d.code == "E_DEBIAN_DIR_MISSING"));
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == "E_DEBIAN_DIR_MISSING")
+    );
 }

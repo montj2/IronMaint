@@ -1298,7 +1298,11 @@ async fn debian_inspect_source_analysis_emits_the_comprehensive_section18_report
         .await;
     assert_eq!(response.status(), 200, "check.run was not served");
     let body: Value = response.json().await.expect("json body");
-    assert_eq!(body["error"], Value::Null, "check.run protocol error: {body}");
+    assert_eq!(
+        body["error"],
+        Value::Null,
+        "check.run protocol error: {body}"
+    );
     let result = &body["result"]["structuredContent"];
     assert_eq!(
         result["evidence_status"], "pass",
@@ -1346,7 +1350,11 @@ async fn debian_inspect_source_analysis_emits_the_comprehensive_section18_report
         .await;
     assert_eq!(get_response.status(), 200, "evidence.get was not served");
     let get_body: Value = get_response.json().await.expect("json body");
-    assert_eq!(get_body["error"], Value::Null, "evidence.get protocol error: {get_body}");
+    assert_eq!(
+        get_body["error"],
+        Value::Null,
+        "evidence.get protocol error: {get_body}"
+    );
     let artifacts = get_body["result"]["structuredContent"]["evidence"]["artifacts"]
         .as_array()
         .expect("artifacts array on the Evidence row");
@@ -1383,7 +1391,8 @@ async fn debian_inspect_source_analysis_emits_the_comprehensive_section18_report
     );
     let artifact_body: Value = artifact_response.json().await.expect("json body");
     assert_eq!(
-        artifact_body["error"], Value::Null,
+        artifact_body["error"],
+        Value::Null,
         "evidence.artifact.read protocol error: {artifact_body}"
     );
     // The artifact body is the JSON the tool emitted on

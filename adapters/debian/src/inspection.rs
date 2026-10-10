@@ -128,10 +128,7 @@ mod tests {
             plan.checks[1].key.as_str(),
             "debian.inspect.source_analysis"
         );
-        assert_eq!(
-            plan.checks[1].evidence_kind,
-            EvidenceKind::SourceIntegrity
-        );
+        assert_eq!(plan.checks[1].evidence_kind, EvidenceKind::SourceIntegrity);
         assert!(plan.checks[1].mandatory);
     }
 }
