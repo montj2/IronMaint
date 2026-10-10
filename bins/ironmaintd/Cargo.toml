@@ -55,3 +55,12 @@ reqwest = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "io-util"] }
+# 1C.2's source-analysis integration test reads the bound
+# report artifact via `evidence.artifact.read`; the tool
+# returns the bytes base64-encoded, and the test decodes
+# them to parse the report JSON. The `base64` crate is
+# already a transitive dep of the workspace (used by the
+# MCP dispatcher for the same purpose), so this is a
+# direct dev-dep that makes that dependency explicit at
+# the test boundary.
+base64 = { workspace = true }

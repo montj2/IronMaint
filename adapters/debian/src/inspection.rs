@@ -1,22 +1,24 @@
 //! Production `InspectionCapability` impl for the Debian adapter
 //! (PHASE-1 §12, §13).
 //!
-//! 1B.3 ships a single hermetic `PlannedCheck` with the
-//! forward-pointer key `debian.inspect.source_preparation` (the
-//! first Phase 1 read-only-intake check, implemented in 1C.1).
-//! The actual executor-side tool registration for this key is
-//! 1C.1's work; 1B.3 only needs the *plan* shape so the
-//! conformance arm at `assert_descriptor_is_valid` for
+//! 1B.3 + 1C.1 + 1C.2 ship two `PlannedCheck`s with the
+//! forward-pointer keys `debian.inspect.source_preparation` (the
+//! 1C.1 six-check summary) and `debian.inspect.source_analysis`
+//! (the 1C.2 comprehensive source-tree inventory per §18). The
+//! actual executor-side tool registrations for these keys are
+//! the 1C.x work; this module only needs the *plan* shape so
+//! the conformance arm at `assert_descriptor_is_valid` for
 //! `AdapterCapability::SourceInspection` passes.
 //!
 //! The plan is hermetic: identical `(context, adapter)` inputs
 //! produce identical outputs, no I/O, no side effects, no
 //! distribution of its own (§12). `PlannedCheck::mandatory` is
-//! `true` because every captured Debian candidate needs the
-//! source-preparation check; the runtime's
-//! `gate_stage_for(EvidenceKind::SourcePreparation)` mapping
-//! (in `ironmaint-state`) is what routes the check to the
-//! right gate.
+//! `true` for every check because every captured Debian
+//! candidate needs the source-preparation and source-analysis
+//! checks; the runtime's
+//! `gate_stage_for(EvidenceKind::SourcePreparation)` and
+//! `gate_stage_for(EvidenceKind::SourceIntegrity)` mappings
+//! (in `ironmaint-state`) route each check to the right gate.
 
 use ironmaint_adapter_api::{
     AdapterError, CandidateContext, InspectionCapability, InspectionPlan, PlannedCheck,
@@ -35,19 +37,19 @@ impl InspectionCapability for DebianInspection {
         &self,
         _context: &CandidateContext<'_>,
     ) -> Result<InspectionPlan, AdapterError> {
-        // The string is a hard-coded constant whose validity the
-        // type system cannot prove at compile time (dots, non-empty,
-        // ascii). `new` returns a `Result` to surface the failure
-        // case; we propagate it rather than panic so the test that
-        // pins the constant gets a typed error to assert on instead
-        // of a stack trace.
-        let key = ToolCapabilityKey::new("debian.inspect.source_preparation")?;
+        // The strings are hard-coded constants whose validity
+        // the type system cannot prove at compile time (dots,
+        // non-empty, ascii). `new` returns a `Result` to
+        // surface the failure case; we propagate it rather
+        // than panic so the test that pins the constant gets
+        // a typed error to assert on instead of a stack trace.
+        let source_preparation = ToolCapabilityKey::new("debian.inspect.source_preparation")?;
+        let source_analysis = ToolCapabilityKey::new("debian.inspect.source_analysis")?;
         Ok(InspectionPlan {
-            checks: vec![PlannedCheck::new(
-                key,
-                EvidenceKind::SourcePreparation,
-                true,
-            )],
+            checks: vec![
+                PlannedCheck::new(source_preparation, EvidenceKind::SourcePreparation, true),
+                PlannedCheck::new(source_analysis, EvidenceKind::SourceIntegrity, true),
+            ],
         })
     }
 }
@@ -99,8 +101,12 @@ mod tests {
         )
     }
 
+    /// The 1C.1 + 1C.2 plan shape: two checks, with the
+    /// 1C.1 source-preparation key and the 1C.2
+    /// source-analysis key, mapped to the corresponding
+    /// `EvidenceKind` values.
     #[test]
-    fn hermetic_plan_has_one_check_with_phase1_key() {
+    fn hermetic_plan_has_two_checks_for_source_preparation_and_source_analysis() {
         let i = DebianInspection;
         let c = candidate();
         let ctx = CandidateContext {
@@ -108,7 +114,7 @@ mod tests {
             candidate: &c,
         };
         let plan = i.inspection_plan(&ctx).unwrap();
-        assert_eq!(plan.checks.len(), 1);
+        assert_eq!(plan.checks.len(), 2);
         assert_eq!(
             plan.checks[0].key.as_str(),
             "debian.inspect.source_preparation"
@@ -118,5 +124,14 @@ mod tests {
             EvidenceKind::SourcePreparation
         );
         assert!(plan.checks[0].mandatory);
+        assert_eq!(
+            plan.checks[1].key.as_str(),
+            "debian.inspect.source_analysis"
+        );
+        assert_eq!(
+            plan.checks[1].evidence_kind,
+            EvidenceKind::SourceIntegrity
+        );
+        assert!(plan.checks[1].mandatory);
     }
 }

@@ -140,6 +140,12 @@ fn generate_all() -> Result<BTreeMap<String, String>, Box<dyn Error>> {
             ironmaint_debian_tool::DebianSourcePreparationV1
         ))?,
     );
+    out.insert(
+        "DebianSourceReportV1.json".into(),
+        serde_json::to_string_pretty(&schemars::schema_for!(
+            ironmaint_debian_tool::DebianSourceReportV1
+        ))?,
+    );
     Ok(out)
 }
 

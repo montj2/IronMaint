@@ -19,11 +19,13 @@ use std::path::PathBuf;
 
 pub mod normalizer;
 pub mod report;
+pub mod source_analysis;
 pub mod source_preparation;
 
-pub use normalizer::DebianSourcePreparationNormalizer;
-pub use report::{DebianSourcePreparationV1, Verdict};
-pub use source_preparation::run;
+pub use normalizer::{DebianSourceAnalysisNormalizer, DebianSourcePreparationNormalizer};
+pub use report::{DebianSourcePreparationV1, DebianSourceReportV1, Verdict};
+pub use source_analysis::run as run_source_analysis;
+pub use source_preparation::run as run_source_preparation;
 
 const BINARY_NAME: &str = "ironmaint-debian-tool";
 

@@ -244,6 +244,37 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
     tools
         .register(Box::new(source_preparation))
         .map_err(|e| StartupError::Serve(format!("debian.inspect.source_preparation: {e}")))?;
+    // 1C.2: register the comprehensive `source-analysis` tool.
+    // Same binary, second subcommand; same `JsonStdin` input,
+    // same `Check` class, same 30s / 256 KiB stdout / 64 KiB
+    // stderr budget. The normalizer maps the
+    // `debian.source_analysis_v1` report's verdict to
+    // `EvidenceStatus::{Pass, Fail}` or to
+    // `ExecutorError::InfrastructureFailed` (the §17
+    // distinction). The fixture-driven integration test in
+    // `bins/ironmaintd/tests/startup_shutdown.rs` exercises
+    // the binary on the hermetic `example-1.0` fixture and
+    // asserts the comprehensive fields are populated.
+    let source_analysis_key = ToolCapabilityKey::new("debian.inspect.source_analysis")
+        .map_err(|e| StartupError::Serve(format!("debian.inspect.source_analysis key: {e}")))?;
+    let source_analysis = ironmaint_executor::ToolDefinitionRecord::new(
+        source_analysis_key.clone(),
+        &config.debian_tool_bin,
+        vec![std::ffi::OsString::from("source-analysis")],
+        ironmaint_executor::ExecutionClass::Check,
+        ironmaint_executor::ExecutionLimits {
+            timeout: std::time::Duration::from_secs(30),
+            stdout_max_bytes: 256 * 1024,
+            stderr_max_bytes: 64 * 1024,
+        },
+    )
+    .with_input_mode(ironmaint_executor::ToolInputMode::JsonStdin)
+    .with_normalizer(std::sync::Arc::new(
+        ironmaint_debian_tool::DebianSourceAnalysisNormalizer::new(),
+    ));
+    tools
+        .register(Box::new(source_analysis))
+        .map_err(|e| StartupError::Serve(format!("debian.inspect.source_analysis: {e}")))?;
     tracing::info!(
         validate = %keys.validate,
         fail = %keys.fail,
@@ -252,6 +283,7 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
         interrupt = %keys.interrupt,
         infra_fail = %keys.infra_fail,
         source_preparation = %source_preparation_key,
+        source_analysis = %source_analysis_key,
         fixture = %config.fixture_bin.display(),
         debian_tool_bin = %config.debian_tool_bin.display(),
         "tool registry loaded"
