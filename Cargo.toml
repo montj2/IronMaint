@@ -77,6 +77,16 @@ all = { level = "warn", priority = -1 }
 phase = "1"
 north_star = "Adding support for a new distribution requires implementing that distribution's maintenance contract — not rewriting IronMaint's fundamental trust, evidence, orchestration, or release model."
 
+# Profile tuning: the default dev profile uses debug = 2 (full debug info),
+# which is the main reason target/debug/ balloons to 30-60 GB on a 20-crate
+# workspace over a couple of weeks. debug = 1 keeps line tables only
+# (~half the size per .rlib/.o), which is enough for stepping and panic
+# backtraces. For a one-off need for full debug info, override on the
+# command line: cargo build --config 'profile.dev.debug=2'. Pair this
+# with `make -f containers/Makefile clean-target` for periodic cleanup.
+[profile.dev]
+debug = 1
+
 # -----------------------------------------------------------------------------
 # Workspace dependencies. Declared once at the root, inherited by member
 # crates. Members pin only the version they need and may add their own
