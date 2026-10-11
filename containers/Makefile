@@ -28,6 +28,11 @@
 #   make inspect              Print image metadata.
 #   make clean                Remove locally-loaded images.
 #   make clean-volumes        Also drop the compose-managed named volumes.
+#   make clean-target         Remove the host-side target/ directory (the
+#                             cargo build cache; the gate container uses
+#                             a separate named volume, see compose.yml).
+#                             Run periodically — debug builds in this
+#                             workspace routinely reach 30-60 GB.
 
 REGISTRY            ?= localhost:5000
 BASE_TAG            ?= ironmaint/base:0.1
@@ -361,6 +366,16 @@ clean:
 clean-volumes: clean
 	docker volume rm ironmaint_cargo-target ironmaint_cargo-registry \
 		ironmaint_cargo-git ironmaint_ironmaint-state 2>/dev/null || true
+
+# The §97 gate runs inside a container with CARGO_TARGET_DIR on a named
+# volume (compose.yml:60-113), so the gate's target dir is unaffected.
+# This cleans the host-side target/ — what `cargo build` from the repo
+# root writes. [profile.dev] debug = 1 in Cargo.toml halves the per-build
+# footprint but does not replace periodic cleanup of the incremental
+# cache and stale dep variants.
+.PHONY: clean-target
+clean-target:
+	cargo clean --manifest-path $(PWD)/Cargo.toml
 
 # ---- CI-style verification ----------------------------------------------
 .PHONY: verify
