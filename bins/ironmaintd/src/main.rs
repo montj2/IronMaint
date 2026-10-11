@@ -275,6 +275,35 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
     tools
         .register(Box::new(source_analysis))
         .map_err(|e| StartupError::Serve(format!("debian.inspect.source_analysis: {e}")))?;
+    // 1C.3: register the `maintenance-context` tool.
+    // Same binary, third subcommand. The §13 routing
+    // matrix names the key `debian.inspect.maintenance_context`,
+    // the evidence kind `EvidenceKind::Maintenance` (already
+    // present), and the gate mandatory. The §19 contract
+    // is the comprehensive maintenance-context report —
+    // patches, tests, watch, gbp, maintainer scripts, and
+    // upstream-relationship metadata — re-emitted by the
+    // 1C.2 helpers in the binary's `maintenance_context::run`.
+    let maintenance_context_key = ToolCapabilityKey::new("debian.inspect.maintenance_context")
+        .map_err(|e| StartupError::Serve(format!("debian.inspect.maintenance_context key: {e}")))?;
+    let maintenance_context = ironmaint_executor::ToolDefinitionRecord::new(
+        maintenance_context_key.clone(),
+        &config.debian_tool_bin,
+        vec![std::ffi::OsString::from("maintenance-context")],
+        ironmaint_executor::ExecutionClass::Check,
+        ironmaint_executor::ExecutionLimits {
+            timeout: std::time::Duration::from_secs(30),
+            stdout_max_bytes: 256 * 1024,
+            stderr_max_bytes: 64 * 1024,
+        },
+    )
+    .with_input_mode(ironmaint_executor::ToolInputMode::JsonStdin)
+    .with_normalizer(std::sync::Arc::new(
+        ironmaint_debian_tool::DebianMaintenanceContextNormalizer::new(),
+    ));
+    tools
+        .register(Box::new(maintenance_context))
+        .map_err(|e| StartupError::Serve(format!("debian.inspect.maintenance_context: {e}")))?;
     tracing::info!(
         validate = %keys.validate,
         fail = %keys.fail,
@@ -284,6 +313,7 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
         infra_fail = %keys.infra_fail,
         source_preparation = %source_preparation_key,
         source_analysis = %source_analysis_key,
+        maintenance_context = %maintenance_context_key,
         fixture = %config.fixture_bin.display(),
         debian_tool_bin = %config.debian_tool_bin.display(),
         "tool registry loaded"

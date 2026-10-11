@@ -1,23 +1,25 @@
 //! Production `InspectionCapability` impl for the Debian adapter
 //! (PHASE-1 §12, §13).
 //!
-//! 1B.3 + 1C.1 + 1C.2 ship two `PlannedCheck`s with the
-//! forward-pointer keys `debian.inspect.source_preparation` (the
-//! 1C.1 six-check summary) and `debian.inspect.source_analysis`
-//! (the 1C.2 comprehensive source-tree inventory per §18). The
-//! actual executor-side tool registrations for these keys are
-//! the 1C.x work; this module only needs the *plan* shape so
-//! the conformance arm at `assert_descriptor_is_valid` for
+//! 1B.3 + 1C.1 + 1C.2 + 1C.3 ship three `PlannedCheck`s
+//! with the forward-pointer keys `debian.inspect.source_preparation`
+//! (the 1C.1 six-check summary), `debian.inspect.source_analysis`
+//! (the 1C.2 comprehensive source-tree inventory per §18),
+//! and `debian.inspect.maintenance_context` (the 1C.3 §26
+//! maintenance-context view, routing key into the
+//! `EvidenceKind::Maintenance` gate). The actual executor-side
+//! tool registrations for these keys are the 1C.x work;
+//! this module only needs the *plan* shape so the
+//! conformance arm at `assert_descriptor_is_valid` for
 //! `AdapterCapability::SourceInspection` passes.
 //!
 //! The plan is hermetic: identical `(context, adapter)` inputs
 //! produce identical outputs, no I/O, no side effects, no
 //! distribution of its own (§12). `PlannedCheck::mandatory` is
 //! `true` for every check because every captured Debian
-//! candidate needs the source-preparation and source-analysis
-//! checks; the runtime's
-//! `gate_stage_for(EvidenceKind::SourcePreparation)` and
-//! `gate_stage_for(EvidenceKind::SourceIntegrity)` mappings
+//! candidate needs the source-preparation, source-analysis,
+//! and maintenance-context checks; the runtime's
+//! `gate_stage_for(EvidenceKind::*)` mappings
 //! (in `ironmaint-state`) route each check to the right gate.
 
 use ironmaint_adapter_api::{
@@ -45,10 +47,12 @@ impl InspectionCapability for DebianInspection {
         // a typed error to assert on instead of a stack trace.
         let source_preparation = ToolCapabilityKey::new("debian.inspect.source_preparation")?;
         let source_analysis = ToolCapabilityKey::new("debian.inspect.source_analysis")?;
+        let maintenance_context = ToolCapabilityKey::new("debian.inspect.maintenance_context")?;
         Ok(InspectionPlan {
             checks: vec![
                 PlannedCheck::new(source_preparation, EvidenceKind::SourcePreparation, true),
                 PlannedCheck::new(source_analysis, EvidenceKind::SourceIntegrity, true),
+                PlannedCheck::new(maintenance_context, EvidenceKind::Maintenance, true),
             ],
         })
     }
@@ -101,12 +105,14 @@ mod tests {
         )
     }
 
-    /// The 1C.1 + 1C.2 plan shape: two checks, with the
-    /// 1C.1 source-preparation key and the 1C.2
-    /// source-analysis key, mapped to the corresponding
-    /// `EvidenceKind` values.
+    /// The 1C.1 + 1C.2 + 1C.3 plan shape: three
+    /// checks, with the 1C.1 source-preparation key,
+    /// the 1C.2 source-analysis key, and the 1C.3
+    /// maintenance-context key, each mapped to the
+    /// corresponding `EvidenceKind` value.
     #[test]
-    fn hermetic_plan_has_two_checks_for_source_preparation_and_source_analysis() {
+    fn hermetic_plan_has_three_checks_for_source_preparation_source_analysis_and_maintenance_context()
+     {
         let i = DebianInspection;
         let c = candidate();
         let ctx = CandidateContext {
@@ -114,7 +120,7 @@ mod tests {
             candidate: &c,
         };
         let plan = i.inspection_plan(&ctx).unwrap();
-        assert_eq!(plan.checks.len(), 2);
+        assert_eq!(plan.checks.len(), 3);
         assert_eq!(
             plan.checks[0].key.as_str(),
             "debian.inspect.source_preparation"
@@ -130,5 +136,11 @@ mod tests {
         );
         assert_eq!(plan.checks[1].evidence_kind, EvidenceKind::SourceIntegrity);
         assert!(plan.checks[1].mandatory);
+        assert_eq!(
+            plan.checks[2].key.as_str(),
+            "debian.inspect.maintenance_context"
+        );
+        assert_eq!(plan.checks[2].evidence_kind, EvidenceKind::Maintenance);
+        assert!(plan.checks[2].mandatory);
     }
 }

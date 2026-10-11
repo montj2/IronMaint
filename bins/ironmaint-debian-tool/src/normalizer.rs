@@ -30,7 +30,9 @@ use ironmaint_executor::{
     ExecutionRecord, NormalizationError, NormalizedResult, Observation, ResultNormalizer,
 };
 
-use crate::report::{DebianSourcePreparationV1, DebianSourceReportV1, Verdict};
+use crate::report::{
+    DebianMaintenanceContextV1, DebianSourcePreparationV1, DebianSourceReportV1, Verdict,
+};
 
 /// The 1C.1 normalizer. Stateless; cheap to construct.
 #[derive(Debug, Default, Clone, Copy)]
@@ -310,6 +312,67 @@ impl ResultNormalizer for DebianSourceAnalysisNormalizer {
             Verdict::InfrastructureError => {
                 return Err(NormalizationError::Unclassifiable(
                     "debian.inspect.source_analysis: infrastructure error".to_string(),
+                ));
+            }
+        };
+
+        Ok(NormalizedResult {
+            evidence_status,
+            output_truncated: record.truncated,
+            observations,
+            invalidations: Vec::new(),
+        })
+    }
+}
+
+// =============================================================================
+// 1C.3 — `DebianMaintenanceContextNormalizer` (PHASE-1.md §17, §19, §26).
+//
+// Mirrors the 1C.1 / 1C.2 normalizers; the verdict tri-state
+// mapping is identical. The unclassifiable message is the
+// 1C.3-specific string so a runtime log / observation can
+// distinguish the three normalizers.
+// =============================================================================
+
+/// The 1C.3 normalizer. Stateless; cheap to construct.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct DebianMaintenanceContextNormalizer;
+
+impl DebianMaintenanceContextNormalizer {
+    /// Constructor used by the daemon's tool registry:
+    /// `Arc::new(DebianMaintenanceContextNormalizer::new())`.
+    /// The body is `Self::default()`; the constructor
+    /// exists for call-site readability.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl ResultNormalizer for DebianMaintenanceContextNormalizer {
+    fn normalize(&self, record: &ExecutionRecord) -> Result<NormalizedResult, NormalizationError> {
+        let report: DebianMaintenanceContextV1 = serde_json::from_str(record.stdout.as_str())
+            .map_err(|e| {
+                NormalizationError::Malformed(format!(
+                    "could not parse DebianMaintenanceContextV1 from tool stdout: {e}"
+                ))
+            })?;
+
+        let observations = report
+            .diagnostics
+            .iter()
+            .map(|d| Observation {
+                kind: d.code.clone(),
+                message: d.message.clone(),
+            })
+            .collect();
+
+        let evidence_status = match report.verdict {
+            Verdict::Pass => EvidenceStatus::Pass,
+            Verdict::Fail => EvidenceStatus::Fail,
+            Verdict::InfrastructureError => {
+                return Err(NormalizationError::Unclassifiable(
+                    "debian.inspect.maintenance_context: infrastructure error".to_string(),
                 ));
             }
         };

@@ -1,0 +1,133 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DebianMaintenanceContextV1",
+  "description": "The 1C.3 maintenance-context report. The 1C.3 RED commit's struct is the *minimal* shape (§17 tri-state + provenance + diagnostics); the 1C.3 GREEN commit extends it with the §26 comprehensive fields (patches, tests, watch, gbp, maintainer scripts, upstream_relationship). The sub-types `Patch`, `Autopkgtest`, `WatchConfig`, `GbpConfig`, `MaintainerScripts`, and `Provenance` are reused from the 1C.2 `DebianSourceReportV1` — they live in the same `report` module and the 1C.3 parser composition re-uses the 1C.2 helpers.",
+  "type": "object",
+  "required": [
+    "report_kind",
+    "schema_version",
+    "verdict"
+  ],
+  "properties": {
+    "diagnostics": {
+      "description": "Diagnostics (e.g. `E_DEBIAN_DIR_MISSING`). Empty when `verdict` is `pass`.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Diagnostic"
+      }
+    },
+    "provenance": {
+      "description": "The candidate's BLAKE3 fingerprint, Git commit, and Git tree; the inspector binary's version. 1C.2's `Provenance` type, reused.",
+      "default": {
+        "candidate_commit": "",
+        "candidate_fingerprint": "",
+        "candidate_tree": "",
+        "inspector_version": ""
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/Provenance"
+        }
+      ]
+    },
+    "report_kind": {
+      "description": "Discriminator. Always `MAINTENANCE_CONTEXT_REPORT_KIND` (= `\"debian.maintenance_context_v1\"`).",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Wire-format version. Always `MAINTENANCE_CONTEXT_SCHEMA_VERSION` (= 1).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "verdict": {
+      "description": "The §17 tri-state verdict.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Verdict"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "Diagnostic": {
+      "description": "A single failure or informational line from the tool.",
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "description": "A stable, machine-readable error code, e.g. `E_DEBIAN_DIR_MISSING`. Future tools can match on this without parsing the message.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Human-readable explanation. The tool does not embed the offending value (a) to keep PII out of the report and (b) so the same diagnostic text can serve any fixture.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The on-disk path that triggered the diagnostic, when applicable (e.g. `debian/`, `debian/changelog`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Provenance": {
+      "description": "The provenance block (§18 provenance group).\n\nThe candidate fingerprint, Git commit, and Git tree are the candidate's identity (the §18 lines 842-846 requirement). `inspector_version` is the version of the `ironmaint-debian-tool` binary that produced the report, so a downstream consumer can tell which parser version emitted the report.",
+      "type": "object",
+      "required": [
+        "candidate_commit",
+        "candidate_fingerprint",
+        "candidate_tree",
+        "inspector_version"
+      ],
+      "properties": {
+        "candidate_commit": {
+          "description": "The candidate's Git commit OID.",
+          "type": "string"
+        },
+        "candidate_fingerprint": {
+          "description": "The candidate's BLAKE3 fingerprint.",
+          "type": "string"
+        },
+        "candidate_tree": {
+          "description": "The candidate's Git tree OID.",
+          "type": "string"
+        },
+        "inspector_version": {
+          "description": "The `ironmaint-debian-tool` binary's version (e.g. `0.1.0`).",
+          "type": "string"
+        }
+      }
+    },
+    "Verdict": {
+      "description": "The §17 tri-state.",
+      "oneOf": [
+        {
+          "description": "Every check in §17 succeeded.",
+          "type": "string",
+          "enum": [
+            "pass"
+          ]
+        },
+        {
+          "description": "At least one §17 check failed (mismatched name, mismatched version, unparsable `debian/control`, unparsable `debian/changelog`, missing `debian/`, unidentifiable source format, unparsable mandatory metadata). Diagnostics list the specific failure.",
+          "type": "string",
+          "enum": [
+            "fail"
+          ]
+        },
+        {
+          "description": "The tool could not establish the fact at all: the workspace path is unreadable, an IO error occurred, a parser binary is missing. The §17 rule \"parser binary missing → InfrastructureError\" lives here.",
+          "type": "string",
+          "enum": [
+            "infrastructure_error"
+          ]
+        }
+      ]
+    }
+  }
+}
