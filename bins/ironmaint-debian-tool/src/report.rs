@@ -885,4 +885,41 @@ pub struct DebianMaintenanceContextV1 {
     /// Empty when `verdict` is `pass`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub diagnostics: Vec<Diagnostic>,
+    /// §26 maintenance dimension: applied patches
+    /// with DEP-3 metadata. Reused from 1C.2's
+    /// `Patch` type. Empty when `debian/patches/`
+    /// is absent or `series` is empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patches: Vec<Patch>,
+    /// §26 maintenance dimension: autopkgtest
+    /// stanzas from `debian/tests/control`. Reused
+    /// from 1C.2's `Autopkgtest` type. Empty when
+    /// the file is absent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests: Vec<Autopkgtest>,
+    /// §26 maintenance dimension: `debian/watch`
+    /// v4 configuration. Reused from 1C.2's
+    /// `WatchConfig` type. `None` when the file is
+    /// absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<WatchConfig>,
+    /// §26 maintenance dimension: gbp / dch
+    /// configuration presence. Reused from 1C.2's
+    /// `GbpConfig` type. Always present (the
+    /// struct's `gbp_conf_present: false` carries
+    /// the absence signal).
+    #[serde(default)]
+    pub gbp: GbpConfig,
+    /// §26 maintenance dimension: presence and
+    /// executable bit of `debian/{preinst,
+    /// postinst, prerm, postrm}`. Reused from
+    /// 1C.2's `MaintainerScripts` type.
+    #[serde(default)]
+    pub maintainer_scripts: MaintainerScripts,
+    /// §26 maintenance dimension: upstream
+    /// relationship metadata (Upstream-Name,
+    /// Upstream-Contact, Vcs-Git, Vcs-Browser,
+    /// Homepage). New in 1C.3.
+    #[serde(default)]
+    pub upstream_relationship: UpstreamRelationship,
 }

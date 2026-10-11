@@ -37,6 +37,7 @@ use crate::report::{
     DebianMaintenanceContextV1, Diagnostic, MAINTENANCE_CONTEXT_REPORT_KIND,
     MAINTENANCE_CONTEXT_SCHEMA_VERSION, Provenance, UpstreamRelationship, Verdict,
 };
+use crate::source_analysis;
 
 /// The runtime's `ironmaint.candidate_input.v3` payload
 /// (PHASE-1.md §7). 1C.3 reuses 1C.2's v3 shape — no
@@ -72,69 +73,107 @@ pub struct Package {
 
 /// Run the 1C.3 maintenance-context check.
 ///
-/// The 1C.3 RED commit's `run()` returns the *minimal*
-/// struct (verdict + provenance + diagnostics only). The
-/// §26 comprehensive fields (patches, tests, watch, gbp,
-/// maintainer scripts, upstream_relationship) are
-/// reserved for the 1C.3 GREEN commit's
-/// `run()` — the parser composition there re-uses the
-/// 1C.2 helpers (`read_patches`, `read_tests_control`,
-/// `read_watch`, `read_gbp_config`, `read_maintainer_scripts`)
-/// and adds the new `parsers::copyright` /
-/// `parsers::control` helpers for the
-/// `UpstreamRelationship` block.
+/// The §26 comprehensive fields (patches, tests, watch,
+/// gbp, maintainer scripts, upstream_relationship) are
+/// populated by the parser composition:
+///
+/// - `patches` ← 1C.2's `read_patches(debian_dir/patches)`
+/// - `tests` ← 1C.2's `read_tests_control(debian_dir/tests/control)`
+/// - `watch` ← 1C.2's `read_watch(debian_dir/watch)`
+/// - `gbp` ← 1C.2's `read_gbp_config(debian_dir)`
+/// - `maintainer_scripts` ← 1C.2's
+///   `read_maintainer_scripts(debian_dir)`
+/// - `upstream_relationship` ← the 1C.3 new helpers
+///   `parsers::copyright::read_upstream_metadata(debian_dir)` and
+///   `parsers::control::read_vcs_metadata(debian_dir)`,
+///   merged into a single `UpstreamRelationship` value.
+///
+/// Diagnostics from the patch helper (e.g.
+/// `E_PATCH_FILE_MISSING`) are appended to the
+/// report's `diagnostics` list. A patch-side
+/// diagnostic shifts the verdict from `Pass` to
+/// `Fail` (§17 hard-fail list).
 pub fn run(input: &CandidateInput) -> DebianMaintenanceContextV1 {
     let workspace_path = input.workspace_path.clone();
-    let (verdict, diagnostics) = match workspace_path.as_ref() {
-        None => (
-            Verdict::InfrastructureError,
-            vec![Diagnostic {
+    let mut diagnostics: Vec<Diagnostic> = Vec::new();
+    let mut verdict = Verdict::Pass;
+
+    // The parser composition populates a
+    // `ComprehensiveMaintenanceContext` value, used
+    // directly in the report. The default is the
+    // "no Debian source tree" case (every
+    // observation is the absence-observation).
+    let mut comprehensive = ComprehensiveMaintenanceContext::default();
+
+    match workspace_path.as_ref() {
+        None => {
+            diagnostics.push(Diagnostic {
                 code: "E_WORKSPACE_PATH_MISSING".to_string(),
                 message: "candidate input did not include workspace_path".to_string(),
                 path: None,
-            }],
-        ),
-        Some(p) if !p.is_dir() => (
-            Verdict::InfrastructureError,
-            vec![Diagnostic {
+            });
+            verdict = Verdict::InfrastructureError;
+        }
+        Some(p) if !p.is_dir() => {
+            diagnostics.push(Diagnostic {
                 code: "E_WORKSPACE_NOT_DIR".to_string(),
                 message: format!("workspace_path {} is not a directory", p.display()),
                 path: Some(p.clone()),
-            }],
-        ),
+            });
+            verdict = Verdict::InfrastructureError;
+        }
         Some(p) => {
             let debian_dir = p.join("debian");
             if !debian_dir.is_dir() {
-                (
-                    Verdict::Fail,
-                    vec![Diagnostic {
-                        code: "E_DEBIAN_DIR_MISSING".to_string(),
-                        message: format!("{} does not exist", debian_dir.display()),
-                        path: Some(debian_dir),
-                    }],
-                )
+                diagnostics.push(Diagnostic {
+                    code: "E_DEBIAN_DIR_MISSING".to_string(),
+                    message: format!("{} does not exist", debian_dir.display()),
+                    path: Some(debian_dir),
+                });
+                verdict = Verdict::Fail;
             } else {
-                (Verdict::Pass, Vec::new())
+                // Compose the §26 maintenance dimensions.
+                let patches_dir = debian_dir.join("patches");
+                let (patches, patch_diags) = source_analysis::read_patches(&patches_dir);
+                let has_patch_failures =
+                    patch_diags.iter().any(|d| d.code == "E_PATCH_FILE_MISSING");
+                diagnostics.extend(patch_diags);
+
+                let tests_control_path = debian_dir.join("tests").join("control");
+                let tests = source_analysis::read_tests_control(&tests_control_path);
+
+                let watch_path = debian_dir.join("watch");
+                let watch = source_analysis::read_watch(&watch_path);
+
+                let gbp = source_analysis::read_gbp_config(&debian_dir);
+                let maintainer_scripts = source_analysis::read_maintainer_scripts(&debian_dir);
+
+                let upstream = copyright::read_upstream_metadata(&debian_dir);
+                let vcs = control::read_vcs_metadata(&debian_dir);
+                let upstream_relationship = UpstreamRelationship {
+                    upstream_name: upstream.upstream_name,
+                    upstream_contact: upstream.upstream_contact,
+                    upstream_url: upstream.upstream_url,
+                    vcs_git: vcs.vcs_git,
+                    vcs_browser: vcs.vcs_browser,
+                    homepage: vcs.homepage,
+                };
+
+                comprehensive = ComprehensiveMaintenanceContext {
+                    patches,
+                    tests,
+                    watch,
+                    gbp,
+                    maintainer_scripts,
+                    upstream_relationship,
+                };
+
+                if has_patch_failures {
+                    verdict = Verdict::Fail;
+                }
             }
         }
-    };
-
-    // The 1C.3 RED commit's `run()` ignores the §26
-    // comprehensive fields; the 1C.3 GREEN commit's
-    // `run()` calls the parser composition here. The
-    // helpers are imported in GREEN; the imports below
-    // ensure the `parsers` module is reachable from this
-    // path so the GREEN commit's body is a single
-    // edit to the `run()` body.
-    let _upstream = copyright::read_upstream_metadata(&debian_dir_path(&workspace_path));
-    let _vcs = control::read_vcs_metadata(&debian_dir_path(&workspace_path));
-
-    // Pre-build the upstream-relationship block from the
-    // hermetic-fixture's known fields. The GREEN commit
-    // replaces this placeholder with the real merge of
-    // `copyright::UpstreamMetadata` and `control::VcsMetadata`.
-    let upstream_relationship = UpstreamRelationship::default();
-    let _ = upstream_relationship;
+    }
 
     DebianMaintenanceContextV1 {
         schema_version: MAINTENANCE_CONTEXT_SCHEMA_VERSION,
@@ -147,13 +186,49 @@ pub fn run(input: &CandidateInput) -> DebianMaintenanceContextV1 {
         },
         verdict,
         diagnostics,
+        patches: comprehensive.patches,
+        tests: comprehensive.tests,
+        watch: comprehensive.watch,
+        gbp: comprehensive.gbp,
+        maintainer_scripts: comprehensive.maintainer_scripts,
+        upstream_relationship: comprehensive.upstream_relationship,
     }
 }
 
-fn debian_dir_path(workspace_path: &Option<PathBuf>) -> std::path::PathBuf {
-    match workspace_path {
-        Some(p) => p.join("debian"),
-        None => std::path::PathBuf::new(),
+/// Internal helper struct that mirrors the §26
+/// comprehensive fields of `DebianMaintenanceContextV1`.
+/// Default corresponds to "no Debian source tree"
+/// (every observation is the absence-observation).
+struct ComprehensiveMaintenanceContext {
+    patches: Vec<crate::report::Patch>,
+    tests: Vec<crate::report::Autopkgtest>,
+    watch: Option<crate::report::WatchConfig>,
+    gbp: crate::report::GbpConfig,
+    maintainer_scripts: crate::report::MaintainerScripts,
+    upstream_relationship: UpstreamRelationship,
+}
+
+impl Default for ComprehensiveMaintenanceContext {
+    fn default() -> Self {
+        Self {
+            patches: Vec::new(),
+            tests: Vec::new(),
+            watch: None,
+            gbp: crate::report::GbpConfig {
+                gbp_conf_present: false,
+                gbp_dch_conf_present: false,
+                branch_settings: None,
+            },
+            maintainer_scripts: crate::report::MaintainerScripts {
+                preinst: None,
+                postinst: None,
+                prerm: None,
+                postrm: None,
+                triggers: None,
+                other_scripts: Vec::new(),
+            },
+            upstream_relationship: UpstreamRelationship::default(),
+        }
     }
 }
 
