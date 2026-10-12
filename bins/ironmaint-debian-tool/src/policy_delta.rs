@@ -90,9 +90,6 @@ pub struct Package {
 /// field on `debian/control` — a Policy violation
 /// (§22 observation-not-compliance rule).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // 1D.2 RED: only `AtOrBelowBaseline` is
-// constructed; 1D.2 GREEN wires the other
-// two variants in `run()`.
 enum StandardsDelta {
     /// The candidate's `Standards-Version` is
     /// strictly newer than the manifest's
@@ -119,29 +116,36 @@ enum StandardsDelta {
 /// `baseline_policy_version` (= `"4.7.4.1"`).
 fn compare_standards_version(
     candidate_standards_version: Option<&str>,
-    _baseline: &str,
+    baseline: &str,
 ) -> StandardsDelta {
-    // 1D.2 RED: the comparison is intentionally a
-    // no-op. The 1D.2 GREEN commit replaces this
-    // body with the real `debversion`-based
-    // comparison. The broken-then-fixed pattern
-    // (EXECUTION-PLAN.md §4) makes the
-    // future-fixture test fail in RED (the
-    // comparator always returns
-    // `AtOrBelowBaseline`, so the 4.9.0 candidate
-    // is recorded as `Pass`) and pass in GREEN
-    // (the comparator returns `AboveBaseline` and
-    // the verdict flips to `Fail`).
-    let _ = candidate_standards_version;
-    StandardsDelta::AtOrBelowBaseline
+    let Some(candidate) = candidate_standards_version else {
+        return StandardsDelta::MissingCandidate;
+    };
+    let Ok(candidate_v) = debversion::Version::from_str(candidate) else {
+        // A candidate with an unparsable
+        // Standards-Version is treated as
+        // missing (the §22 gate is "is the
+        // declared version known?", and a
+        // non-dpkg-parseable value is "not
+        // known" — the adapter cannot rank it
+        // against the baseline).
+        return StandardsDelta::MissingCandidate;
+    };
+    let Ok(baseline_v) = debversion::Version::from_str(baseline) else {
+        // The manifest's baseline is
+        // unparseable — internal data error;
+        // fail-closed to missing.
+        return StandardsDelta::MissingCandidate;
+    };
+    if candidate_v > baseline_v {
+        StandardsDelta::AboveBaseline
+    } else {
+        StandardsDelta::AtOrBelowBaseline
+    }
 }
 
 /// Run the 1D.2 policy-delta check.
 ///
-/// The 1D.2 RED commit's body returns
-/// `Verdict::Pass` for any valid input (the §22
-/// gate is not yet wired). The 1D.2 GREEN
-/// commit's body:
 ///   1. Reads `policy/debian/authorities.v1.json`
 ///      `baseline_policy_version` (= `"4.7.4.1"`).
 ///   2. Parses `debian/control` source paragraph
@@ -189,13 +193,12 @@ pub fn run(input: &CandidateInput) -> DebianPolicyDeltaReviewV1 {
         }
     };
 
-    // The §22 comparison. RED commit:
-    // skipped. GREEN commit: wires the
+    // The §22 comparison. The tri-state
     // AboveBaseline / AtOrBelowBaseline /
-    // MissingCandidate tri-state into the
+    // MissingCandidate is wired into the
     // verdict + diagnostics.
     let comparison_outcome: Option<StandardsVersionComparison> =
-        match compare_standards_version(candidate_standards_version.as_deref(), &baseline) {
+        match compare_standards_version(candidate_standards_version.as_deref(), baseline) {
             StandardsDelta::AboveBaseline => {
                 diagnostics.push(Diagnostic {
                     code: "E_POLICY_BASELINE_STALE".to_string(),
@@ -213,7 +216,7 @@ pub fn run(input: &CandidateInput) -> DebianPolicyDeltaReviewV1 {
                 Some(StandardsVersionComparison::AboveBaseline)
             }
             StandardsDelta::AtOrBelowBaseline => Some(
-                if candidate_standards_version.as_deref() == Some(baseline.as_str()) {
+                if candidate_standards_version.as_deref() == Some(baseline) {
                     StandardsVersionComparison::AtBaseline
                 } else {
                     StandardsVersionComparison::BelowBaseline
@@ -247,7 +250,7 @@ pub fn run(input: &CandidateInput) -> DebianPolicyDeltaReviewV1 {
         verdict,
         diagnostics,
         candidate_standards_version,
-        baseline_standards_version: Some(baseline),
+        baseline_standards_version: Some(baseline.to_string()),
         comparison_outcome,
     }
 }

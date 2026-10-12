@@ -96,7 +96,7 @@ impl PolicyCapability for DebianPolicyDerivation {
             .requested_baseline
             .cloned()
             .unwrap_or_else(|| PolicyBaseline::new(distribution));
-        for authority in &authorities {
+        for authority in authorities {
             baseline = baseline.add_authority(authority.id);
         }
 

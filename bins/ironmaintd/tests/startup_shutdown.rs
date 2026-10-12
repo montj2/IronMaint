@@ -811,11 +811,11 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
         .collect();
     assert_eq!(
         run_checks.len(),
-        3,
-        "the production Debian adapter (1B.3 + 1C.1 + 1C.2 + 1C.3) plans three checks \
-         (`debian.inspect.source_preparation`, `debian.inspect.source_analysis`, and \
-         `debian.inspect.maintenance_context`); all must be offered as \
-         `run_check` actions: {next}"
+        4,
+        "the production Debian adapter (1B.3 + 1C.1 + 1C.2 + 1C.3 + 1D.2) plans four checks \
+         (`debian.inspect.source_preparation`, `debian.inspect.source_analysis`, \
+         `debian.inspect.maintenance_context`, and `debian.policy.delta_review`); all \
+         must be offered as `run_check` actions: {next}"
     );
     assert!(
         run_checks.iter().all(|id| !id.is_empty()),
@@ -1235,8 +1235,8 @@ async fn debian_inspect_source_analysis_emits_the_comprehensive_section18_report
         .collect();
     assert_eq!(
         check_ids.len(),
-        3,
-        "the production Debian adapter plans three checks (1C.1 + 1C.2 + 1C.3): {next}"
+        4,
+        "the production Debian adapter plans four checks (1C.1 + 1C.2 + 1C.3 + 1D.2): {next}"
     );
     let source_preparation_check_id = check_ids[0].to_string();
     let source_analysis_check_id = check_ids[1].to_string();
@@ -1501,8 +1501,8 @@ async fn debian_inspect_maintenance_context_emits_the_comprehensive_section19_re
         .collect();
     assert_eq!(
         check_ids.len(),
-        3,
-        "the production Debian adapter plans three checks (1C.1 + 1C.2 + 1C.3): {next}"
+        4,
+        "the production Debian adapter plans four checks (1C.1 + 1C.2 + 1C.3 + 1D.2): {next}"
     );
     let source_preparation_check_id = check_ids[0].to_string();
     let source_analysis_check_id = check_ids[1].to_string();
@@ -1774,15 +1774,12 @@ async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
         .filter_map(|a| a.get("run_check")?.get("check_id")?.as_str())
         .map(|s| s.to_string())
         .collect();
-    let policy_delta_check_id = allowed
-        .iter()
-        .find_map(|a| {
-            let op = a.get("run_check")?;
-            if op.get("check_key")?.as_str() != Some("debian.policy.delta_review") {
-                return None;
-            }
-            op.get("check_id")?.as_str().map(|s| s.to_string())
-        })
+    // The 1D.2 policy-delta check is the 4th entry
+    // in the inspection plan (after source_preparation,
+    // source_analysis, and maintenance_context).
+    let policy_delta_check_id = check_ids
+        .get(3)
+        .cloned()
         .expect("policy-delta check_id must be in next_actions");
 
     // Stage the future-version fixture into the
@@ -1882,9 +1879,9 @@ async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
         )
         .await;
     let artifact_body: Value = artifact_response.json().await.expect("json body");
-    let encoded = artifact_body["result"]["structuredContent"]["content_b64"]
+    let encoded = artifact_body["result"]["structuredContent"]["bytes_base64"]
         .as_str()
-        .expect("content_b64 string");
+        .expect("bytes_base64 string");
     use base64::Engine;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(encoded)
@@ -1950,15 +1947,17 @@ async fn debian_policy_delta_review_passes_a_candidate_below_the_baseline() {
     let allowed = next["actions"]["allowed"]
         .as_array()
         .expect("allowed array");
-    let policy_delta_check_id = allowed
+    let check_ids: Vec<String> = allowed
         .iter()
-        .find_map(|a| {
-            let op = a.get("run_check")?;
-            if op.get("check_key")?.as_str() != Some("debian.policy.delta_review") {
-                return None;
-            }
-            op.get("check_id")?.as_str().map(|s| s.to_string())
-        })
+        .filter_map(|a| a.get("run_check")?.get("check_id")?.as_str())
+        .map(|s| s.to_string())
+        .collect();
+    // The 1D.2 policy-delta check is the 4th entry
+    // in the inspection plan (after source_preparation,
+    // source_analysis, and maintenance_context).
+    let policy_delta_check_id = check_ids
+        .get(3)
+        .cloned()
         .expect("policy-delta check_id must be in next_actions");
 
     let workspaces_root = tmp.path().join("workspaces");
@@ -2044,9 +2043,9 @@ async fn debian_policy_delta_review_passes_a_candidate_below_the_baseline() {
         )
         .await;
     let artifact_body: Value = artifact_response.json().await.expect("json body");
-    let encoded = artifact_body["result"]["structuredContent"]["content_b64"]
+    let encoded = artifact_body["result"]["structuredContent"]["bytes_base64"]
         .as_str()
-        .expect("content_b64 string");
+        .expect("bytes_base64 string");
     use base64::Engine;
     let decoded = base64::engine::general_purpose::STANDARD
         .decode(encoded)
