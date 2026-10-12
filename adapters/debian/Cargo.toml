@@ -15,6 +15,9 @@ ironmaint-core = { path = "../../crates/ironmaint-core" }
 ironmaint-evidence = { path = "../../crates/ironmaint-evidence" }
 ironmaint-policy = { path = "../../crates/ironmaint-policy" }
 debversion = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+schemars = { workspace = true }
 
 [dev-dependencies]
 ironmaint-testkit = { path = "../../crates/ironmaint-testkit" }

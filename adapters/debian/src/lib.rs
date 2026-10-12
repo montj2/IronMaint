@@ -32,11 +32,14 @@
 #![deny(unused_must_use)]
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod authority_manifest;
 mod descriptor;
 mod inspection;
 mod issues;
 mod package_model;
 mod versioning;
+
+pub use authority_manifest::{baseline_policy_version, load_authorities};
 
 use ironmaint_adapter_api::DistributionAdapter;
 

@@ -1,0 +1,131 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DebianAuthorityManifestV1",
+  "description": "The on-disk shape of `policy/debian/authorities.v1.json`.\n\n`pub` so `xtask/src/schemas.rs` can call `schemars::schema_for!(DebianAuthorityManifestV1)` for the §97 schema-snapshot tool. The re-exports in `lib.rs` expose the loader functions, not the struct itself.",
+  "type": "object",
+  "required": [
+    "authorities",
+    "baseline_policy_version",
+    "distribution",
+    "manifest_version",
+    "schema_version"
+  ],
+  "properties": {
+    "authorities": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Authority"
+      }
+    },
+    "baseline_policy_version": {
+      "type": "string"
+    },
+    "distribution": {
+      "type": "string"
+    },
+    "manifest_version": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    }
+  },
+  "definitions": {
+    "Authority": {
+      "description": "A source of policy (§32).\n\n`distribution` is `Some` for distribution-specific authorities (Debian Policy, Fedora Packaging Guidelines) and `None` for cross-distribution authorities (formal specs, generic best practices). The classifier is distribution-neutral; ranking is the adapter's job.\n\n`id` is `#[serde(default)]`-able: a manifest entry that omits `id` deserialises to `AuthorityId::default()` (a nil UUID, per the `define_uuid_id!` macro in `ironmaint-core::identity`). The Debian authority loader (`adapters/debian/src/authority_manifest.rs::load_authorities`) re-mints each loaded entry's id to a fresh UUIDv7 before returning the list, so the runtime id is per-load even though the on-disk default is nil.",
+      "type": "object",
+      "required": [
+        "classification",
+        "name"
+      ],
+      "properties": {
+        "classification": {
+          "$ref": "#/definitions/AuthorityClassification"
+        },
+        "distribution": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "id": {
+          "default": "00000000-0000-0000-0000-000000000000",
+          "type": "string",
+          "format": "uuid"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "AuthorityClassification": {
+      "description": "Classification of an authority's normative weight (§32).\n\nAdapter-supplied ranking rules apply *over* these labels; the labels themselves are distribution-neutral.",
+      "oneOf": [
+        {
+          "description": "Binding distribution policy (e.g. Debian Policy, Fedora Packaging Guidelines).",
+          "type": "string",
+          "enum": [
+            "normative_policy"
+          ]
+        },
+        {
+          "description": "Formal specification (RFC, ISO, etc.).",
+          "type": "string",
+          "enum": [
+            "formal_specification"
+          ]
+        },
+        {
+          "description": "Distribution-internal procedure document.",
+          "type": "string",
+          "enum": [
+            "distribution_procedure"
+          ]
+        },
+        {
+          "description": "Industry best practice (not binding on the distribution).",
+          "type": "string",
+          "enum": [
+            "best_practice"
+          ]
+        },
+        {
+          "description": "Tool documentation (lintian, rpmlint, sbuild, mock, etc.).",
+          "type": "string",
+          "enum": [
+            "tool_documentation"
+          ]
+        },
+        {
+          "description": "Distribution-team-specific policy.",
+          "type": "string",
+          "enum": [
+            "team_policy"
+          ]
+        },
+        {
+          "description": "Local / project policy.",
+          "type": "string",
+          "enum": [
+            "local_policy"
+          ]
+        },
+        {
+          "description": "Informational — does not assert any obligation.",
+          "type": "string",
+          "enum": [
+            "informational"
+          ]
+        }
+      ]
+    }
+  }
+}

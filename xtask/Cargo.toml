@@ -41,3 +41,9 @@ proc-macro2 = { version = "1", features = ["span-locations"] }
 # boundary violation: no downstream crate depends
 # on xtask at runtime.
 ironmaint-debian-tool = { path = "../bins/ironmaint-debian-tool" }
+# `verify-schemas` snapshots the wire format of the
+# `policy/debian/authorities.v1.json` manifest
+# (PHASE-1.md §19, 1D.1). Same reasoning as the
+# `ironmaint-debian-tool` dep above: a build-time
+# schema-snapshot tool, not a runtime library.
+debian = { path = "../adapters/debian" }
