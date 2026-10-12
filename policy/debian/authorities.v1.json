@@ -2,5 +2,26 @@
   "schema_version": 1,
   "manifest_version": "1",
   "distribution": "debian",
-  "baseline_policy_version": "4.7.4.1"
+  "baseline_policy_version": "4.7.4.1",
+  "authorities": [
+    {
+      "name": "Debian Policy",
+      "version": "4.7.4.1",
+      "classification": "normative_policy"
+    },
+    {
+      "name": "Developer's Reference",
+      "version": "14.17",
+      "classification": "best_practice"
+    },
+    {
+      "name": "DEP-5 / copyright-format",
+      "version": "1.0",
+      "classification": "formal_specification"
+    },
+    {
+      "name": "BTS operational protocol",
+      "classification": "distribution_procedure"
+    }
+  ]
 }

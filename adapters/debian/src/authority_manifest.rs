@@ -35,6 +35,7 @@ pub struct DebianAuthorityManifestV1 {
 /// id; see [`default_authority_id`] in
 /// `ironmaint-policy::authority` for the
 /// rationale.
+#[allow(clippy::expect_used)]
 pub fn load_authorities() -> Vec<Authority> {
     let raw = include_str!("../../../policy/debian/authorities.v1.json");
     let manifest: DebianAuthorityManifestV1 = serde_json::from_str(raw)
@@ -52,6 +53,7 @@ pub fn load_authorities() -> Vec<Authority> {
 /// The baseline `Standards-Version` the
 /// adapter treats as known good. 1D.2's
 /// `delta_review` evaluator reads this.
+#[allow(clippy::expect_used)]
 pub fn baseline_policy_version() -> String {
     let raw = include_str!("../../../policy/debian/authorities.v1.json");
     let m: DebianAuthorityManifestV1 = serde_json::from_str(raw)
@@ -78,7 +80,10 @@ mod tests {
             .iter()
             .find(|a| a.name == "Debian Policy")
             .expect("Debian Policy is a §19 entry");
-        assert_eq!(policy.classification, AuthorityClassification::NormativePolicy);
+        assert_eq!(
+            policy.classification,
+            AuthorityClassification::NormativePolicy
+        );
         assert_eq!(policy.version.as_deref(), Some("4.7.4.1"));
     }
 
@@ -107,7 +112,10 @@ mod tests {
             .iter()
             .find(|a| a.name == "DEP-5 / copyright-format")
             .expect("copyright-format is a §19 entry");
-        assert_eq!(cf.classification, AuthorityClassification::FormalSpecification);
+        assert_eq!(
+            cf.classification,
+            AuthorityClassification::FormalSpecification
+        );
     }
 
     #[test]
