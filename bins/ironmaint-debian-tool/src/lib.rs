@@ -17,6 +17,7 @@
 
 use std::path::PathBuf;
 
+pub mod bts_snapshot;
 pub mod maintenance_context;
 pub mod normalizer;
 pub mod parsers;
@@ -25,15 +26,18 @@ pub mod report;
 pub mod source_analysis;
 pub mod source_preparation;
 
+pub use bts_snapshot::run as run_bts_snapshot;
 pub use maintenance_context::run as run_maintenance_context;
 pub use normalizer::{
-    DebianMaintenanceContextNormalizer, DebianPolicyDeltaReviewNormalizer,
-    DebianSourceAnalysisNormalizer, DebianSourcePreparationNormalizer,
+    DebianBtsSnapshotNormalizer, DebianMaintenanceContextNormalizer,
+    DebianPolicyDeltaReviewNormalizer, DebianSourceAnalysisNormalizer,
+    DebianSourcePreparationNormalizer,
 };
 pub use policy_delta::run as run_policy_delta;
 pub use report::{
-    DebianMaintenanceContextV1, DebianPolicyDeltaReviewV1, DebianSourcePreparationV1,
-    DebianSourceReportV1, StandardsVersionComparison, UpstreamRelationship, Verdict,
+    DebianIssueReportV1, DebianMaintenanceContextV1, DebianPolicyDeltaReviewV1,
+    DebianSourcePreparationV1, DebianSourceReportV1, IssueVerdict, StandardsVersionComparison,
+    UpstreamRelationship, Verdict,
 };
 pub use source_analysis::run as run_source_analysis;
 pub use source_preparation::run as run_source_preparation;

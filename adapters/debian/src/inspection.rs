@@ -1,25 +1,30 @@
 //! Production `InspectionCapability` impl for the Debian adapter
-//! (PHASE-1 §12, §13, §19, §22).
+//! (PHASE-1 §12, §13, §19, §22, §23, §24).
 //!
-//! 1B.3 + 1C.1 + 1C.2 + 1C.3 + 1D.2 ship four `PlannedCheck`s
-//! with the forward-pointer keys `debian.inspect.source_preparation`
-//! (the 1C.1 six-check summary), `debian.inspect.source_analysis`
-//! (the 1C.2 comprehensive source-tree inventory per §18),
+//! 1B.3 + 1C.1 + 1C.2 + 1C.3 + 1D.2 + 1E.2 ship five
+//! `PlannedCheck`s with the forward-pointer keys
+//! `debian.inspect.source_preparation` (the 1C.1 six-check
+//! summary), `debian.inspect.source_analysis` (the 1C.2
+//! comprehensive source-tree inventory per §18),
 //! `debian.inspect.maintenance_context` (the 1C.3 §26
 //! maintenance-context view, routing key into the
-//! `EvidenceKind::Maintenance` gate), and
-//! `debian.policy.delta_review` (the 1D.2 §22 Standards-Version
-//! delta evaluator, routing key into the
-//! `EvidenceKind::PolicyEvaluation` gate).
+//! `EvidenceKind::Maintenance` gate),
+//! `debian.policy.delta_review` (the 1D.2 §22
+//! Standards-Version delta evaluator, routing key into
+//! the `EvidenceKind::PolicyEvaluation` gate), and
+//! `debian.issue.bts_snapshot` (the 1E.2 §23 BTS read-only
+//! transport + §24 tri-state verdict normalizer, routing
+//! key into the `EvidenceKind::IssueCorrelation` gate).
 //!
 //! The plan is hermetic: identical `(context, adapter)` inputs
 //! produce identical outputs, no I/O, no side effects, no
 //! distribution of its own (§12). `PlannedCheck::mandatory` is
 //! `true` for every check because every captured Debian
 //! candidate needs the source-preparation, source-analysis,
-//! maintenance-context, and policy-delta checks; the runtime's
-//! `gate_stage_for(EvidenceKind::*)` mappings
-//! (in `ironmaint-state`) route each check to the right gate.
+//! maintenance-context, policy-delta, and bts-snapshot
+//! checks; the runtime's `gate_stage_for(EvidenceKind::*)`
+//! mappings (in `ironmaint-state`) route each check to the
+//! right gate.
 
 use ironmaint_adapter_api::{
     AdapterError, CandidateContext, InspectionCapability, InspectionPlan, PlannedCheck,
@@ -48,12 +53,14 @@ impl InspectionCapability for DebianInspection {
         let source_analysis = ToolCapabilityKey::new("debian.inspect.source_analysis")?;
         let maintenance_context = ToolCapabilityKey::new("debian.inspect.maintenance_context")?;
         let policy_delta = ToolCapabilityKey::new("debian.policy.delta_review")?;
+        let bts_snapshot = ToolCapabilityKey::new("debian.issue.bts_snapshot")?;
         Ok(InspectionPlan {
             checks: vec![
                 PlannedCheck::new(source_preparation, EvidenceKind::SourcePreparation, true),
                 PlannedCheck::new(source_analysis, EvidenceKind::SourceIntegrity, true),
                 PlannedCheck::new(maintenance_context, EvidenceKind::Maintenance, true),
                 PlannedCheck::new(policy_delta, EvidenceKind::PolicyEvaluation, true),
+                PlannedCheck::new(bts_snapshot, EvidenceKind::IssueCorrelation, true),
             ],
         })
     }
@@ -106,14 +113,15 @@ mod tests {
         )
     }
 
-    /// The 1C.1 + 1C.2 + 1C.3 + 1D.2 plan shape: four
-    /// checks, with the 1C.1 source-preparation key,
-    /// the 1C.2 source-analysis key, the 1C.3
-    /// maintenance-context key, and the 1D.2
-    /// policy-delta key, each mapped to the
-    /// corresponding `EvidenceKind` value.
+    /// The 1C.1 + 1C.2 + 1C.3 + 1D.2 + 1E.2 plan
+    /// shape: five checks, with the 1C.1
+    /// source-preparation key, the 1C.2
+    /// source-analysis key, the 1C.3
+    /// maintenance-context key, the 1D.2 policy-delta
+    /// key, and the 1E.2 bts-snapshot key, each mapped
+    /// to the corresponding `EvidenceKind` value.
     #[test]
-    fn hermetic_plan_has_four_checks_for_source_preparation_source_analysis_maintenance_context_and_policy_delta()
+    fn hermetic_plan_has_five_checks_for_source_preparation_source_analysis_maintenance_context_policy_delta_and_bts_snapshot()
      {
         let i = DebianInspection;
         let c = candidate();
@@ -122,7 +130,7 @@ mod tests {
             candidate: &c,
         };
         let plan = i.inspection_plan(&ctx).unwrap();
-        assert_eq!(plan.checks.len(), 4);
+        assert_eq!(plan.checks.len(), 5);
         assert_eq!(
             plan.checks[0].key.as_str(),
             "debian.inspect.source_preparation"
@@ -147,5 +155,8 @@ mod tests {
         assert_eq!(plan.checks[3].key.as_str(), "debian.policy.delta_review");
         assert_eq!(plan.checks[3].evidence_kind, EvidenceKind::PolicyEvaluation);
         assert!(plan.checks[3].mandatory);
+        assert_eq!(plan.checks[4].key.as_str(), "debian.issue.bts_snapshot");
+        assert_eq!(plan.checks[4].evidence_kind, EvidenceKind::IssueCorrelation);
+        assert!(plan.checks[4].mandatory);
     }
 }
