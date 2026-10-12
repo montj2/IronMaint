@@ -2279,3 +2279,217 @@ async fn debian_policy_delta_review_passes_a_candidate_below_the_baseline() {
 
     d.shutdown().await;
 }
+
+/// 1F.1 — PHASE-1.md §14 / §36 acceptance test: the
+/// existing state machine walks a real Debian fixture
+/// from `EventDetected` to `SourceIntegrity` end-to-end
+/// through MCP and then *stops*, because the
+/// `BuildValidation` gate is not satisfied.
+///
+/// Five pre-build checks gate the first five
+/// transitions (PHASE-1.md §13):
+/// - `debian.inspect.source_preparation` →
+///   `SourcePreparation` gate (rule 0)
+/// - `debian.inspect.source_analysis` →
+///   `SourceAnalysis` gate (rule 1)
+/// - `debian.issue.bts_snapshot` →
+///   `IssueAnalysis` gate (rule 2)
+/// - `debian.inspect.maintenance_context` →
+///   `Maintenance` gate (rule 3)
+/// - `debian.policy.delta_review` →
+///   `PolicyEvaluation` gate (rule 4)
+///
+/// Rule 5 (`SourceIntegrity → BuildValidation`) requires
+/// a `BuildValidation` gate no Phase 1 check satisfies.
+/// The state machine must therefore return
+/// `NoOp{current: SourceIntegrity}` on the next
+/// reconcile call — the architectural property §14
+/// mandates.
+///
+/// The RED→GREEN pair (PHASE-1.md §36 / EXECUTION-PLAN
+/// §4): the RED commit omits the `bts_snapshot` check
+/// (which gates rule 2), so reconcile #3 returns
+/// `Blocked{current: SourceReview, target: CandidateAssembly}`
+/// instead of advancing. The GREEN commit adds the
+/// `bts_snapshot` check so all five gates are satisfied
+/// and the walker advances through all five rules.
+///
+/// Test name deliberately includes the full claim so
+/// the broken-then-fixed signal is visible from `cargo
+/// test` alone.
+#[tokio::test]
+async fn debian_state_machine_vertical_slice_walks_event_detected_to_source_integrity_and_stops_at_the_missing_build_validation_gate() {
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    // 1. job.create + candidate.capture for the `example`
+    //    Debian package. The good fixture's identity
+    //    matches.
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+    let _captured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    // 2. Stage the good fixture into the job's
+    //    workspace handle. The workspace was created
+    //    empty by `candidate.capture`; copying the
+    //    fixture in-place is what 1C.1 / 1C.2 / 1C.3
+    //    / 1D.2 / 1E.2 already do.
+    let workspaces_root = tmp.path().join("workspaces");
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(handles.len(), 1, "expected exactly one workspace handle");
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+
+    // 3. Discover the five pre-build check_ids via
+    //    `job.next_actions`. The inspection plan emits
+    //    them in the same order the production
+    //    `DebianInspection::inspection_plan` builds
+    //    them (1C.1, 1C.2, 1C.3, 1D.2, 1E.2).
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let allowed = next["actions"]["allowed"]
+        .as_array()
+        .expect("allowed array");
+    let check_ids: Vec<String> = allowed
+        .iter()
+        .filter_map(|a| a.get("run_check")?.get("check_id")?.as_str())
+        .map(String::from)
+        .collect();
+    assert_eq!(
+        check_ids.len(),
+        5,
+        "the production Debian inspection plan must plan five pre-build checks: {check_ids:?}"
+    );
+
+    // 4. Run each of the five checks. Each emits a
+    //    `Verdict::Pass` against the good fixture;
+    //    the normalizer maps `pass` to
+    //    `EvidenceStatus::Pass` per §17. The
+    //    `evidence_status` assertion is the runtime
+    //    proof that the binary wrote and the normalizer
+    //    classified the report correctly.
+    //
+    //    GREEN-COMMIT-ONLY: the `bts_snapshot` check
+    //    is the line that flips this test from RED to
+    //    GREEN. In RED, omitting it leaves the
+    //    `IssueAnalysis` gate (rule 2) unsatisfied,
+    //    and reconcile #3 returns `Blocked` instead of
+    //    `Advanced`.
+    for (label, check_id) in [
+        ("source_preparation", &check_ids[0]),
+        ("source_analysis", &check_ids[1]),
+        ("maintenance_context", &check_ids[2]),
+        ("policy_delta_review", &check_ids[3]),
+        // GREEN-COMMIT-ONLY: uncomment in the GREEN
+        // commit to add the bts_snapshot check that
+        // satisfies the `IssueAnalysis` gate (rule 2).
+        // ("bts_snapshot", &check_ids[4]),
+    ] {
+        let run_result = d
+            .call(
+                "check.run",
+                json!({"job_id": job_id, "check_id": check_id}),
+            )
+            .await;
+        assert_eq!(
+            run_result["evidence_status"], "pass",
+            "the {label} check must pass against the good fixture: {run_result}"
+        );
+    }
+
+    // 5. Walk the state machine. The `reconcile()`
+//    walker at service.rs:1533 advances through ALL
+//    satisfied rules in a single call (§41: the loop
+//    "continues through multiple trivially-satisfied
+//    stages until reaching a state requiring [agent
+//    action]") and returns the first stop reason.
+//
+//    With all five pre-build checks passing, the
+//    walker advances rules 0..=4 and stops on rule 5
+//    (SourceIntegrity → BuildValidation) which has no
+//    gate definition (no Phase 1 check produces
+//    BuildValidation evidence). The returned outcome
+//    is therefore `Blocked{current: source_integrity,
+//    target: build_validation}` — the state machine
+//    *did* walk from EventDetected to SourceIntegrity
+//    (the `current` field proves it), and it *did*
+//    stop at the right point (the `target` field
+//    proves the next-blocked transition is the one
+//    §14 names).
+//
+//    In the RED state (bts_snapshot omitted), the
+//    `IssueAnalysis` gate (rule 2) is unsatisfied, so
+//    the walker stops earlier — at `current:
+//    source_review, target: candidate_assembly` — and
+//    the assertion below fails. The test name is
+//    intentionally explicit so the failure message
+//    shows the architectural property the GREEN state
+//    demonstrates.
+    let reconcile = d
+        .call("job.reconcile", json!({"job_id": job_id}))
+        .await;
+    let outcome = &reconcile["outcome"];
+    assert_eq!(
+        outcome["blocked"]["current"].as_str(),
+        Some("source_integrity"),
+        "the walker must reach SourceIntegrity before blocking: {reconcile}"
+    );
+    assert_eq!(
+        outcome["blocked"]["target"].as_str(),
+        Some("build_validation"),
+        "the walker must stop at the §14 BuildValidation boundary: {reconcile}"
+    );
+    let blockers = outcome["blocked"]["blockers"]
+        .as_array()
+        .expect("blockers array");
+    assert!(
+        !blockers.is_empty(),
+        "the BuildValidation gate must be reported as missing: {reconcile}"
+    );
+    let first_blocker = blockers[0]
+        .as_str()
+        .expect("blocker is a string");
+    assert!(
+        first_blocker.contains("MissingGate") || first_blocker.contains("build_validation"),
+        "the §14 blocker names the BuildValidation gate: {first_blocker:?}"
+    );
+
+    // 6. The state machine stays at SourceIntegrity
+    //    on subsequent reconcile calls. The state
+    //    does not advance (BuildValidation is still
+    //    unsatisfied) and does not regress. This is
+    //    the structural catch: if a future PR ever
+    //    registers a BuildValidation evidence row, this
+    //    second call would no longer report the same
+    //    Blocked outcome and the regression would be
+    //    visible at the §97 gate.
+    let second_reconcile = d
+        .call("job.reconcile", json!({"job_id": job_id}))
+        .await;
+    let second_outcome = &second_reconcile["outcome"];
+    assert_eq!(
+        second_outcome["blocked"]["current"].as_str(),
+        Some("source_integrity"),
+        "the state machine must remain at SourceIntegrity on a second reconcile: {second_reconcile}"
+    );
+    assert_eq!(
+        second_outcome["blocked"]["target"].as_str(),
+        Some("build_validation"),
+        "the §14 BuildValidation boundary must remain blocked: {second_reconcile}"
+    );
+
+    d.shutdown().await;
+}
