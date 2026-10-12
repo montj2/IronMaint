@@ -35,6 +35,9 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 
+use ironmaint_debian_tool::maintenance_context::{
+    self as maintenance_context_run, CandidateInput as MaintenanceContextInput,
+};
 use ironmaint_debian_tool::source_analysis::{
     self as source_analysis_run, CandidateInput as AnalysisInput,
 };
@@ -113,7 +116,13 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Sub::MaintenanceContext => not_yet_implemented("maintenance-context", "1C.3"),
+        Sub::MaintenanceContext => match run_maintenance_context_cmd() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("ironmaint-debian-tool: maintenance-context: {err:#}");
+                ExitCode::FAILURE
+            }
+        },
         Sub::PolicyDelta => not_yet_implemented("policy-delta", "1D.2"),
         Sub::BtsSnapshot => not_yet_implemented("bts-snapshot", "1E.x"),
     }
@@ -148,6 +157,18 @@ fn run_source_analysis() -> Result<()> {
         read_stdin_json().context("reading ironmaint.candidate_input.v3 from stdin")?;
     let report = source_analysis_run::run(&input);
     write_stdout_json(&report).context("writing DebianSourceReportV1 to stdout")?;
+    Ok(())
+}
+
+/// Run the `maintenance-context` subcommand. Reads
+/// `ironmaint.candidate_input.v3` from stdin (no schema
+/// bump from 1C.2), walks the source tree, emits
+/// `DebianMaintenanceContextV1` on stdout.
+fn run_maintenance_context_cmd() -> Result<()> {
+    let input: MaintenanceContextInput =
+        read_stdin_json().context("reading ironmaint.candidate_input.v3 from stdin")?;
+    let report = maintenance_context_run::run(&input);
+    write_stdout_json(&report).context("writing DebianMaintenanceContextV1 to stdout")?;
     Ok(())
 }
 

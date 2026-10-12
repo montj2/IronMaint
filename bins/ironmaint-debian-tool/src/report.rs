@@ -774,3 +774,152 @@ pub struct DebianSourceReportV1 {
     /// binary's version.
     pub provenance: Provenance,
 }
+
+// =============================================================================
+// 1C.3 — `debian.inspect.maintenance_context` + the
+// `DebianMaintenanceContextV1` schema (PHASE-1.md §13, §19, §26).
+//
+// The 1C.2 `DebianSourceReportV1` is the *source-tree inventory*;
+// the 1C.3 `DebianMaintenanceContextV1` is the *maintenance
+// context*: the same Debian source tree data, framed as "how is
+// this package being maintained?" (patch stack vs. applied
+// patches, gbp branch settings vs. raw config presence, upstream
+// relationship metadata). Both tools surface the same source-tree
+// artifacts, but the framing differs (§26).
+//
+// The 1C.3 RED commit's struct is the *minimal* shape (§17
+// tri-state verdict + provenance + diagnostics only); the 1C.3
+// GREEN commit extends it with the §26 comprehensive fields
+// (patches, tests, watch, gbp, maintainer scripts,
+// upstream_relationship). The §97 schema-snapshot tool
+// (`xtask verify-schemas`) catches GREEN-side drift: `cargo
+// run -p xtask -- verify-schemas --write` regenerates
+// `schemas/DebianMaintenanceContextV1.json` against the new
+// struct. The decision to use composition (re-emit 1C.2 fields
+// + add new UpstreamRelationship) — rather than extending
+// `DebianSourceReportV1` in place — keeps the §13 routing-key
+// separation (one tool = one struct = one snapshot) and the
+// `candidate_fingerprint` in `provenance` is the join key for
+// any consumer that needs the union of both reports.
+// =============================================================================
+
+/// Discriminator for the 1C.3 report. Always
+/// `"debian.maintenance_context_v1"` — distinct from 1C.1's
+/// `"debian.source_preparation"` and 1C.2's
+/// `"debian.source_analysis_v1"`.
+pub const MAINTENANCE_CONTEXT_REPORT_KIND: &str = "debian.maintenance_context_v1";
+
+/// Wire-format version for the 1C.3 report. Independent of
+/// the 1C.1 / 1C.2 `SCHEMA_VERSION` constants; all happen to
+/// be `1` but they may diverge.
+pub const MAINTENANCE_CONTEXT_SCHEMA_VERSION: u32 = 1;
+
+/// The upstream-relationship metadata block (§26 upstream
+/// relationship group; 1C.3's only new sub-type).
+///
+/// Carries the raw `Option<String>` fields from
+/// `debian/copyright` (Upstream-Name, Upstream-Contact,
+/// Source) and `debian/control` (Vcs-Git, Vcs-Browser,
+/// Homepage). The `team_maintained: bool` classification
+/// (§26 "Team maintained" bullet) is intentionally deferred
+/// to a future PR — the spec does not define the heuristic
+/// and committing to one prematurely risks rework.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UpstreamRelationship {
+    /// The DEP-5 `Upstream-Name:` field from
+    /// `debian/copyright`. `None` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_name: Option<String>,
+    /// The DEP-5 `Upstream-Contact:` field from
+    /// `debian/copyright`. `None` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_contact: Option<String>,
+    /// The DEP-5 `Source:` field from
+    /// `debian/copyright` (the canonical upstream URL
+    /// for the Files stanzas that follow). `None`
+    /// when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upstream_url: Option<String>,
+    /// The `Vcs-Git:` field from `debian/control`.
+    /// `None` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcs_git: Option<String>,
+    /// The `Vcs-Browser:` field from `debian/control`.
+    /// `None` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vcs_browser: Option<String>,
+    /// The `Homepage:` field from `debian/control`.
+    /// `None` when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub homepage: Option<String>,
+}
+
+/// The 1C.3 maintenance-context report. The 1C.3 RED
+/// commit's struct is the *minimal* shape (§17 tri-state
+/// + provenance + diagnostics); the 1C.3 GREEN commit
+///   extends it with the §26 comprehensive fields
+///   (patches, tests, watch, gbp, maintainer scripts,
+///   upstream_relationship). The sub-types `Patch`,
+///   `Autopkgtest`, `WatchConfig`, `GbpConfig`,
+///   `MaintainerScripts`, and `Provenance` are reused
+///   from the 1C.2 `DebianSourceReportV1` — they live in
+///   the same `report` module and the 1C.3 parser
+///   composition re-uses the 1C.2 helpers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DebianMaintenanceContextV1 {
+    /// Wire-format version. Always
+    /// `MAINTENANCE_CONTEXT_SCHEMA_VERSION` (= 1).
+    pub schema_version: u32,
+    /// Discriminator. Always
+    /// `MAINTENANCE_CONTEXT_REPORT_KIND` (= `"debian.maintenance_context_v1"`).
+    pub report_kind: String,
+    /// The candidate's BLAKE3 fingerprint, Git
+    /// commit, and Git tree; the inspector
+    /// binary's version. 1C.2's `Provenance`
+    /// type, reused.
+    #[serde(default)]
+    pub provenance: Provenance,
+    /// The §17 tri-state verdict.
+    pub verdict: Verdict,
+    /// Diagnostics (e.g. `E_DEBIAN_DIR_MISSING`).
+    /// Empty when `verdict` is `pass`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<Diagnostic>,
+    /// §26 maintenance dimension: applied patches
+    /// with DEP-3 metadata. Reused from 1C.2's
+    /// `Patch` type. Empty when `debian/patches/`
+    /// is absent or `series` is empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub patches: Vec<Patch>,
+    /// §26 maintenance dimension: autopkgtest
+    /// stanzas from `debian/tests/control`. Reused
+    /// from 1C.2's `Autopkgtest` type. Empty when
+    /// the file is absent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tests: Vec<Autopkgtest>,
+    /// §26 maintenance dimension: `debian/watch`
+    /// v4 configuration. Reused from 1C.2's
+    /// `WatchConfig` type. `None` when the file is
+    /// absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub watch: Option<WatchConfig>,
+    /// §26 maintenance dimension: gbp / dch
+    /// configuration presence. Reused from 1C.2's
+    /// `GbpConfig` type. Always present (the
+    /// struct's `gbp_conf_present: false` carries
+    /// the absence signal).
+    #[serde(default)]
+    pub gbp: GbpConfig,
+    /// §26 maintenance dimension: presence and
+    /// executable bit of `debian/{preinst,
+    /// postinst, prerm, postrm}`. Reused from
+    /// 1C.2's `MaintainerScripts` type.
+    #[serde(default)]
+    pub maintainer_scripts: MaintainerScripts,
+    /// §26 maintenance dimension: upstream
+    /// relationship metadata (Upstream-Name,
+    /// Upstream-Contact, Vcs-Git, Vcs-Browser,
+    /// Homepage). New in 1C.3.
+    #[serde(default)]
+    pub upstream_relationship: UpstreamRelationship,
+}

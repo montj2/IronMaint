@@ -754,10 +754,10 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
         "capture must report the activation: {notes:?}"
     );
     assert!(
-        notes.iter().any(|n| n.contains("materialized 2 check(s)")),
-        "the production Debian adapter (1B.3 + 1C.2) plans two checks \
-         (`debian.inspect.source_preparation` and \
-         `debian.inspect.source_analysis`); both must reach the store: {notes:?}"
+        notes.iter().any(|n| n.contains("materialized 3 check(s)")),
+        "the production Debian adapter (1B.3 + 1C.1 + 1C.2 + 1C.3) plans three checks \
+         (`debian.inspect.source_preparation`, `debian.inspect.source_analysis`, and \
+         `debian.inspect.maintenance_context`); all must reach the store: {notes:?}"
     );
     // The production adapter does not advertise `PolicyDerivation`
     // (PHASE-1 §11) and so derives no obligations. The runtime
@@ -806,10 +806,10 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
         .collect();
     assert_eq!(
         run_checks.len(),
-        2,
-        "the production Debian adapter (1B.3 + 1C.2) plans two checks \
-         (`debian.inspect.source_preparation` and \
-         `debian.inspect.source_analysis`); both must be offered as \
+        3,
+        "the production Debian adapter (1B.3 + 1C.1 + 1C.2 + 1C.3) plans three checks \
+         (`debian.inspect.source_preparation`, `debian.inspect.source_analysis`, and \
+         `debian.inspect.maintenance_context`); all must be offered as \
          `run_check` actions: {next}"
     );
     assert!(
@@ -1230,8 +1230,8 @@ async fn debian_inspect_source_analysis_emits_the_comprehensive_section18_report
         .collect();
     assert_eq!(
         check_ids.len(),
-        2,
-        "the production Debian adapter plans two checks (1C.1 + 1C.2): {next}"
+        3,
+        "the production Debian adapter plans three checks (1C.1 + 1C.2 + 1C.3): {next}"
     );
     let source_preparation_check_id = check_ids[0].to_string();
     let source_analysis_check_id = check_ids[1].to_string();
@@ -1439,6 +1439,294 @@ async fn debian_inspect_source_analysis_emits_the_comprehensive_section18_report
         report["source_format"].as_str(),
         Some("3.0 (quilt)"),
         "the fixture's `debian/source/format` is `3.0 (quilt)`: {report}"
+    );
+
+    d.shutdown().await;
+}
+
+/// 1C.3: the comprehensive `debian.inspect.maintenance_context`
+/// check returns the §26 `DebianMaintenanceContextV1` on a
+/// well-formed Debian source tree. The integration test
+/// runs the check through MCP, then reads the bound
+/// report artifact via `evidence.artifact.read` and
+/// asserts the §26 maintenance-dimension fields are
+/// populated (patches, tests, watch, gbp, maintainer
+/// scripts, upstream_relationship).
+///
+/// In the 1C.3 RED commit, the report struct is the
+/// minimal shape (§17 tri-state + provenance only); the
+/// §26 comprehensive fields are absent. The integration
+/// test fails because the asserted fields are absent
+/// from the report. In the 1C.3 GREEN commit, the
+/// struct is the comprehensive shape and the test
+/// passes.
+#[tokio::test]
+async fn debian_inspect_maintenance_context_emits_the_comprehensive_section19_report() {
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    // 1. Job + candidate capture.
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+    let _captured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    // 2. Stage the good fixture into the auto-provisioned
+    //    workspace handle. The first `next_actions` call
+    //    returns *three* run_check actions (the 1C.1
+    //    source-preparation check, the 1C.2
+    //    source-analysis check, and the 1C.3
+    //    maintenance-context check); the first two
+    //    are run to verify the workspace path is set up
+    //    correctly, the third is the new 1C.3 check.
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let allowed = next["actions"]["allowed"]
+        .as_array()
+        .expect("allowed array");
+    let check_ids: Vec<&str> = allowed
+        .iter()
+        .filter_map(|a| a.get("run_check")?.get("check_id")?.as_str())
+        .collect();
+    assert_eq!(
+        check_ids.len(),
+        3,
+        "the production Debian adapter plans three checks (1C.1 + 1C.2 + 1C.3): {next}"
+    );
+    let source_preparation_check_id = check_ids[0].to_string();
+    let source_analysis_check_id = check_ids[1].to_string();
+    let maintenance_context_check_id = check_ids[2].to_string();
+
+    // 3. Stage the fixture.
+    let workspaces_root = tmp.path().join("workspaces");
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(handles.len(), 1);
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+
+    // 4. Run source_preparation (the 1C.1 check) first.
+    //    This confirms the workspace path is set up
+    //    correctly and the candidate identity is good.
+    let prep_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {
+                        "job_id": job_id,
+                        "check_id": source_preparation_check_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(prep_response.status(), 200, "check.run was not served");
+    let prep_body: Value = prep_response.json().await.expect("json body");
+    assert_eq!(prep_body["error"], Value::Null, "{prep_body}");
+    let prep_result = &prep_body["result"]["structuredContent"];
+    assert_eq!(
+        prep_result["evidence_status"], "pass",
+        "the good fixture's §17 checks all hold; source_preparation passes: {prep_result}"
+    );
+
+    // 5. Run source_analysis (the 1C.2 check).
+    let analysis_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {
+                        "job_id": job_id,
+                        "check_id": source_analysis_check_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(analysis_response.status(), 200, "check.run was not served");
+    let analysis_body: Value = analysis_response.json().await.expect("json body");
+    assert_eq!(analysis_body["error"], Value::Null, "{analysis_body}");
+    let analysis_result = &analysis_body["result"]["structuredContent"];
+    assert_eq!(
+        analysis_result["evidence_status"], "pass",
+        "the good fixture's source tree is well-formed; the source_analysis tool's \
+         verdict is `pass` and the normalizer maps it to EvidenceStatus::Pass: {analysis_result}"
+    );
+
+    // 6. Run maintenance_context (the 1C.3 check).
+    let response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {
+                        "job_id": job_id,
+                        "check_id": maintenance_context_check_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(response.status(), 200, "check.run was not served");
+    let body: Value = response.json().await.expect("json body");
+    assert_eq!(
+        body["error"],
+        Value::Null,
+        "check.run protocol error: {body}"
+    );
+    let result = &body["result"]["structuredContent"];
+    assert_eq!(
+        result["evidence_status"], "pass",
+        "the good fixture's source tree is well-formed; the maintenance_context tool's \
+         verdict is `pass` and the normalizer maps it to EvidenceStatus::Pass: {result}"
+    );
+    assert_eq!(
+        result["gate_status"], "pass",
+        "a pass lets the gate open: {result}"
+    );
+    let evidence_id = result["evidence_id"]
+        .as_str()
+        .expect("evidence_id string")
+        .to_string();
+
+    // 7. Read the bound report artifact via
+    //    `evidence.artifact.read` and assert the §26
+    //    maintenance-dimension fields are populated. In
+    //    the 1C.3 RED commit, the report is the minimal
+    //    struct and these fields are absent; the test
+    //    fails. In the 1C.3 GREEN commit, the struct is
+    //    comprehensive and the test passes.
+    let get_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 4,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.get",
+                    "arguments": {
+                        "evidence_id": evidence_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(get_response.status(), 200, "evidence.get was not served");
+    let get_body: Value = get_response.json().await.expect("json body");
+    assert_eq!(
+        get_body["error"],
+        Value::Null,
+        "evidence.get protocol error: {get_body}"
+    );
+    let artifacts = get_body["result"]["structuredContent"]["evidence"]["artifacts"]
+        .as_array()
+        .expect("artifacts array on the Evidence row");
+    assert!(
+        !artifacts.is_empty(),
+        "the executor binds at least one report artifact per check.run: {get_body}"
+    );
+    let artifact_id = artifacts[0]["id"]
+        .as_str()
+        .expect("artifact id string")
+        .to_string();
+
+    let artifact_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 5,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.artifact.read",
+                    "arguments": {
+                        "evidence_id": evidence_id,
+                        "artifact_id": artifact_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(
+        artifact_response.status(),
+        200,
+        "evidence.artifact.read was not served"
+    );
+    let artifact_body: Value = artifact_response.json().await.expect("json body");
+    assert_eq!(
+        artifact_body["error"],
+        Value::Null,
+        "evidence.artifact.read protocol error: {artifact_body}"
+    );
+    // The artifact body is the JSON the tool emitted on
+    // stdout, base64-encoded by the read tool.
+    let bytes_base64 = artifact_body["result"]["structuredContent"]["bytes_base64"]
+        .as_str()
+        .expect("bytes_base64 string");
+    use base64::Engine as _;
+    let artifact_bytes = base64::engine::general_purpose::STANDARD
+        .decode(bytes_base64)
+        .expect("base64-decode artifact bytes");
+    let report: Value = serde_json::from_slice(&artifact_bytes).expect("report JSON");
+
+    // Assert the §26 maintenance-dimension fields are populated.
+    let patches = report["patches"].as_array().expect("patches array");
+    assert!(
+        !patches.is_empty(),
+        "the fixture's `debian/patches/series` references one patch; \
+         patches must be non-empty: {report}"
+    );
+    let tests = report["tests"].as_array().expect("tests array");
+    assert!(
+        !tests.is_empty(),
+        "the fixture's `debian/tests/control` declares one autopkgtest; \
+         tests must be non-empty: {report}"
+    );
+    assert!(
+        report["watch"].is_object(),
+        "the fixture's `debian/watch` parses as a v4 watch object: {report}"
+    );
+    assert!(
+        report["gbp"].is_object(),
+        "the fixture's `debian/gbp.conf` is parsed into a gbp object: {report}"
+    );
+    assert!(
+        report["maintainer_scripts"].is_object(),
+        "the fixture's maintainer scripts are parsed into a maintainer_scripts object: {report}"
+    );
+    assert_eq!(
+        report["maintainer_scripts"]["postinst"]["executable"].as_bool(),
+        Some(true),
+        "the fixture's `debian/postinst` is executable: {report}"
+    );
+    assert!(
+        report["upstream_relationship"].is_object(),
+        "the upstream_relationship sub-struct is present even with all-null fields: {report}"
     );
 
     d.shutdown().await;

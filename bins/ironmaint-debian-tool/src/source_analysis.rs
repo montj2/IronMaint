@@ -780,7 +780,7 @@ fn parse_copyright(body: &str) -> CopyrightInfo {
 // `debian/watch` v4.
 // =============================================================================
 
-fn read_watch(path: &Path) -> Option<WatchConfig> {
+pub(crate) fn read_watch(path: &Path) -> Option<WatchConfig> {
     let body = std::fs::read_to_string(path).ok()?;
     parse_watch(&body)
 }
@@ -829,7 +829,7 @@ fn parse_watch(body: &str) -> Option<WatchConfig> {
 // `debian/patches/series` + each patch's DEP-3 header.
 // =============================================================================
 
-fn read_patches(patches_dir: &Path) -> (Vec<Patch>, Vec<Diagnostic>) {
+pub(crate) fn read_patches(patches_dir: &Path) -> (Vec<Patch>, Vec<Diagnostic>) {
     let mut patches: Vec<Patch> = Vec::new();
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let series_path = patches_dir.join("series");
@@ -951,7 +951,7 @@ fn assign_dep3(
 // `debian/tests/control` (DEP-8).
 // =============================================================================
 
-fn read_tests_control(path: &Path) -> Vec<Autopkgtest> {
+pub(crate) fn read_tests_control(path: &Path) -> Vec<Autopkgtest> {
     let Ok(body) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
@@ -1074,7 +1074,7 @@ fn parse_override_targets(body: &str) -> Vec<String> {
 // Maintainer scripts.
 // =============================================================================
 
-fn read_maintainer_scripts(debian_dir: &Path) -> MaintainerScripts {
+pub(crate) fn read_maintainer_scripts(debian_dir: &Path) -> MaintainerScripts {
     let canonical = ["preinst", "postinst", "prerm", "postrm"];
     let preinst = read_script_presence(&debian_dir.join("preinst"));
     let postinst = read_script_presence(&debian_dir.join("postinst"));
@@ -1148,7 +1148,7 @@ fn read_script_presence(path: &Path) -> Option<ScriptPresence> {
 // GBP config.
 // =============================================================================
 
-fn read_gbp_config(debian_dir: &Path) -> GbpConfig {
+pub(crate) fn read_gbp_config(debian_dir: &Path) -> GbpConfig {
     let gbp_conf_path = debian_dir.join("gbp.conf");
     let gbp_dch_conf_path = debian_dir.join("gbp-dch.conf");
     let gbp_conf_present = gbp_conf_path.is_file();

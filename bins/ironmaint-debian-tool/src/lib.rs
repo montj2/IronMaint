@@ -17,13 +17,22 @@
 
 use std::path::PathBuf;
 
+pub mod maintenance_context;
 pub mod normalizer;
+pub mod parsers;
 pub mod report;
 pub mod source_analysis;
 pub mod source_preparation;
 
-pub use normalizer::{DebianSourceAnalysisNormalizer, DebianSourcePreparationNormalizer};
-pub use report::{DebianSourcePreparationV1, DebianSourceReportV1, Verdict};
+pub use maintenance_context::run as run_maintenance_context;
+pub use normalizer::{
+    DebianMaintenanceContextNormalizer, DebianSourceAnalysisNormalizer,
+    DebianSourcePreparationNormalizer,
+};
+pub use report::{
+    DebianMaintenanceContextV1, DebianSourcePreparationV1, DebianSourceReportV1,
+    UpstreamRelationship, Verdict,
+};
 pub use source_analysis::run as run_source_analysis;
 pub use source_preparation::run as run_source_preparation;
 
