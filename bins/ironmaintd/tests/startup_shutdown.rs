@@ -1821,8 +1821,7 @@ async fn debian_issue_bts_snapshot_passes_against_the_hermetic_fixture() {
         .expect("evidence_id string")
         .to_string();
     assert_eq!(
-        run_body["result"]["structuredContent"]["evidence_status"]
-            .as_str(),
+        run_body["result"]["structuredContent"]["evidence_status"].as_str(),
         Some("pass"),
         "the §24 hermetic `pass` verdict maps to `EvidenceStatus::Pass` (1A.3): {run_body}"
     );
@@ -1884,12 +1883,9 @@ async fn debian_issue_bts_snapshot_passes_against_the_hermetic_fixture() {
 
     // 4. The wire format is the §23 / §24 discriminator
     //    + binary tri-state (no `Fail` per §24). The
-    //    hermetic RED-state report is the minimal
-    //    shape (just `schema_version` +
-    //    `report_kind` + `verdict`); the GREEN-state
-    //    report carries the §23 comprehensive fields
-    //    (`source_package`, `snapshot_at`, `bugs`,
-    //    `summary`).
+    //    GREEN-state report carries the §23
+    //    comprehensive fields (`source_package`,
+    //    `snapshot_at`, `bugs`, `summary`).
     assert_eq!(
         report["report_kind"].as_str(),
         Some("debian.issue.bts_snapshot_v1"),
@@ -1904,6 +1900,47 @@ async fn debian_issue_bts_snapshot_passes_against_the_hermetic_fixture() {
         report["verdict"].as_str(),
         Some("pass"),
         "the §24 hermetic `pass` verdict is binary — no `Fail` case for the BTS snapshot: {report}"
+    );
+
+    // 5. The §23 comprehensive fields are populated
+    //    by the hermetic fixture (3 bugs, summary with
+    //    `open: 2, serious: 1, patch_tagged: 1,
+    //    forwarded: 1`).
+    assert_eq!(
+        report["source_package"].as_str(),
+        Some("example"),
+        "the §23 source_package is the candidate's `package.name`: {report}"
+    );
+    assert!(
+        report["snapshot_at"].is_string(),
+        "the §23 snapshot_at is a non-empty RFC3339 UTC timestamp: {report}"
+    );
+    let bugs = report["bugs"].as_array().expect("§23 `bugs` is an array");
+    assert_eq!(
+        bugs.len(),
+        3,
+        "the §23 hermetic fixture has 3 bugs (one open/serious, one open/forwarded, one done): {report}"
+    );
+    let summary = &report["summary"];
+    assert_eq!(
+        summary["open"].as_u64(),
+        Some(2),
+        "the §23 summary `open` count is 2: {report}"
+    );
+    assert_eq!(
+        summary["serious"].as_u64(),
+        Some(1),
+        "the §23 summary `serious` count is 1: {report}"
+    );
+    assert_eq!(
+        summary["patch_tagged"].as_u64(),
+        Some(1),
+        "the §23 summary `patch_tagged` count is 1: {report}"
+    );
+    assert_eq!(
+        summary["forwarded"].as_u64(),
+        Some(1),
+        "the §23 summary `forwarded` count is 1: {report}"
     );
 
     d.shutdown().await;

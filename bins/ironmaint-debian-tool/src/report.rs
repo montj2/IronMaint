@@ -1100,6 +1100,85 @@ pub const BTS_SNAPSHOT_REPORT_KIND: &str = "debian.issue.bts_snapshot_v1";
 /// changes.
 pub const BTS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 
+/// A single bug record from the BTS snapshot. The shape
+/// matches the 1E.1 `bts-helper.py` output's `bugs[]`
+/// elements; downstream consumers (the agent, the exit
+/// artifact) read `id`, `severity`, `status`, and the
+/// `tags` list. The `forwarded` and `patch_tagged`
+/// booleans are derived from the `tags` list (the
+/// `bts-helper.py` does the derivation; the wire
+/// format exposes both the raw tags and the derived
+/// booleans so a consumer that reads only the wire
+/// format can answer §23 "is this bug patch-tagged?
+/// is it forwarded upstream?" without re-implementing
+/// the derivation).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BugRecord {
+    /// The BTS bug number. The BTS uses integers; the
+    /// wire format keeps the integer type.
+    pub id: u64,
+    /// The bug's severity as the BTS reports it. Common
+    /// values: `critical`, `grave`, `serious`, `important`,
+    /// `normal`, `minor`, `wishlist`. The wire format
+    /// stores the raw string (the BTS does not constrain
+    /// the set; new Debian releases can add severities
+    /// without a wire-format change).
+    pub severity: String,
+    /// The bug's status as the BTS reports it. Common
+    /// values: `open`, `done`, `forwarded`, `pending`
+    /// (the BTS uses `pending-fixed`, `pending-upload`,
+    /// etc.; the wire format stores the raw string).
+    pub status: String,
+    /// The bug's subject line. Stored verbatim from the
+    /// BTS (the BTS does not enforce length; a §23
+    /// consumer can truncate for display).
+    pub subject: String,
+    /// The bug's tags. The BTS exposes a free-form tag
+    /// list (e.g. `patch`, `upstream`, `security`,
+    /// `l10n`, `d-i`). The wire format stores the raw
+    /// strings.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    /// Derived flag: `true` iff the bug is `forwarded`
+    /// upstream (the tag list contains `upstream` or
+    /// `forwarded`). The 1E.1 shim computes this; the
+    /// wire format exposes it so the §23 "forwarded
+    /// upstream" question is answerable without
+    /// re-deriving.
+    #[serde(default)]
+    pub forwarded: bool,
+    /// Derived flag: `true` iff the bug has a patch
+    /// attached (the tag list contains `patch`). The
+    /// 1E.1 shim computes this; the wire format
+    /// exposes it so the §23 "patch-tagged" question
+    /// is answerable without re-deriving.
+    #[serde(default)]
+    pub patch_tagged: bool,
+}
+
+/// The §23 summary fields. Computed from the `bugs`
+/// list by the 1E.1 shim; the wire format exposes
+/// the pre-computed values so a consumer that only
+/// reads the summary doesn't have to walk the bug
+/// list.
+///
+/// The §24 example output names all four fields:
+/// `open`, `serious`, `patch_tagged`, `forwarded`.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BugSummary {
+    /// Number of bugs with `status == "open"`.
+    pub open: u32,
+    /// Number of bugs with `status == "open"` AND
+    /// `severity == "serious"` (or higher: `critical`,
+    /// `grave`; the 1E.1 shim treats all of these as
+    /// "serious" for the summary count).
+    pub serious: u32,
+    /// Number of bugs with `patch_tagged == true`.
+    pub patch_tagged: u32,
+    /// Number of bugs with `forwarded == true`.
+    pub forwarded: u32,
+}
+
 /// The 1E.2 BTS snapshot report.
 ///
 /// 1E.2 RED: the struct is the *minimal* shape
@@ -1107,7 +1186,15 @@ pub const BTS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
 ///
 /// 1E.2 GREEN: the struct gains the §23 comprehensive
 /// fields (`source_package`, `snapshot_at`, `bugs`,
-/// `summary`).
+/// `summary`). The minimal shape is the JSON shape
+/// the 1E.1 `bts-helper.py` shim emits; the
+/// comprehensive shape is the same shape a 1E.2
+/// consumer can read directly (the `bugs` list and
+/// `summary` are the §23 inventory of observed
+/// issues). Both shapes are RFC 8259 JSON; both
+/// carry the same `report_kind` discriminator and
+/// `verdict` tri-state; the comprehensive shape
+/// adds the observation fields.
 ///
 /// The `verdict` is the §17 tri-state minus `Fail`
 /// (the BTS snapshot has no "fail" semantics per
@@ -1133,6 +1220,29 @@ pub struct DebianIssueReportV1 {
     /// timeout / SOAP / malformed service
     /// response).
     pub verdict: IssueVerdict,
+    /// The source package name the snapshot was
+    /// taken against. Mirrors the 1E.1 shim's
+    /// `source_package` field. Empty when the
+    /// snapshot could not be retrieved
+    /// (`verdict: "infrastructure_error"`).
+    #[serde(default)]
+    pub source_package: String,
+    /// The RFC3339 UTC timestamp of when the
+    /// snapshot was taken. Mirrors the 1E.1
+    /// shim's `snapshot_at` field. Empty when the
+    /// snapshot could not be retrieved.
+    #[serde(default)]
+    pub snapshot_at: String,
+    /// The list of bugs the BTS reported for
+    /// `source_package`. Empty when the snapshot
+    /// could not be retrieved.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub bugs: Vec<BugRecord>,
+    /// The pre-computed summary fields. Mirrors the
+    /// 1E.1 shim's `summary` field. `BugSummary::default()`
+    /// when the snapshot could not be retrieved.
+    #[serde(default)]
+    pub summary: BugSummary,
 }
 
 /// The 1E.2 verdict tri-state. `Fail` is intentionally
@@ -1179,13 +1289,25 @@ impl DebianIssueReportV1 {
 
     /// Build a new report with the `report_kind` set
     /// to the constant. Callers do not need to spell
-    /// the literal.
+    /// the literal. The comprehensive §23 fields are
+    /// populated from the arguments.
     #[must_use]
-    pub fn with_kind(schema_version: u32, verdict: IssueVerdict) -> Self {
+    pub fn with_kind(
+        schema_version: u32,
+        verdict: IssueVerdict,
+        source_package: String,
+        snapshot_at: String,
+        bugs: Vec<BugRecord>,
+        summary: BugSummary,
+    ) -> Self {
         Self {
             schema_version,
             report_kind: BTS_SNAPSHOT_REPORT_KIND.to_string(),
             verdict,
+            source_package,
+            snapshot_at,
+            bugs,
+            summary,
         }
     }
 }

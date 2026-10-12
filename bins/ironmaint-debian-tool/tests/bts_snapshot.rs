@@ -23,14 +23,15 @@
 //! are populated; they live in the same file and fail
 //! in the RED commit when those fields are absent.
 
-use ironmaint_debian_tool::bts_snapshot::{run, CandidateInput, Package};
-use ironmaint_debian_tool::report::{
-    BTS_SNAPSHOT_REPORT_KIND, BTS_SNAPSHOT_SCHEMA_VERSION, DebianIssueReportV1, IssueVerdict,
-};
-use ironmaint_debian_tool::DebianBtsSnapshotNormalizer;
-use ironmaint_executor::{ExecutionRecord, ResultNormalizer};
 use ironmaint_adapter_api::ToolCapabilityKey;
+use ironmaint_debian_tool::DebianBtsSnapshotNormalizer;
+use ironmaint_debian_tool::bts_snapshot::{CandidateInput, Package, run};
+use ironmaint_debian_tool::report::{
+    BTS_SNAPSHOT_REPORT_KIND, BTS_SNAPSHOT_SCHEMA_VERSION, BugSummary, DebianIssueReportV1,
+    IssueVerdict,
+};
 use ironmaint_executor::RetryClass;
+use ironmaint_executor::{ExecutionRecord, ResultNormalizer};
 use time::macros::datetime;
 
 fn good_input() -> CandidateInput {
@@ -85,18 +86,21 @@ fn hermetic_report_kind_discriminator_is_stable() {
     assert_eq!(report.report_kind, "debian.issue.bts_snapshot_v1");
 }
 
-/// The RED-state struct is the *minimal* shape
-/// (`schema_version`, `report_kind`, `verdict`). The
-/// GREEN-state struct adds the §23 comprehensive
-/// fields (`source_package`, `snapshot_at`, `bugs`,
-/// `summary`). The minimal struct round-trips through
-/// JSON without losing data.
+/// The comprehensive 1E.2 report round-trips through
+/// the wire format without losing data. The 1E.1
+/// `bts-helper.py` shim produces a JSON document the
+/// normalizer parses; a round-trip through `serde_json`
+/// is the structural-equality test.
 #[test]
-fn minimal_report_round_trips_through_json() {
+fn comprehensive_report_round_trips_through_json() {
     let report = DebianIssueReportV1 {
         schema_version: BTS_SNAPSHOT_SCHEMA_VERSION,
         report_kind: BTS_SNAPSHOT_REPORT_KIND.to_string(),
         verdict: IssueVerdict::Pass,
+        source_package: "example".to_string(),
+        snapshot_at: "2026-10-09T00:00:00Z".to_string(),
+        bugs: Vec::new(),
+        summary: BugSummary::default(),
     };
     let json = serde_json::to_string(&report).unwrap();
     let round: DebianIssueReportV1 = serde_json::from_str(&json).unwrap();
@@ -112,6 +116,10 @@ fn normalizer_maps_pass_verdict_to_pass() {
         schema_version: BTS_SNAPSHOT_SCHEMA_VERSION,
         report_kind: BTS_SNAPSHOT_REPORT_KIND.to_string(),
         verdict: IssueVerdict::Pass,
+        source_package: "example".to_string(),
+        snapshot_at: "2026-10-09T00:00:00Z".to_string(),
+        bugs: Vec::new(),
+        summary: BugSummary::default(),
     };
     let json = serde_json::to_string(&report).unwrap();
     let result = DebianBtsSnapshotNormalizer::new()
@@ -135,6 +143,10 @@ fn normalizer_maps_infrastructure_error_to_unclassifiable() {
         schema_version: BTS_SNAPSHOT_SCHEMA_VERSION,
         report_kind: BTS_SNAPSHOT_REPORT_KIND.to_string(),
         verdict: IssueVerdict::InfrastructureError,
+        source_package: "example".to_string(),
+        snapshot_at: "2026-10-09T00:00:00Z".to_string(),
+        bugs: Vec::new(),
+        summary: BugSummary::default(),
     };
     let json = serde_json::to_string(&report).unwrap();
     let err = DebianBtsSnapshotNormalizer::new()
