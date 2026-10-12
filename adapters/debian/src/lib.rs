@@ -37,6 +37,7 @@ mod descriptor;
 mod inspection;
 mod issues;
 mod package_model;
+mod policy_cap;
 mod versioning;
 
 pub use authority_manifest::{baseline_policy_version, load_authorities};
@@ -68,8 +69,12 @@ impl DistributionAdapter for DebianAdapter {
     }
 
     fn policy(&self) -> Option<&dyn ironmaint_adapter_api::PolicyCapability> {
-        // §11: `PolicyDerivation` is not advertised.
-        None
+        // 1D.2: `PolicyDerivation` is now advertised.
+        // The capability returns the §19 manifest via
+        // `load_authorities()`; the plan is a single
+        // mandatory `Standards-Version` obligation
+        // (see `policy_cap::DebianPolicyDerivation`).
+        Some(policy_cap::debian_policy_derivation())
     }
 
     fn build(&self) -> Option<&dyn ironmaint_adapter_api::BuildCapability> {

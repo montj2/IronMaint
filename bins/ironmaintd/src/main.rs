@@ -304,6 +304,35 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
     tools
         .register(Box::new(maintenance_context))
         .map_err(|e| StartupError::Serve(format!("debian.inspect.maintenance_context: {e}")))?;
+    // 1D.2: `debian.policy.delta_review` is the §22
+    // Standards-Version delta evaluator. The
+    // evidence kind is `EvidenceKind::PolicyEvaluation`
+    // (already present), the gate is mandatory, and
+    // the normalizer is
+    // `DebianPolicyDeltaReviewNormalizer`. The §19
+    // `baseline_policy_version` is read at run time
+    // by the binary's `policy_delta::run` via
+    // `debian::authority_manifest::baseline_policy_version()`.
+    let policy_delta_key = ToolCapabilityKey::new("debian.policy.delta_review")
+        .map_err(|e| StartupError::Serve(format!("debian.policy.delta_review key: {e}")))?;
+    let policy_delta = ironmaint_executor::ToolDefinitionRecord::new(
+        policy_delta_key.clone(),
+        &config.debian_tool_bin,
+        vec![std::ffi::OsString::from("policy-delta")],
+        ironmaint_executor::ExecutionClass::Check,
+        ironmaint_executor::ExecutionLimits {
+            timeout: std::time::Duration::from_secs(30),
+            stdout_max_bytes: 256 * 1024,
+            stderr_max_bytes: 64 * 1024,
+        },
+    )
+    .with_input_mode(ironmaint_executor::ToolInputMode::JsonStdin)
+    .with_normalizer(std::sync::Arc::new(
+        ironmaint_debian_tool::DebianPolicyDeltaReviewNormalizer::new(),
+    ));
+    tools
+        .register(Box::new(policy_delta))
+        .map_err(|e| StartupError::Serve(format!("debian.policy.delta_review: {e}")))?;
     tracing::info!(
         validate = %keys.validate,
         fail = %keys.fail,
@@ -314,6 +343,7 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
         source_preparation = %source_preparation_key,
         source_analysis = %source_analysis_key,
         maintenance_context = %maintenance_context_key,
+        policy_delta = %policy_delta_key,
         fixture = %config.fixture_bin.display(),
         debian_tool_bin = %config.debian_tool_bin.display(),
         "tool registry loaded"

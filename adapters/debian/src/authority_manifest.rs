@@ -7,6 +7,8 @@
 //! 1D.2's `DebianPolicyDerivation` consumes the
 //! loaded list.
 
+use std::sync::LazyLock;
+
 use ironmaint_policy::Authority;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -28,15 +30,25 @@ pub struct DebianAuthorityManifestV1 {
     pub authorities: Vec<Authority>,
 }
 
-/// Load the four §19 authorities bundled at
-/// compile time. The `Authority::id` is re-minted
-/// fresh per call so multiple manifest entries
-/// (and multiple invocations) do not share an
-/// id; see [`default_authority_id`] in
-/// `ironmaint-policy::authority` for the
-/// rationale.
-#[allow(clippy::expect_used)]
-pub fn load_authorities() -> Vec<Authority> {
+/// The four §19 authorities, parsed and id-minted
+/// once on first access. The `LazyLock` cache makes
+/// `load_authorities()` deterministic across calls
+/// within a process — the same `AuthorityId`s are
+/// returned every time. This is load-bearing: the
+/// runtime's `PolicyPlan` carries the IDs the loader
+/// minted the first time, and any code that wants to
+/// match a `Plan.authority` against a manifest entry
+/// by ID needs to see the same IDs back.
+#[allow(clippy::expect_used)] // The manifest is bundled via `include_str!` at
+                              // compile time; the deserialiser only runs at first
+                              // access. A `Result::Err` here means the JSON is
+                              // structurally broken, which is a build-time
+                              // defect the dev must fix before this binary can
+                              // even start. The `expect` is the right tool for
+                              // a precondition violation: it surfaces the
+                              // diagnostic clearly and the binary is
+                              // unrecoverable in any meaningful sense.
+static LOADED: LazyLock<Vec<Authority>> = LazyLock::new(|| {
     let raw = include_str!("../../../policy/debian/authorities.v1.json");
     let manifest: DebianAuthorityManifestV1 = serde_json::from_str(raw)
         .expect("policy/debian/authorities.v1.json must be a valid manifest");
@@ -48,17 +60,36 @@ pub fn load_authorities() -> Vec<Authority> {
             a
         })
         .collect()
+});
+
+/// Load the four §19 authorities bundled at
+/// compile time. The `Authority::id` for each entry
+/// is minted fresh on the first call and cached, so
+/// every subsequent call returns the same IDs. The
+/// cache is process-local and immutable after first
+/// access; the manifest is data, not behaviour, and
+/// a process restart is the only way to re-mint.
+#[must_use]
+pub fn load_authorities() -> &'static [Authority] {
+    &LOADED
 }
 
 /// The baseline `Standards-Version` the
 /// adapter treats as known good. 1D.2's
 /// `delta_review` evaluator reads this.
-#[allow(clippy::expect_used)]
-pub fn baseline_policy_version() -> String {
-    let raw = include_str!("../../../policy/debian/authorities.v1.json");
-    let m: DebianAuthorityManifestV1 = serde_json::from_str(raw)
-        .expect("policy/debian/authorities.v1.json must be a valid manifest");
-    m.baseline_policy_version
+#[must_use]
+#[allow(clippy::expect_used)] // See `LOADED`: the manifest is bundled
+                              // at compile time; an `Err` here is a
+                              // build-time defect, not a runtime
+                              // concern.
+pub fn baseline_policy_version() -> &'static str {
+    static BASELINE: LazyLock<String> = LazyLock::new(|| {
+        let raw = include_str!("../../../policy/debian/authorities.v1.json");
+        let m: DebianAuthorityManifestV1 = serde_json::from_str(raw)
+            .expect("policy/debian/authorities.v1.json must be a valid manifest");
+        m.baseline_policy_version
+    });
+    &BASELINE
 }
 
 /// Tests

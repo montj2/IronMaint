@@ -38,6 +38,9 @@ use serde::Deserialize;
 use ironmaint_debian_tool::maintenance_context::{
     self as maintenance_context_run, CandidateInput as MaintenanceContextInput,
 };
+use ironmaint_debian_tool::policy_delta::{
+    self as policy_delta_run, CandidateInput as PolicyDeltaInput,
+};
 use ironmaint_debian_tool::source_analysis::{
     self as source_analysis_run, CandidateInput as AnalysisInput,
 };
@@ -123,7 +126,13 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Sub::PolicyDelta => not_yet_implemented("policy-delta", "1D.2"),
+        Sub::PolicyDelta => match run_policy_delta_cmd() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("ironmaint-debian-tool: policy-delta: {err:#}");
+                ExitCode::FAILURE
+            }
+        },
         Sub::BtsSnapshot => not_yet_implemented("bts-snapshot", "1E.x"),
     }
 }
@@ -169,6 +178,18 @@ fn run_maintenance_context_cmd() -> Result<()> {
         read_stdin_json().context("reading ironmaint.candidate_input.v3 from stdin")?;
     let report = maintenance_context_run::run(&input);
     write_stdout_json(&report).context("writing DebianMaintenanceContextV1 to stdout")?;
+    Ok(())
+}
+
+/// Run the `policy-delta` subcommand. Reads
+/// `ironmaint.candidate_input.v3` from stdin (no schema
+/// bump from 1C.2 / 1C.3), walks the source tree,
+/// emits `DebianPolicyDeltaReviewV1` on stdout.
+fn run_policy_delta_cmd() -> Result<()> {
+    let input: PolicyDeltaInput =
+        read_stdin_json().context("reading ironmaint.candidate_input.v3 from stdin")?;
+    let report = policy_delta_run::run(&input);
+    write_stdout_json(&report).context("writing DebianPolicyDeltaReviewV1 to stdout")?;
     Ok(())
 }
 

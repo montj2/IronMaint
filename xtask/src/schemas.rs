@@ -158,6 +158,12 @@ fn generate_all() -> Result<BTreeMap<String, String>, Box<dyn Error>> {
             debian::authority_manifest::DebianAuthorityManifestV1
         ))?,
     );
+    out.insert(
+        "DebianPolicyDeltaReviewV1.json".into(),
+        serde_json::to_string_pretty(&schemars::schema_for!(
+            ironmaint_debian_tool::DebianPolicyDeltaReviewV1
+        ))?,
+    );
     Ok(out)
 }
 

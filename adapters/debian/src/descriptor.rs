@@ -23,6 +23,12 @@ fn build_descriptor() -> AdapterDescriptor {
     caps.insert(AdapterCapability::SourceInspection);
     caps.insert(AdapterCapability::VersionComparison);
     caps.insert(AdapterCapability::IssueRead);
+    // 1D.2: `PolicyDerivation` is now advertised. The §19
+    // manifest is the policy-knowledge baseline; the
+    // `PolicyPlan` carries a single mandatory
+    // `Standards-Version` obligation (see
+    // `policy_cap::DebianPolicyDerivation`).
+    caps.insert(AdapterCapability::PolicyDerivation);
 
     AdapterDescriptor {
         family: DistributionFamily::new("debian")
@@ -61,6 +67,12 @@ mod tests {
                 .contains(&AdapterCapability::VersionComparison)
         );
         assert!(d.capabilities.contains(&AdapterCapability::IssueRead));
+        // 1D.2: `PolicyDerivation` is the fourth "Expected"
+        // capability the production adapter advertises.
+        assert!(
+            d.capabilities
+                .contains(&AdapterCapability::PolicyDerivation)
+        );
         assert!(!d.capabilities.contains(&AdapterCapability::BuildPlanning));
         assert!(
             !d.capabilities
