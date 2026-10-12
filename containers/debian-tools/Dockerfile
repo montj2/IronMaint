@@ -56,6 +56,12 @@ FROM ${BASE_TAG}
 # mode (spec §4.3) — without it the operator has to pass `--privileged`
 # (documented in the README).
 #
+# `python3-debianbts` is the Phase 1 BTS read-only transport (spec §23,
+# §27): the helper script `/usr/local/bin/bts` wraps it so the executor
+# has a fixed binary. The package ships `debbts` (the SOAP client); the
+# helper is a thin shim that emits canonical JSON, so the executor's
+# normalizer doesn't have to know about the SOAP wire format.
+#
 # USER root: the parent (ironmaint/base:0.1) ends with USER ironmaint.
 # apt needs root; we drop back to ironmaint below.
 USER root
@@ -74,6 +80,7 @@ RUN apt-get update \
         diffoscope \
         reprotest \
         uidmap \
+        python3-debianbts \
  && rm -rf /var/lib/apt/lists/*
 
 # ---- sbuild user & schroot defaults ------------------------------------
@@ -105,6 +112,20 @@ WORKDIR /work
 # iteration; the full sbuild run lives in `scripts/debian-tools-smoke.sh`
 # and is invoked from compose (--privileged required).
 COPY --chmod=0755 smoke.sh /usr/local/bin/smoke.sh
+
+# Phase 1 BTS read-only transport (spec §23, §27). The fixed helper
+# binary at /usr/local/bin/bts wraps the `python3-debianbts` SOAP
+# client and emits canonical JSON so the executor's normalizer
+# doesn't have to know about the SOAP wire format. The
+# `--self-test` mode emits a hard-coded fixture (no network); the
+# live mode calls `debianbts.get_bugs` against bugs.debian.org.
+# This is the RED commit: the helper is a stub that exits 1 with
+# "not yet implemented" — the smoke assertion below runs
+# `bts --self-test example` and fails because no JSON is emitted.
+# The GREEN commit replaces this body with a real implementation
+# (still no network in --self-test; the live network path is 1E.2's
+# fake-BTS hermetic integration test).
+COPY --chmod=0755 bts-helper.py /usr/local/bin/bts
 
 # ---- labels --------------------------------------------------------------
 LABEL org.opencontainers.image.title="ironmaint/debian-tools" \

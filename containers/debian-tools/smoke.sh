@@ -169,4 +169,46 @@ case "$out" in
   *) fail "TLS to deb.debian.org returned unexpected status: '$out'" ;;
 esac
 
+# ---- 7. BTS read-only transport helper (Phase 1 1E.1) -------------------
+# Spec §23 + §27: `python3-debianbts` is the BTS read-only transport
+# (the SOAP client), wrapped in a fixed-binary shim at /usr/local/bin/bts
+# so the executor has a stable path. The shim's `--self-test` mode
+# emits a hard-coded canonical-JSON fixture (no network), which the
+# smoke test exercises here.
+#
+# This assertion is the broken-then-fixed sentinel for 1E.1. The RED
+# commit's `bts` shim is a stub that exits 1 with "not yet implemented"
+# (no JSON on stdout). The GREEN commit replaces the stub body with
+# a real `python3-debianbts` shim that emits canonical JSON.
+#
+# The check is the same shape as the §4.3 / §4.4 binary checks above:
+# a real exit code, a JSON parse, and a useful FAIL message. We use
+# `python3` for the parse (not `jq`) so the test doesn't introduce a
+# new dependency — `python3` is in the base image (per §4.2).
+if ! command -v bts >/dev/null 2>&1; then
+  fail "bts: not on PATH — Dockerfile must COPY bts-helper.py to /usr/local/bin/bts"
+fi
+# The self-test mode is hermetic (no network). If the live mode is
+# what we want to smoke, that comes in 1E.2 with a fake-BTS hermetic
+# test; the §97 gate never touches the network.
+set +e
+bts_out=$(bts --self-test example 2>/dev/null)
+bts_rc=$?
+set -e
+if [ "$bts_rc" -ne 0 ]; then
+  fail "bts --self-test example exited $bts_rc (RED-state stub expected to fail; GREEN commit lands the real python3-debianbts shim)"
+fi
+# Validate that the output is JSON. The exact shape (field set,
+# report kind discriminator) is 1E.2's concern; the smoke just
+# asserts the wire format is parseable.
+if ! printf '%s' "$bts_out" | python3 -c 'import json,sys; json.load(sys.stdin)' >/dev/null 2>&1; then
+  fail "bts --self-test example emitted non-JSON output: $bts_out"
+fi
+# Surface the report kind for grep-ability in CI logs. The shape
+# can grow in 1E.2 without breaking this assertion; the
+# discriminator value is the stable contract.
+bts_kind=$(printf '%s' "$bts_out" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d.get("report_kind",""))')
+[ -n "$bts_kind" ] || fail "bts --self-test example JSON has no report_kind field"
+ok "bts --self-test example emitted canonical JSON (report_kind=$bts_kind)"
+
 echo "ironmaint/debian-tools:0.1 — SMOKE OK"
