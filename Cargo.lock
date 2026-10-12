@@ -503,6 +503,9 @@ dependencies = [
  "ironmaint-evidence",
  "ironmaint-policy",
  "ironmaint-testkit",
+ "schemars 0.8.22",
+ "serde",
+ "serde_json",
  "time",
  "url",
 ]
@@ -1340,6 +1343,7 @@ dependencies = [
  "thiserror",
  "time",
  "url",
+ "uuid",
 ]
 
 [[package]]
@@ -3380,6 +3384,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 name = "xtask"
 version = "0.1.0"
 dependencies = [
+ "debian",
  "ironmaint-adapter-api",
  "ironmaint-core",
  "ironmaint-debian-tool",
