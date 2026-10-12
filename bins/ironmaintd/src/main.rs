@@ -333,6 +333,38 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
     tools
         .register(Box::new(policy_delta))
         .map_err(|e| StartupError::Serve(format!("debian.policy.delta_review: {e}")))?;
+    // 1E.2: `debian.issue.bts_snapshot` is the §23
+    // BTS read-only transport + §24 tri-state verdict
+    // normalizer. The evidence kind is
+    // `EvidenceKind::IssueCorrelation` (already
+    // present), the gate is mandatory, and the
+    // normalizer is `DebianBtsSnapshotNormalizer`.
+    // The 1E.1 `bts-helper.py` shim (in
+    // `ironmaint/debian-tools:0.1`) is the SOAP
+    // client; the binary's `bts-snapshot` subcommand
+    // consumes the shim's output (hermetic mode emits
+    // a hard-coded fixture; live mode would shell out
+    // to the shim, opt-in only — not in §97).
+    let bts_snapshot_key = ToolCapabilityKey::new("debian.issue.bts_snapshot")
+        .map_err(|e| StartupError::Serve(format!("debian.issue.bts_snapshot key: {e}")))?;
+    let bts_snapshot = ironmaint_executor::ToolDefinitionRecord::new(
+        bts_snapshot_key.clone(),
+        &config.debian_tool_bin,
+        vec![std::ffi::OsString::from("bts-snapshot")],
+        ironmaint_executor::ExecutionClass::Check,
+        ironmaint_executor::ExecutionLimits {
+            timeout: std::time::Duration::from_secs(30),
+            stdout_max_bytes: 256 * 1024,
+            stderr_max_bytes: 64 * 1024,
+        },
+    )
+    .with_input_mode(ironmaint_executor::ToolInputMode::JsonStdin)
+    .with_normalizer(std::sync::Arc::new(
+        ironmaint_debian_tool::DebianBtsSnapshotNormalizer::new(),
+    ));
+    tools
+        .register(Box::new(bts_snapshot))
+        .map_err(|e| StartupError::Serve(format!("debian.issue.bts_snapshot: {e}")))?;
     tracing::info!(
         validate = %keys.validate,
         fail = %keys.fail,
@@ -344,6 +376,7 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
         source_analysis = %source_analysis_key,
         maintenance_context = %maintenance_context_key,
         policy_delta = %policy_delta_key,
+        bts_snapshot = %bts_snapshot_key,
         fixture = %config.fixture_bin.display(),
         debian_tool_bin = %config.debian_tool_bin.display(),
         "tool registry loaded"

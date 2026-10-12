@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DebianIssueReportV1",
+  "description": "The 1E.2 BTS snapshot report.\n\n1E.2 RED: the struct is the *minimal* shape (`schema_version`, `report_kind`, `verdict`).\n\n1E.2 GREEN: the struct gains the §23 comprehensive fields (`source_package`, `snapshot_at`, `bugs`, `summary`).\n\nThe `verdict` is the §17 tri-state minus `Fail` (the BTS snapshot has no \"fail\" semantics per §24 — a snapshot either succeeded or the transport failed). The normalizer maps `verdict: pass` to `EvidenceStatus::Pass` and `verdict: infrastructure_error` to `NormalizationError::Unclassifiable(...)` per §24.",
+  "type": "object",
+  "required": [
+    "report_kind",
+    "schema_version",
+    "verdict"
+  ],
+  "properties": {
+    "report_kind": {
+      "description": "Discriminator. Always `BTS_SNAPSHOT_REPORT_KIND` (= `\"debian.issue.bts_snapshot_v1\"`).",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Wire-format version. Always `BTS_SNAPSHOT_SCHEMA_VERSION` (= 1).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "verdict": {
+      "description": "The §17 tri-state (minus `Fail` per §24). `pass` for a successful snapshot (regardless of how many bugs); `infrastructure_error` for any transport failure (DNS / TLS / timeout / SOAP / malformed service response).",
+      "allOf": [
+        {
+          "$ref": "#/definitions/IssueVerdict"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "IssueVerdict": {
+      "description": "The 1E.2 verdict tri-state. `Fail` is intentionally absent: §24 says the BTS snapshot has no `Fail` semantics — a snapshot either succeeded (the runtime observes the bug data) or the transport failed (the runtime gets `InfrastructureError → Blocked`). The `Pass` and `InfrastructureError` cases are the only two the 1E.2 normalizer distinguishes.",
+      "oneOf": [
+        {
+          "description": "The snapshot was retrieved successfully. The runtime records `EvidenceStatus::Pass`; the `bugs` list and `summary` (in the GREEN struct) carry the observation regardless of how many bugs there are — §24 \"A package having 50 open bugs is not a tool failure.\"",
+          "type": "string",
+          "enum": [
+            "pass"
+          ]
+        },
+        {
+          "description": "The snapshot could not be retrieved (DNS / TLS / timeout / SOAP unavailable / malformed service response). The runtime records `NormalizationError::Unclassifiable(...)` which becomes `ExecutorError::InfrastructureFailed` which becomes `GateStatus::Blocked` (§24). The state-machine recovery path is 1F.1 / 1G.1's work.",
+          "type": "string",
+          "enum": [
+            "infrastructure_error"
+          ]
+        }
+      ]
+    }
+  }
+}

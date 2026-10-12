@@ -754,11 +754,11 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
         "capture must report the activation: {notes:?}"
     );
     assert!(
-        notes.iter().any(|n| n.contains("materialized 4 check(s)")),
-        "the production Debian adapter (1B.3 + 1C.1 + 1C.2 + 1C.3 + 1D.2) plans four checks \
+        notes.iter().any(|n| n.contains("materialized 5 check(s)")),
+        "the production Debian adapter (1B.3 + 1C.1 + 1C.2 + 1C.3 + 1D.2 + 1E.2) plans five checks \
          (`debian.inspect.source_preparation`, `debian.inspect.source_analysis`, \
-         `debian.inspect.maintenance_context`, and `debian.policy.delta_review`); all must \
-         reach the store: {notes:?}"
+         `debian.inspect.maintenance_context`, `debian.policy.delta_review`, and \
+         `debian.issue.bts_snapshot`); all must reach the store: {notes:?}"
     );
     // 1D.2: the production Debian adapter now
     // advertises `PolicyDerivation` (1D.1's manifest
@@ -811,11 +811,11 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
         .collect();
     assert_eq!(
         run_checks.len(),
-        4,
-        "the production Debian adapter (1B.3 + 1C.1 + 1C.2 + 1C.3 + 1D.2) plans four checks \
+        5,
+        "the production Debian adapter (1B.3 + 1C.1 + 1C.2 + 1C.3 + 1D.2 + 1E.2) plans five checks \
          (`debian.inspect.source_preparation`, `debian.inspect.source_analysis`, \
-         `debian.inspect.maintenance_context`, and `debian.policy.delta_review`); all \
-         must be offered as `run_check` actions: {next}"
+         `debian.inspect.maintenance_context`, `debian.policy.delta_review`, and \
+         `debian.issue.bts_snapshot`); all must be offered as `run_check` actions: {next}"
     );
     assert!(
         run_checks.iter().all(|id| !id.is_empty()),
@@ -1235,8 +1235,8 @@ async fn debian_inspect_source_analysis_emits_the_comprehensive_section18_report
         .collect();
     assert_eq!(
         check_ids.len(),
-        4,
-        "the production Debian adapter plans four checks (1C.1 + 1C.2 + 1C.3 + 1D.2): {next}"
+        5,
+        "the production Debian adapter plans five checks (1C.1 + 1C.2 + 1C.3 + 1D.2 + 1E.2): {next}"
     );
     let source_preparation_check_id = check_ids[0].to_string();
     let source_analysis_check_id = check_ids[1].to_string();
@@ -1501,8 +1501,8 @@ async fn debian_inspect_maintenance_context_emits_the_comprehensive_section19_re
         .collect();
     assert_eq!(
         check_ids.len(),
-        4,
-        "the production Debian adapter plans four checks (1C.1 + 1C.2 + 1C.3 + 1D.2): {next}"
+        5,
+        "the production Debian adapter plans five checks (1C.1 + 1C.2 + 1C.3 + 1D.2 + 1E.2): {next}"
     );
     let source_preparation_check_id = check_ids[0].to_string();
     let source_analysis_check_id = check_ids[1].to_string();
@@ -1732,6 +1732,178 @@ async fn debian_inspect_maintenance_context_emits_the_comprehensive_section19_re
     assert!(
         report["upstream_relationship"].is_object(),
         "the upstream_relationship sub-struct is present even with all-null fields: {report}"
+    );
+
+    d.shutdown().await;
+}
+
+/// 1E.2 — `debian.issue.bts_snapshot` is the §23 BTS
+/// read-only transport + §24 tri-state verdict
+/// normalizer. The hermetic mode of the binary's
+/// `bts-snapshot` subcommand emits a hard-coded
+/// `DebianIssueReportV1` with `verdict: pass`. This
+/// integration test stages the §29 fixture, runs
+/// the bts-snapshot check, and asserts the
+/// evidence-bound report matches the §24 binary
+/// tri-state (`verdict: pass`).
+#[tokio::test(flavor = "current_thread")]
+async fn debian_issue_bts_snapshot_passes_against_the_hermetic_fixture() {
+    let _ = tracing_subscriber::fmt::try_init();
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    // 1. Job + candidate capture.
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+    let _captured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    // 1. `next_actions` returns five `run_check`
+    //    actions (1C.1 + 1C.2 + 1C.3 + 1D.2 + 1E.2).
+    //    The 1E.2 check is the *fifth* — `bts-snapshot`
+    //    is the 1E.2 routing key into
+    //    `EvidenceKind::IssueCorrelation`.
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let allowed = next["actions"]["allowed"]
+        .as_array()
+        .expect("allowed array");
+    let check_ids: Vec<&str> = allowed
+        .iter()
+        .filter_map(|a| a.get("run_check")?.get("check_id")?.as_str())
+        .collect();
+    assert_eq!(check_ids.len(), 5);
+    let bts_snapshot_check_id = check_ids[4].to_string();
+
+    // 2. Run the bts-snapshot check. The hermetic
+    //    mode of the binary's `bts-snapshot`
+    //    subcommand emits a hard-coded
+    //    `DebianIssueReportV1` with
+    //    `verdict: pass` (regardless of bug count —
+    //    §24 "A package having 50 open bugs is not a
+    //    tool failure"). The fixture workspace is not
+    //    read; the bts-snapshot subcommand is
+    //    hermetic.
+    let run_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {
+                        "job_id": job_id,
+                        "check_id": bts_snapshot_check_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(run_response.status(), 200, "check.run was not served");
+    let run_body: Value = run_response.json().await.expect("json body");
+    assert_eq!(
+        run_body["error"],
+        Value::Null,
+        "check.run protocol error: {run_body}"
+    );
+
+    // 3. Read the evidence row + report artifact.
+    let evidence_id = run_body["result"]["structuredContent"]["evidence_id"]
+        .as_str()
+        .expect("evidence_id string")
+        .to_string();
+    assert_eq!(
+        run_body["result"]["structuredContent"]["evidence_status"]
+            .as_str(),
+        Some("pass"),
+        "the §24 hermetic `pass` verdict maps to `EvidenceStatus::Pass` (1A.3): {run_body}"
+    );
+
+    let get_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.get",
+                    "arguments": { "evidence_id": evidence_id },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(get_response.status(), 200, "evidence.get was not served");
+    let get_body: Value = get_response.json().await.expect("json body");
+    let artifacts = get_body["result"]["structuredContent"]["evidence"]["artifacts"]
+        .as_array()
+        .expect("artifacts array");
+    assert!(
+        !artifacts.is_empty(),
+        "the executor binds at least one report artifact per check.run: {get_body}"
+    );
+    let artifact_id = artifacts[0]["id"]
+        .as_str()
+        .expect("artifact id string")
+        .to_string();
+
+    let artifact_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.artifact.read",
+                    "arguments": {
+                        "evidence_id": evidence_id,
+                        "artifact_id": artifact_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    let artifact_body: Value = artifact_response.json().await.expect("json body");
+    let bytes_base64 = artifact_body["result"]["structuredContent"]["bytes_base64"]
+        .as_str()
+        .expect("bytes_base64 string");
+    use base64::Engine as _;
+    let artifact_bytes = base64::engine::general_purpose::STANDARD
+        .decode(bytes_base64)
+        .expect("base64-decode artifact bytes");
+    let report: Value = serde_json::from_slice(&artifact_bytes).expect("report JSON");
+
+    // 4. The wire format is the §23 / §24 discriminator
+    //    + binary tri-state (no `Fail` per §24). The
+    //    hermetic RED-state report is the minimal
+    //    shape (just `schema_version` +
+    //    `report_kind` + `verdict`); the GREEN-state
+    //    report carries the §23 comprehensive fields
+    //    (`source_package`, `snapshot_at`, `bugs`,
+    //    `summary`).
+    assert_eq!(
+        report["report_kind"].as_str(),
+        Some("debian.issue.bts_snapshot_v1"),
+        "the §24 wire-format discriminator: {report}"
+    );
+    assert_eq!(
+        report["schema_version"].as_u64(),
+        Some(1),
+        "schema_version 1: {report}"
+    );
+    assert_eq!(
+        report["verdict"].as_str(),
+        Some("pass"),
+        "the §24 hermetic `pass` verdict is binary — no `Fail` case for the BTS snapshot: {report}"
     );
 
     d.shutdown().await;

@@ -2,16 +2,15 @@
 //! tool binary.
 //!
 //! PHASE-1.md §13 / §16 / §17 / §29. Subcommand enum
-//! (1C.1's `source-preparation` is the only real subcommand;
-//! the others are 1C.2 / 1C.3 / 1D.2 / 1E.x forward pointers
-//! and return a clear "not implemented" with a non-zero
-//! exit code):
+//! (`source-preparation`, `source-analysis`,
+//! `maintenance-context`, `policy-delta`, and
+//! `bts-snapshot` are all wired; no stubs remain):
 //!
-//!   source-preparation    (1C.1)  — wired in this PR
-//!   source-analysis       (1C.2)  — stub
-//!   maintenance-context   (1C.3)  — stub
-//!   policy-delta          (1D.2)  — stub
-//!   bts-snapshot          (1E.x)  — stub
+//!   source-preparation    (1C.1) — wired
+//!   source-analysis       (1C.2) — wired
+//!   maintenance-context   (1C.3) — wired
+//!   policy-delta          (1D.2) — wired
+//!   bts-snapshot          (1E.2) — wired
 //!
 //! Wire format per subcommand is the same:
 //!
@@ -35,6 +34,7 @@ use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde::Deserialize;
 
+use ironmaint_debian_tool::bts_snapshot::{self as bts_snapshot_run, CandidateInput as BtsInput};
 use ironmaint_debian_tool::maintenance_context::{
     self as maintenance_context_run, CandidateInput as MaintenanceContextInput,
 };
@@ -88,10 +88,14 @@ enum Sub {
     /// implementation.
     #[command(name = "policy-delta")]
     PolicyDelta,
-    /// The 1E.x forward pointer. Returns exit 1 with
-    /// a diagnostic on stderr; 1E.x lands the real
-    /// implementation (separate binary, the
-    /// `python3-debianbts` shell-out per §27).
+    /// The 1E.2 real implementation. Reads
+    /// `ironmaint.candidate_input.v3` on stdin, emits
+    /// `DebianIssueReportV1` on stdout. The 1E.1
+    /// `bts-helper.py` shim is the read-only transport;
+    /// this subcommand is the consumer (the hermetic
+    /// mode emits a hard-coded fixture; the live mode
+    /// would shell out to the shim, opt-in only — not
+    /// in the §97 gate).
     #[command(name = "bts-snapshot")]
     BtsSnapshot,
 }
@@ -133,7 +137,13 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         },
-        Sub::BtsSnapshot => not_yet_implemented("bts-snapshot", "1E.x"),
+        Sub::BtsSnapshot => match run_bts_snapshot_cmd() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("ironmaint-debian-tool: bts-snapshot: {err:#}");
+                ExitCode::FAILURE
+            }
+        },
     }
 }
 
@@ -141,6 +151,7 @@ fn main() -> ExitCode {
 /// return exit 1. The executor's pre-flight `check_launchable`
 /// runs even on exit-1; the tool's exit code is what the
 /// normalizer + exit-code classification read.
+#[allow(dead_code)]
 fn not_yet_implemented(subcommand: &str, pr: &str) -> ExitCode {
     eprintln!("ironmaint-debian-tool: {subcommand} is not yet implemented; will land in PR {pr}.");
     ExitCode::FAILURE
@@ -190,6 +201,21 @@ fn run_policy_delta_cmd() -> Result<()> {
         read_stdin_json().context("reading ironmaint.candidate_input.v3 from stdin")?;
     let report = policy_delta_run::run(&input);
     write_stdout_json(&report).context("writing DebianPolicyDeltaReviewV1 to stdout")?;
+    Ok(())
+}
+
+/// Run the `bts-snapshot` subcommand. Reads
+/// `ironmaint.candidate_input.v3` from stdin (no schema
+/// bump from 1C.2 / 1C.3 / 1D.2), emits
+/// `DebianIssueReportV1` on stdout. The 1E.2 hermetic
+/// mode emits a hard-coded fixture (no subprocess, no
+/// network); the live mode would shell out to the 1E.1
+/// `bts-helper.py` shim and is opt-in.
+fn run_bts_snapshot_cmd() -> Result<()> {
+    let input: BtsInput =
+        read_stdin_json().context("reading ironmaint.candidate_input.v3 from stdin")?;
+    let report = bts_snapshot_run::run(&input);
+    write_stdout_json(&report).context("writing DebianIssueReportV1 to stdout")?;
     Ok(())
 }
 

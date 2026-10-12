@@ -31,8 +31,8 @@ use ironmaint_executor::{
 };
 
 use crate::report::{
-    DebianMaintenanceContextV1, DebianPolicyDeltaReviewV1, DebianSourcePreparationV1,
-    DebianSourceReportV1, Verdict,
+    DebianIssueReportV1, DebianMaintenanceContextV1, DebianPolicyDeltaReviewV1,
+    DebianSourcePreparationV1, DebianSourceReportV1, IssueVerdict, Verdict,
 };
 
 /// The 1C.1 normalizer. Stateless; cheap to construct.
@@ -454,5 +454,164 @@ impl ResultNormalizer for DebianPolicyDeltaReviewNormalizer {
             observations,
             invalidations: Vec::new(),
         })
+    }
+}
+
+// =============================================================================
+// 1E.2 — `DebianBtsSnapshotNormalizer` (PHASE-1.md §23, §24, §17).
+//
+// The 1E.2 verdict is binary — `pass` or
+// `infrastructure_error` — per §24. A populated bug
+// list is *not* a failure (§24 "A package having 50
+// open bugs is not a tool failure"). The
+// `infrastructure_error` verdict maps to
+// `NormalizationError::Unclassifiable(...)`, the same
+// way the §17 `infrastructure_error` does in the
+// 1C.x / 1D.x normalizers.
+//
+// The 1E.2 broken-then-fixed sentinel lives in the
+// malformed-JSON branch. The RED commit maps
+// malformed JSON to `NormalizationError::Malformed`,
+// the same shape the 1C.x / 1D.x normalizers use.
+// The GREEN commit maps malformed JSON to
+// `NormalizationError::Unclassifiable` per §24
+// "malformed service response" →
+// `InfrastructureError → Blocked`. The runtime's
+// 1A.3 normalizer-error path turns both variants into
+// `ExecutorError::InfrastructureFailed`, so the
+// runtime-level behaviour is the same; the difference
+// is the type-level distinction a §24-aware reader
+// can use to identify "the BTS service returned
+// garbage" specifically (vs. "the tool returned
+// garbage", which is the broader 1C.x / 1D.x case).
+// =============================================================================
+
+/// The 1E.2 `ResultNormalizer` implementation.
+pub struct DebianBtsSnapshotNormalizer;
+
+impl DebianBtsSnapshotNormalizer {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DebianBtsSnapshotNormalizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ResultNormalizer for DebianBtsSnapshotNormalizer {
+    fn normalize(&self, record: &ExecutionRecord) -> Result<NormalizedResult, NormalizationError> {
+        let report: DebianIssueReportV1 = serde_json::from_str(record.stdout.as_str())
+            .map_err(|e| {
+                // 1E.2 RED: malformed JSON is
+                // `NormalizationError::Malformed`, the
+                // existing pattern from 1C.x / 1D.x.
+                // 1E.2 GREEN: this branch changes to
+                // `NormalizationError::Unclassifiable`
+                // per §24 "malformed service response"
+                // → `InfrastructureError → Blocked`.
+                NormalizationError::Malformed(format!(
+                    "could not parse DebianIssueReportV1 from tool stdout: {e}"
+                ))
+            })?;
+
+        let observations = Vec::new();
+
+        let evidence_status = match report.verdict {
+            IssueVerdict::Pass => EvidenceStatus::Pass,
+            IssueVerdict::InfrastructureError => {
+                return Err(NormalizationError::Unclassifiable(
+                    "debian.issue.bts_snapshot: infrastructure error".to_string(),
+                ));
+            }
+        };
+
+        Ok(NormalizedResult {
+            evidence_status,
+            output_truncated: record.truncated,
+            observations,
+            invalidations: Vec::new(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod bts_snapshot_tests {
+    use super::*;
+    use crate::report::{
+        BTS_SNAPSHOT_REPORT_KIND, BTS_SNAPSHOT_SCHEMA_VERSION, DebianIssueReportV1, IssueVerdict,
+    };
+    use ironmaint_adapter_api::ToolCapabilityKey;
+    use ironmaint_executor::RetryClass;
+    use time::macros::datetime;
+
+    fn make_record(stdout: &str) -> ExecutionRecord {
+        ExecutionRecord {
+            tool_key: ToolCapabilityKey::new("debian.issue.bts_snapshot").unwrap(),
+            retry_class: RetryClass::Safe,
+            started_at: datetime!(2026-01-01 00:00:00 UTC),
+            finished_at: datetime!(2026-01-01 00:00:01 UTC),
+            exit_code: 0,
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+            retries_exhausted: false,
+            truncated: false,
+            artifacts: Vec::new(),
+            artifacts_dropped: Vec::new(),
+        }
+    }
+
+    /// A `verdict: "pass"` report normalises to
+    /// `EvidenceStatus::Pass`. §24 "A package having
+    /// 50 open bugs is not a tool failure" — the
+    /// normalizer never inspects the bug list.
+    #[test]
+    fn pass_verdict_normalises_to_pass() {
+        let report = DebianIssueReportV1 {
+            schema_version: BTS_SNAPSHOT_SCHEMA_VERSION,
+            report_kind: BTS_SNAPSHOT_REPORT_KIND.to_string(),
+            verdict: IssueVerdict::Pass,
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        let result = DebianBtsSnapshotNormalizer::new()
+            .normalize(&make_record(&json))
+            .unwrap();
+        assert_eq!(result.evidence_status, EvidenceStatus::Pass);
+        assert!(result.observations.is_empty());
+    }
+
+    /// A `verdict: "infrastructure_error"` report
+    /// normalises to `Err(NormalizationError::Unclassifiable(...))`.
+    /// The runtime's 1A.3 normalizer-error path
+    /// turns this into `ExecutorError::InfrastructureFailed`
+    /// and `GateStatus::Blocked` (§24).
+    #[test]
+    fn infrastructure_error_verdict_normalises_to_unclassifiable() {
+        let report = DebianIssueReportV1 {
+            schema_version: BTS_SNAPSHOT_SCHEMA_VERSION,
+            report_kind: BTS_SNAPSHOT_REPORT_KIND.to_string(),
+            verdict: IssueVerdict::InfrastructureError,
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        let err = DebianBtsSnapshotNormalizer::new()
+            .normalize(&make_record(&json))
+            .unwrap_err();
+        assert!(matches!(err, NormalizationError::Unclassifiable(_)));
+    }
+
+    /// A stdout that is not valid JSON is a `Malformed`
+    /// error in the RED commit. The GREEN commit
+    /// changes this to `Unclassifiable` per §24.
+    #[test]
+    fn malformed_stdout_normalises_to_malformed_error() {
+        let err = DebianBtsSnapshotNormalizer::new()
+            .normalize(&make_record("not valid json"))
+            .unwrap_err();
+        // RED: this is `NormalizationError::Malformed`.
+        // GREEN: this is `NormalizationError::Unclassifiable`.
+        assert!(matches!(err, NormalizationError::Malformed(_)));
     }
 }

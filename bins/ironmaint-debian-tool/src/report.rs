@@ -1055,3 +1055,137 @@ pub struct DebianPolicyDeltaReviewV1 {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comparison_outcome: Option<StandardsVersionComparison>,
 }
+
+// ============================================================================
+// 1E.2 — `DebianIssueReportV1` (PHASE-1.md §23, §24)
+// ============================================================================
+//
+// The 1E.2 BTS snapshot is the §23 read-only transport's
+// data product. The wire format mirrors the canonical-JSON
+// shape the 1E.1 `bts-helper.py` shim emits, plus a §17
+// `verdict` tri-state that the normalizer classifies.
+//
+// The 1E.2 verdict is binary — `pass` or
+// `infrastructure_error` — because §24 says "A package
+// having 50 open bugs is not a tool failure" and
+// "DNS / TLS / timeout / SOAP / malformed service
+// response" all collapse to `InfrastructureError →
+// Blocked`. There is no `Fail` case for the BTS
+// snapshot: the snapshot either succeeded (the bug
+// list is observed regardless of size) or the
+// transport failed (the runtime's `Blocked` gate
+// runs the recovery path).
+//
+// The 1E.2 RED commit's struct is the *minimal* shape:
+// just `schema_version`, `report_kind`, and `verdict`.
+// The 1E.2 GREEN commit's struct extends the same
+// shape with the §23 comprehensive fields
+// (`source_package`, `snapshot_at`, `bugs`,
+// `summary`).
+//
+// The 1E.2 broken-then-fixed sentinel lives in the
+// normalizer: RED maps malformed JSON to
+// `NormalizationError::Malformed(...)` (the existing
+// pattern for the 1C.x / 1D.x normalizers); GREEN
+// maps malformed JSON to
+// `NormalizationError::Unclassifiable(...)` per
+// §24 "malformed service response" →
+// `InfrastructureError → Blocked`.
+
+/// Discriminator value for the 1E.2 BTS snapshot report.
+/// Stable across the lifetime of `DebianIssueReportV1`.
+pub const BTS_SNAPSHOT_REPORT_KIND: &str = "debian.issue.bts_snapshot_v1";
+
+/// Wire-format version. Bump on incompatible wire-format
+/// changes.
+pub const BTS_SNAPSHOT_SCHEMA_VERSION: u32 = 1;
+
+/// The 1E.2 BTS snapshot report.
+///
+/// 1E.2 RED: the struct is the *minimal* shape
+/// (`schema_version`, `report_kind`, `verdict`).
+///
+/// 1E.2 GREEN: the struct gains the §23 comprehensive
+/// fields (`source_package`, `snapshot_at`, `bugs`,
+/// `summary`).
+///
+/// The `verdict` is the §17 tri-state minus `Fail`
+/// (the BTS snapshot has no "fail" semantics per
+/// §24 — a snapshot either succeeded or the
+/// transport failed). The normalizer maps
+/// `verdict: pass` to `EvidenceStatus::Pass` and
+/// `verdict: infrastructure_error` to
+/// `NormalizationError::Unclassifiable(...)` per
+/// §24.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DebianIssueReportV1 {
+    /// Wire-format version. Always
+    /// `BTS_SNAPSHOT_SCHEMA_VERSION` (= 1).
+    pub schema_version: u32,
+    /// Discriminator. Always
+    /// `BTS_SNAPSHOT_REPORT_KIND` (=
+    /// `"debian.issue.bts_snapshot_v1"`).
+    pub report_kind: String,
+    /// The §17 tri-state (minus `Fail` per §24).
+    /// `pass` for a successful snapshot (regardless
+    /// of how many bugs); `infrastructure_error`
+    /// for any transport failure (DNS / TLS /
+    /// timeout / SOAP / malformed service
+    /// response).
+    pub verdict: IssueVerdict,
+}
+
+/// The 1E.2 verdict tri-state. `Fail` is intentionally
+/// absent: §24 says the BTS snapshot has no `Fail`
+/// semantics — a snapshot either succeeded (the
+/// runtime observes the bug data) or the transport
+/// failed (the runtime gets `InfrastructureError →
+/// Blocked`). The `Pass` and `InfrastructureError`
+/// cases are the only two the 1E.2 normalizer
+/// distinguishes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueVerdict {
+    /// The snapshot was retrieved successfully. The
+    /// runtime records `EvidenceStatus::Pass`; the
+    /// `bugs` list and `summary` (in the GREEN
+    /// struct) carry the observation regardless of
+    /// how many bugs there are — §24 "A package
+    /// having 50 open bugs is not a tool failure."
+    Pass,
+    /// The snapshot could not be retrieved
+    /// (DNS / TLS / timeout / SOAP unavailable /
+    /// malformed service response). The runtime
+    /// records `NormalizationError::Unclassifiable(...)`
+    /// which becomes `ExecutorError::InfrastructureFailed`
+    /// which becomes `GateStatus::Blocked` (§24).
+    /// The state-machine recovery path is
+    /// 1F.1 / 1G.1's work.
+    InfrastructureError,
+}
+
+impl DebianIssueReportV1 {
+    /// The schema-version constant for the type.
+    #[must_use]
+    pub const fn schema_version() -> u32 {
+        BTS_SNAPSHOT_SCHEMA_VERSION
+    }
+
+    /// The report-kind constant for the type.
+    #[must_use]
+    pub const fn report_kind() -> &'static str {
+        BTS_SNAPSHOT_REPORT_KIND
+    }
+
+    /// Build a new report with the `report_kind` set
+    /// to the constant. Callers do not need to spell
+    /// the literal.
+    #[must_use]
+    pub fn with_kind(schema_version: u32, verdict: IssueVerdict) -> Self {
+        Self {
+            schema_version,
+            report_kind: BTS_SNAPSHOT_REPORT_KIND.to_string(),
+            verdict,
+        }
+    }
+}
