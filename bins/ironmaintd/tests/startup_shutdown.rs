@@ -754,26 +754,31 @@ async fn a_captured_candidate_is_activated_with_its_adapter_derived_gates() {
         "capture must report the activation: {notes:?}"
     );
     assert!(
-        notes.iter().any(|n| n.contains("materialized 3 check(s)")),
-        "the production Debian adapter (1B.3 + 1C.1 + 1C.2 + 1C.3) plans three checks \
-         (`debian.inspect.source_preparation`, `debian.inspect.source_analysis`, and \
-         `debian.inspect.maintenance_context`); all must reach the store: {notes:?}"
+        notes.iter().any(|n| n.contains("materialized 4 check(s)")),
+        "the production Debian adapter (1B.3 + 1C.1 + 1C.2 + 1C.3 + 1D.2) plans four checks \
+         (`debian.inspect.source_preparation`, `debian.inspect.source_analysis`, \
+         `debian.inspect.maintenance_context`, and `debian.policy.delta_review`); all must \
+         reach the store: {notes:?}"
     );
-    // The production adapter does not advertise `PolicyDerivation`
-    // (PHASE-1 §11) and so derives no obligations. The runtime
-    // (`service.rs:1920`) only logs the obligation count when
-    // `count > 0`, so an empty derivation is the absence of a
-    // "derived N obligation(s)" line. The reverse shape
-    // (a "derived 2 obligation(s)" line) would indicate the
-    // stub is back in the registration, which is the §32
-    // regression the test guards.
+    // 1D.2: the production Debian adapter now
+    // advertises `PolicyDerivation` (1D.1's manifest
+    // is the policy-knowledge baseline) and
+    // `DebianPolicyDerivation::derive_obligation_plan`
+    // produces exactly one mandatory
+    // `Standards-Version` obligation. The runtime
+    // logs the count as "derived 1 obligation(s)
+    // for fingerprint <fp>"; the test pins the
+    // count == 1 (not zero, not two) so the §32
+    // "policy obligation derivation is
+    // deliberately limited" property holds.
     assert!(
-        !notes
+        notes
             .iter()
-            .any(|n| n.contains("obligation(s) for fingerprint")),
-        "the production Debian adapter does not advertise \
-         `PolicyDerivation` (PHASE-1 §11); a 'derived N obligation(s)' \
-         line would mean the stub is back in the registration: {notes:?}"
+            .any(|n| n.contains("derived 1 obligation(s) for fingerprint")),
+        "1D.2's `DebianPolicyDerivation` must derive exactly one \
+         mandatory `Standards-Version` obligation; a count of 0 means \
+         the policy_cap module is not wired, a count of 2+ means the \
+         adapter is over-deriving: {notes:?}"
     );
 
     // 1. The job now knows which candidate it is evaluating.
@@ -1727,6 +1732,341 @@ async fn debian_inspect_maintenance_context_emits_the_comprehensive_section19_re
     assert!(
         report["upstream_relationship"].is_object(),
         "the upstream_relationship sub-struct is present even with all-null fields: {report}"
+    );
+
+    d.shutdown().await;
+}
+
+/// 1D.2 integration test: a candidate whose
+/// `debian/control` declares a `Standards-Version`
+/// above the §19 manifest's `baseline_policy_version`
+/// (= `"4.7.4.1"`) yields a `Verdict::Fail` evidence
+/// with the `E_POLICY_BASELINE_STALE` diagnostic and
+/// the `AboveBaseline` comparison outcome. The test
+/// stages the `example-future-1.0` hermetic fixture
+/// (its `Standards-Version: 4.9.0` is above the
+/// manifest baseline) and exercises the full MCP
+/// capture → plan → check.run → evidence.get →
+/// evidence.artifact.read → decode path.
+#[tokio::test]
+async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
+    let tmp = Arc::new(tempfile::tempdir().expect("tmpdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+    let _captured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let allowed = next["actions"]["allowed"]
+        .as_array()
+        .expect("allowed array");
+    let check_ids: Vec<String> = allowed
+        .iter()
+        .filter_map(|a| a.get("run_check")?.get("check_id")?.as_str())
+        .map(|s| s.to_string())
+        .collect();
+    let policy_delta_check_id = allowed
+        .iter()
+        .find_map(|a| {
+            let op = a.get("run_check")?;
+            if op.get("check_key")?.as_str() != Some("debian.policy.delta_review") {
+                return None;
+            }
+            op.get("check_id")?.as_str().map(|s| s.to_string())
+        })
+        .expect("policy-delta check_id must be in next_actions");
+
+    // Stage the future-version fixture into the
+    // auto-provisioned workspace handle. The
+    // `Standards-Version: 4.9.0` is above the
+    // manifest's `4.7.4.1` baseline.
+    let workspaces_root = tmp.path().join("workspaces");
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(handles.len(), 1);
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-future-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+
+    // Run only the policy-delta check (skip the
+    // 1C.1 / 1C.2 / 1C.3 checks; the future
+    // fixture lacks patches/, watch, etc., and
+    // those checks would fail for unrelated
+    // reasons). The 1D.2 check is the
+    // load-bearing gate; the others are
+    // re-verified by the `…_passes_a_candidate_below_the_baseline`
+    // test below.
+    let _ = check_ids;
+    let run_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {
+                        "job_id": job_id,
+                        "check_id": policy_delta_check_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(run_response.status(), 200, "check.run was not served");
+    let run_body: Value = run_response.json().await.expect("json body");
+    assert_eq!(run_body["error"], Value::Null, "{run_body}");
+    let run_result = &run_body["result"]["structuredContent"];
+    assert_eq!(
+        run_result["evidence_status"], "fail",
+        "the §22 gate must fire on Standards-Version 4.9.0 (above baseline 4.7.4.1): {run_result}"
+    );
+    let evidence_id = run_result["evidence_id"]
+        .as_str()
+        .expect("evidence_id string")
+        .to_string();
+
+    let get_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.get",
+                    "arguments": { "evidence_id": evidence_id },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    let get_body: Value = get_response.json().await.expect("json body");
+    assert_eq!(get_body["error"], Value::Null, "{get_body}");
+    let artifacts = get_body["result"]["structuredContent"]["evidence"]["artifacts"]
+        .as_array()
+        .expect("artifacts array");
+    let artifact_id = artifacts[0]["id"]
+        .as_str()
+        .expect("artifact id")
+        .to_string();
+
+    let artifact_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.artifact.read",
+                    "arguments": {
+                        "evidence_id": evidence_id,
+                        "artifact_id": artifact_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    let artifact_body: Value = artifact_response.json().await.expect("json body");
+    let encoded = artifact_body["result"]["structuredContent"]["content_b64"]
+        .as_str()
+        .expect("content_b64 string");
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("base64 decode");
+    let report: serde_json::Value = serde_json::from_slice(&decoded).expect("report JSON");
+
+    assert_eq!(
+        report["verdict"].as_str(),
+        Some("fail"),
+        "the future-fixture verdict is fail: {report}"
+    );
+    assert_eq!(
+        report["candidate_standards_version"].as_str(),
+        Some("4.9.0"),
+        "the candidate's Standards-Version is 4.9.0: {report}"
+    );
+    assert_eq!(
+        report["baseline_standards_version"].as_str(),
+        Some("4.7.4.1"),
+        "the manifest's baseline is 4.7.4.1: {report}"
+    );
+    assert_eq!(
+        report["comparison_outcome"].as_str(),
+        Some("above_baseline"),
+        "the §22 comparison outcome is above_baseline: {report}"
+    );
+    let diags = report["diagnostics"].as_array().expect("diagnostics array");
+    assert!(
+        diags
+            .iter()
+            .any(|d| d["code"].as_str() == Some("E_POLICY_BASELINE_STALE")),
+        "the §22 E_POLICY_BASELINE_STALE diagnostic is in the report: {report}"
+    );
+
+    d.shutdown().await;
+}
+
+/// 1D.2 integration test: the good fixture's
+/// `Standards-Version: 4.6.2` is below the
+/// manifest's `4.7.4.1` baseline, so the check
+/// yields `Verdict::Pass` with the
+/// `BelowBaseline` comparison outcome. This
+/// is the §22 pass-path proof: the gate does
+/// not over-fire on known-policy candidates.
+#[tokio::test]
+async fn debian_policy_delta_review_passes_a_candidate_below_the_baseline() {
+    let tmp = Arc::new(tempfile::tempdir().expect("tmpdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+    let _captured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let allowed = next["actions"]["allowed"]
+        .as_array()
+        .expect("allowed array");
+    let policy_delta_check_id = allowed
+        .iter()
+        .find_map(|a| {
+            let op = a.get("run_check")?;
+            if op.get("check_key")?.as_str() != Some("debian.policy.delta_review") {
+                return None;
+            }
+            op.get("check_id")?.as_str().map(|s| s.to_string())
+        })
+        .expect("policy-delta check_id must be in next_actions");
+
+    let workspaces_root = tmp.path().join("workspaces");
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(handles.len(), 1);
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+
+    let run_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {
+                        "job_id": job_id,
+                        "check_id": policy_delta_check_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(run_response.status(), 200, "check.run was not served");
+    let run_body: Value = run_response.json().await.expect("json body");
+    assert_eq!(run_body["error"], Value::Null, "{run_body}");
+    let run_result = &run_body["result"]["structuredContent"];
+    assert_eq!(
+        run_result["evidence_status"], "pass",
+        "the §22 gate does not fire on Standards-Version 4.6.2 (below baseline 4.7.4.1): {run_result}"
+    );
+    let evidence_id = run_result["evidence_id"]
+        .as_str()
+        .expect("evidence_id string")
+        .to_string();
+
+    let get_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.get",
+                    "arguments": { "evidence_id": evidence_id },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    let get_body: Value = get_response.json().await.expect("json body");
+    let artifacts = get_body["result"]["structuredContent"]["evidence"]["artifacts"]
+        .as_array()
+        .expect("artifacts array");
+    let artifact_id = artifacts[0]["id"]
+        .as_str()
+        .expect("artifact id")
+        .to_string();
+
+    let artifact_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.artifact.read",
+                    "arguments": {
+                        "evidence_id": evidence_id,
+                        "artifact_id": artifact_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    let artifact_body: Value = artifact_response.json().await.expect("json body");
+    let encoded = artifact_body["result"]["structuredContent"]["content_b64"]
+        .as_str()
+        .expect("content_b64 string");
+    use base64::Engine;
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .expect("base64 decode");
+    let report: serde_json::Value = serde_json::from_slice(&decoded).expect("report JSON");
+
+    assert_eq!(
+        report["verdict"].as_str(),
+        Some("pass"),
+        "the good-fixture verdict is pass: {report}"
+    );
+    assert_eq!(
+        report["candidate_standards_version"].as_str(),
+        Some("4.6.2"),
+        "the candidate's Standards-Version is 4.6.2: {report}"
+    );
+    assert_eq!(
+        report["comparison_outcome"].as_str(),
+        Some("below_baseline"),
+        "the §22 comparison outcome is below_baseline: {report}"
     );
 
     d.shutdown().await;

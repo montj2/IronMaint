@@ -1241,6 +1241,7 @@ dependencies = [
  "anyhow",
  "clap",
  "deb822-lossless",
+ "debian",
  "debversion",
  "ironmaint-adapter-api",
  "ironmaint-core",

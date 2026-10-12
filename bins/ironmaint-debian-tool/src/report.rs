@@ -923,3 +923,135 @@ pub struct DebianMaintenanceContextV1 {
     #[serde(default)]
     pub upstream_relationship: UpstreamRelationship,
 }
+
+// =============================================================================
+// 1D.2 — `debian.policy.delta_review` + the
+// `DebianPolicyDeltaReviewV1` schema (PHASE-1.md §19, §22).
+//
+// The 1C.x reports (source-preparation, source-analysis,
+// maintenance-context) inventory the source tree; the
+// 1D.2 report evaluates the candidate's policy
+// posture against the §19 manifest baseline. The
+// §22 gate ("IronMaint's Debian Policy knowledge is
+// stale; refresh the authority snapshot before
+// evaluating this candidate") is the load-bearing
+// rule: a candidate whose `debian/control` declares
+// a `Standards-Version` newer than the manifest's
+// `baseline_policy_version` (currently `4.7.4.1`)
+// yields `Verdict::Fail` with the
+// `E_POLICY_BASELINE_STALE` diagnostic.
+//
+// The 1D.2 RED commit's struct is the *minimal*
+// shape (verdict + diagnostics + the new
+// `candidate_standards_version`, `baseline_standards_version`,
+// and `comparison_outcome` fields); the
+// 1D.2 GREEN commit's struct is the comprehensive
+// shape (the same fields, fully populated, plus
+// the candidate-vs-baseline delta rationale). The
+// §97 schema-snapshot tool (`xtask verify-schemas`)
+// catches GREEN-side drift: `cargo run -p xtask --
+// verify-schemas --write` regenerates
+// `schemas/DebianPolicyDeltaReviewV1.json` against
+// the new struct.
+// =============================================================================
+
+/// Discriminator for the 1D.2 report. Always
+/// `"debian.policy_delta_review_v1"` — distinct from
+/// 1C.1's `"debian.source_preparation"`, 1C.2's
+/// `"debian.source_analysis_v1"`, and 1C.3's
+/// `"debian.maintenance_context_v1"`.
+pub const POLICY_DELTA_REPORT_KIND: &str = "debian.policy_delta_review_v1";
+
+/// Wire-format version for the 1D.2 report.
+/// Independent of the 1C.x `SCHEMA_VERSION`
+/// constants; all happen to be `1` but they may
+/// diverge.
+pub const POLICY_DELTA_SCHEMA_VERSION: u32 = 1;
+
+/// The §22 Standards-Version comparison outcome.
+///
+/// `AboveBaseline` is the gate-triggering case:
+/// the candidate declares a `Standards-Version`
+/// newer than the manifest's
+/// `baseline_policy_version`, so the candidate
+/// cannot be evaluated against the adapter's known
+/// Policy and the §22 gate is blocked. `AtBaseline`
+/// and `BelowBaseline` are both pass-path cases
+/// (the candidate's declared version is known).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum StandardsVersionComparison {
+    /// The candidate's `Standards-Version` is
+    /// strictly newer than the manifest's
+    /// `baseline_policy_version`. The §22 gate is
+    /// blocked; the verdict is `Fail`.
+    AboveBaseline,
+    /// The candidate's `Standards-Version` equals
+    /// the manifest's `baseline_policy_version`. The
+    /// candidate is at the manifest's known Policy;
+    /// the verdict is `Pass`.
+    AtBaseline,
+    /// The candidate's `Standards-Version` is
+    /// strictly older than the manifest's
+    /// `baseline_policy_version`. The candidate is
+    /// within the manifest's known Policy; the
+    /// verdict is `Pass`.
+    BelowBaseline,
+}
+
+/// The 1D.2 policy-delta report.
+///
+/// The 1D.2 RED commit's struct is the
+/// *minimal* shape: just `schema_version`,
+/// `report_kind`, `verdict`, `diagnostics`,
+/// plus the three core fields
+/// (`candidate_standards_version`,
+/// `baseline_standards_version`, and
+/// `comparison_outcome`). The 1D.2 GREEN
+/// commit's struct extends the same shape
+/// with the §22 comprehensive fields (the
+/// `diagnostics` carries the
+/// `E_POLICY_BASELINE_STALE` line, the
+/// `comparison_outcome` is the
+/// `AboveBaseline` / `AtBaseline` /
+/// `BelowBaseline` tri-state).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DebianPolicyDeltaReviewV1 {
+    /// Wire-format version. Always
+    /// `POLICY_DELTA_SCHEMA_VERSION` (= 1).
+    pub schema_version: u32,
+    /// Discriminator. Always
+    /// `POLICY_DELTA_REPORT_KIND` (=
+    /// `"debian.policy_delta_review_v1"`).
+    pub report_kind: String,
+    /// The candidate's BLAKE3 fingerprint, Git
+    /// commit, and Git tree; the inspector
+    /// binary's version. 1C.2's `Provenance`
+    /// type, reused.
+    #[serde(default)]
+    pub provenance: Provenance,
+    /// The §17 tri-state verdict.
+    pub verdict: Verdict,
+    /// Per-check failure / informational lines.
+    /// Empty when `verdict` is `pass`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<Diagnostic>,
+    /// The candidate's declared
+    /// `Standards-Version` from `debian/control`.
+    /// `None` when the field is absent
+    /// (Policy-violation, but the report records
+    /// the absence — `verdict: "fail"` with
+    /// `E_STANDARDS_VERSION_MISSING`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub candidate_standards_version: Option<String>,
+    /// The manifest's `baseline_policy_version`
+    /// (currently `"4.7.4.1"`). Always present
+    /// when the manifest loaded successfully.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_standards_version: Option<String>,
+    /// The §22 comparison outcome.
+    /// `None` when one or both `Standards-Version`
+    /// values are missing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison_outcome: Option<StandardsVersionComparison>,
+}

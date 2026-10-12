@@ -31,7 +31,8 @@ use ironmaint_executor::{
 };
 
 use crate::report::{
-    DebianMaintenanceContextV1, DebianSourcePreparationV1, DebianSourceReportV1, Verdict,
+    DebianMaintenanceContextV1, DebianPolicyDeltaReviewV1, DebianSourcePreparationV1,
+    DebianSourceReportV1, Verdict,
 };
 
 /// The 1C.1 normalizer. Stateless; cheap to construct.
@@ -373,6 +374,76 @@ impl ResultNormalizer for DebianMaintenanceContextNormalizer {
             Verdict::InfrastructureError => {
                 return Err(NormalizationError::Unclassifiable(
                     "debian.inspect.maintenance_context: infrastructure error".to_string(),
+                ));
+            }
+        };
+
+        Ok(NormalizedResult {
+            evidence_status,
+            output_truncated: record.truncated,
+            observations,
+            invalidations: Vec::new(),
+        })
+    }
+}
+
+// =============================================================================
+// 1D.2 — `DebianPolicyDeltaReviewNormalizer` (PHASE-1.md §13, §19, §22, §17).
+//
+// Same shape as the 1C.1 / 1C.2 / 1C.3 normalizers:
+// `verdict: "pass"` → `EvidenceStatus::Pass`,
+// `verdict: "fail"` → `EvidenceStatus::Fail` (with the
+// §22 `E_POLICY_BASELINE_STALE` diagnostic propagated
+// as an observation), `verdict: "infrastructure_error"`
+// → `NormalizationError::Unclassifiable` (the runtime
+// surfaces it as `ExecutorError::InfrastructureFailed`).
+//
+// The 1D.2 unclassifiable message string is
+// `"debian.inspect.policy_delta_review: infrastructure
+// error"` — 1D.2-specific so the runtime log /
+// observation can distinguish four normalizers.
+// =============================================================================
+
+/// The 1D.2 `ResultNormalizer` implementation.
+pub struct DebianPolicyDeltaReviewNormalizer;
+
+impl DebianPolicyDeltaReviewNormalizer {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DebianPolicyDeltaReviewNormalizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ResultNormalizer for DebianPolicyDeltaReviewNormalizer {
+    fn normalize(&self, record: &ExecutionRecord) -> Result<NormalizedResult, NormalizationError> {
+        let report: DebianPolicyDeltaReviewV1 = serde_json::from_str(record.stdout.as_str())
+            .map_err(|e| {
+                NormalizationError::Malformed(format!(
+                    "could not parse DebianPolicyDeltaReviewV1 from tool stdout: {e}"
+                ))
+            })?;
+
+        let observations = report
+            .diagnostics
+            .iter()
+            .map(|d| Observation {
+                kind: d.code.clone(),
+                message: d.message.clone(),
+            })
+            .collect();
+
+        let evidence_status = match report.verdict {
+            Verdict::Pass => EvidenceStatus::Pass,
+            Verdict::Fail => EvidenceStatus::Fail,
+            Verdict::InfrastructureError => {
+                return Err(NormalizationError::Unclassifiable(
+                    "debian.inspect.policy_delta_review: infrastructure error".to_string(),
                 ));
             }
         };

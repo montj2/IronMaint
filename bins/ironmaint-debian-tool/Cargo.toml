@@ -19,6 +19,7 @@ name = "ironmaint-debian-tool"
 path = "src/main.rs"
 
 [dependencies]
+debian = { path = "../../adapters/debian" }
 ironmaint-adapter-api = { path = "../../crates/ironmaint-adapter-api" }
 ironmaint-core = { path = "../../crates/ironmaint-core" }
 ironmaint-evidence = { path = "../../crates/ironmaint-evidence" }

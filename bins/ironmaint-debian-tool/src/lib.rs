@@ -20,18 +20,20 @@ use std::path::PathBuf;
 pub mod maintenance_context;
 pub mod normalizer;
 pub mod parsers;
+pub mod policy_delta;
 pub mod report;
 pub mod source_analysis;
 pub mod source_preparation;
 
 pub use maintenance_context::run as run_maintenance_context;
 pub use normalizer::{
-    DebianMaintenanceContextNormalizer, DebianSourceAnalysisNormalizer,
-    DebianSourcePreparationNormalizer,
+    DebianMaintenanceContextNormalizer, DebianPolicyDeltaReviewNormalizer,
+    DebianSourceAnalysisNormalizer, DebianSourcePreparationNormalizer,
 };
+pub use policy_delta::run as run_policy_delta;
 pub use report::{
-    DebianMaintenanceContextV1, DebianSourcePreparationV1, DebianSourceReportV1,
-    UpstreamRelationship, Verdict,
+    DebianMaintenanceContextV1, DebianPolicyDeltaReviewV1, DebianSourcePreparationV1,
+    DebianSourceReportV1, StandardsVersionComparison, UpstreamRelationship, Verdict,
 };
 pub use source_analysis::run as run_source_analysis;
 pub use source_preparation::run as run_source_preparation;
