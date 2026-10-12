@@ -2318,7 +2318,8 @@ async fn debian_policy_delta_review_passes_a_candidate_below_the_baseline() {
 /// the broken-then-fixed signal is visible from `cargo
 /// test` alone.
 #[tokio::test]
-async fn debian_state_machine_vertical_slice_walks_event_detected_to_source_integrity_and_stops_at_the_missing_build_validation_gate() {
+async fn debian_state_machine_vertical_slice_walks_event_detected_to_source_integrity_and_stops_at_the_missing_build_validation_gate()
+ {
     let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
     let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
 
@@ -2393,16 +2394,10 @@ async fn debian_state_machine_vertical_slice_walks_event_detected_to_source_inte
         ("source_analysis", &check_ids[1]),
         ("maintenance_context", &check_ids[2]),
         ("policy_delta_review", &check_ids[3]),
-        // GREEN-COMMIT-ONLY: uncomment in the GREEN
-        // commit to add the bts_snapshot check that
-        // satisfies the `IssueAnalysis` gate (rule 2).
-        // ("bts_snapshot", &check_ids[4]),
+        ("bts_snapshot", &check_ids[4]),
     ] {
         let run_result = d
-            .call(
-                "check.run",
-                json!({"job_id": job_id, "check_id": check_id}),
-            )
+            .call("check.run", json!({"job_id": job_id, "check_id": check_id}))
             .await;
         assert_eq!(
             run_result["evidence_status"], "pass",
@@ -2411,36 +2406,34 @@ async fn debian_state_machine_vertical_slice_walks_event_detected_to_source_inte
     }
 
     // 5. Walk the state machine. The `reconcile()`
-//    walker at service.rs:1533 advances through ALL
-//    satisfied rules in a single call (§41: the loop
-//    "continues through multiple trivially-satisfied
-//    stages until reaching a state requiring [agent
-//    action]") and returns the first stop reason.
-//
-//    With all five pre-build checks passing, the
-//    walker advances rules 0..=4 and stops on rule 5
-//    (SourceIntegrity → BuildValidation) which has no
-//    gate definition (no Phase 1 check produces
-//    BuildValidation evidence). The returned outcome
-//    is therefore `Blocked{current: source_integrity,
-//    target: build_validation}` — the state machine
-//    *did* walk from EventDetected to SourceIntegrity
-//    (the `current` field proves it), and it *did*
-//    stop at the right point (the `target` field
-//    proves the next-blocked transition is the one
-//    §14 names).
-//
-//    In the RED state (bts_snapshot omitted), the
-//    `IssueAnalysis` gate (rule 2) is unsatisfied, so
-//    the walker stops earlier — at `current:
-//    source_review, target: candidate_assembly` — and
-//    the assertion below fails. The test name is
-//    intentionally explicit so the failure message
-//    shows the architectural property the GREEN state
-//    demonstrates.
-    let reconcile = d
-        .call("job.reconcile", json!({"job_id": job_id}))
-        .await;
+    //    walker at service.rs:1533 advances through ALL
+    //    satisfied rules in a single call (§41: the loop
+    //    "continues through multiple trivially-satisfied
+    //    stages until reaching a state requiring [agent
+    //    action]") and returns the first stop reason.
+    //
+    //    With all five pre-build checks passing, the
+    //    walker advances rules 0..=4 and stops on rule 5
+    //    (SourceIntegrity → BuildValidation) which has no
+    //    gate definition (no Phase 1 check produces
+    //    BuildValidation evidence). The returned outcome
+    //    is therefore `Blocked{current: source_integrity,
+    //    target: build_validation}` — the state machine
+    //    *did* walk from EventDetected to SourceIntegrity
+    //    (the `current` field proves it), and it *did*
+    //    stop at the right point (the `target` field
+    //    proves the next-blocked transition is the one
+    //    §14 names).
+    //
+    //    In the RED state (bts_snapshot omitted), the
+    //    `IssueAnalysis` gate (rule 2) is unsatisfied, so
+    //    the walker stops earlier — at `current:
+    //    source_review, target: candidate_assembly` — and
+    //    the assertion below fails. The test name is
+    //    intentionally explicit so the failure message
+    //    shows the architectural property the GREEN state
+    //    demonstrates.
+    let reconcile = d.call("job.reconcile", json!({"job_id": job_id})).await;
     let outcome = &reconcile["outcome"];
     assert_eq!(
         outcome["blocked"]["current"].as_str(),
@@ -2459,9 +2452,7 @@ async fn debian_state_machine_vertical_slice_walks_event_detected_to_source_inte
         !blockers.is_empty(),
         "the BuildValidation gate must be reported as missing: {reconcile}"
     );
-    let first_blocker = blockers[0]
-        .as_str()
-        .expect("blocker is a string");
+    let first_blocker = blockers[0].as_str().expect("blocker is a string");
     assert!(
         first_blocker.contains("MissingGate") || first_blocker.contains("build_validation"),
         "the §14 blocker names the BuildValidation gate: {first_blocker:?}"
@@ -2476,9 +2467,7 @@ async fn debian_state_machine_vertical_slice_walks_event_detected_to_source_inte
     //    second call would no longer report the same
     //    Blocked outcome and the regression would be
     //    visible at the §97 gate.
-    let second_reconcile = d
-        .call("job.reconcile", json!({"job_id": job_id}))
-        .await;
+    let second_reconcile = d.call("job.reconcile", json!({"job_id": job_id})).await;
     let second_outcome = &second_reconcile["outcome"];
     assert_eq!(
         second_outcome["blocked"]["current"].as_str(),
