@@ -17,32 +17,38 @@ pub trait GateStore: Send + Sync {
     /// the rationale).
     ///
     /// [`EvidenceStore`]: crate::evidence::EvidenceStore
-    async fn put_gate_definition(
+    fn put_gate_definition(
         &self,
         gate: &GateDefinition,
         job_id: JobId,
-    ) -> Result<GateId, StoreError>;
+    ) -> impl std::future::Future<Output = Result<GateId, StoreError>> + Send;
 
     /// Look up a `GateDefinition` by id.
-    async fn get_gate_definition(&self, id: GateId) -> Result<GateDefinition, StoreError>;
+    fn get_gate_definition(
+        &self,
+        id: GateId,
+    ) -> impl std::future::Future<Output = Result<GateDefinition, StoreError>> + Send;
 
     /// Persist (or update) the result for a gate on a specific
     /// candidate. The store treats `(gate_id, fingerprint)` as
     /// the key.
-    async fn put_gate_result(
+    fn put_gate_result(
         &self,
         gate_id: GateId,
         fingerprint: &CandidateFingerprint,
         result: &GateResult,
-    ) -> Result<(), StoreError>;
+    ) -> impl std::future::Future<Output = Result<(), StoreError>> + Send;
 
     /// Read the result for a gate on a specific candidate.
-    async fn get_gate_result(
+    fn get_gate_result(
         &self,
         gate_id: GateId,
         fingerprint: &CandidateFingerprint,
-    ) -> Result<GateResult, StoreError>;
+    ) -> impl std::future::Future<Output = Result<GateResult, StoreError>> + Send;
 
     /// List all gate definitions attached to a job.
-    async fn list_gates_for_job(&self, job_id: JobId) -> Result<Vec<GateId>, StoreError>;
+    fn list_gates_for_job(
+        &self,
+        job_id: JobId,
+    ) -> impl std::future::Future<Output = Result<Vec<GateId>, StoreError>> + Send;
 }

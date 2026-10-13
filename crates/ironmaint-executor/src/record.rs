@@ -2,12 +2,49 @@
 //! tool invocation.
 
 use ironmaint_adapter_api::ToolCapabilityKey;
+use ironmaint_artifacts::hash::Sha256Hex;
 use ironmaint_core::json_schema_impls::Rfc3339DateTime;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 
 use crate::retry::RetryClass;
+
+/// Which of a tool's two output streams an artifact came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum OutputStream {
+    Stdout,
+    Stderr,
+}
+
+/// One spilled artifact: the full output of a stream, retained in
+/// the [`ironmaint_artifacts::ArtifactStore`] and reachable by
+/// digest.
+///
+/// The digest is here, on the record, rather than only in the
+/// store. A content-addressed store with no index is a place bytes
+/// go; a record that names none of them is a run whose output
+/// cannot be recovered, which is the silent-truncation defect D-08
+/// was raised for. The bounded `stdout` / `stderr` strings on the
+/// record remain the ergonomic copy; these are the complete ones.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct SpilledArtifact {
+    pub stream: OutputStream,
+    /// Content address. Pass to `ArtifactStore::get` to read it back.
+    pub digest: Sha256Hex,
+    /// Bytes actually written.
+    pub bytes: u64,
+    /// Bytes the stream produced that were **not** written, because
+    /// a retention cap was reached.
+    ///
+    /// Non-zero means the artifact is a bounded capture. That is
+    /// the normal case for a chatty tool, and it is the number that
+    /// tells an operator the log they are reading stops short —
+    /// without it, `bytes` looks like a measurement of the tool's
+    /// output rather than of what happened to be kept.
+    pub dropped_bytes: u64,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ExecutionRecord {
@@ -33,6 +70,31 @@ pub struct ExecutionRecord {
     /// parse unchanged.
     #[serde(default)]
     pub truncated: bool,
+    /// The complete output of each stream, in the artifact store.
+    /// Empty when nothing was retained — see
+    /// [`Self::artifacts_dropped`] for why it can legitimately be.
+    #[serde(default)]
+    pub artifacts: Vec<SpilledArtifact>,
+    /// Streams whose artifact was **not** retained, with the reason.
+    ///
+    /// §15's caps are *refusals*, not silent trims: a run whose
+    /// per-job budget is spent must say so, and it must say so on
+    /// the record that produced the bytes. An empty `artifacts`
+    /// with an empty `artifacts_dropped` means nothing was dropped;
+    /// a non-empty one means the run is bounded and an operator
+    /// looking at a truncated `stdout` needs to know which of the
+    /// two happened.
+    #[serde(default)]
+    pub artifacts_dropped: Vec<DroppedArtifact>,
+}
+
+/// A stream whose output was not retained, and why.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DroppedArtifact {
+    pub stream: OutputStream,
+    /// `"budget_count"` / `"budget_bytes"` / `"store_cap"`, or
+    /// `"io"` for a write that failed for any other reason.
+    pub reason: String,
 }
 
 impl ExecutionRecord {
@@ -75,6 +137,8 @@ mod tests {
             stderr: String::new(),
             retries_exhausted: false,
             truncated: false,
+            artifacts: Vec::new(),
+            artifacts_dropped: Vec::new(),
         }
     }
 

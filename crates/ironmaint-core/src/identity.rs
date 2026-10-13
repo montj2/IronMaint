@@ -53,7 +53,24 @@ macro_rules! define_uuid_id {
 
         impl Default for $name {
             fn default() -> Self {
-                Self::new()
+                // `Default` returns a nil UUID, NOT a fresh
+                // UUIDv7. Two reasons:
+                //
+                // 1. **Schema determinism.** `schemars` evaluates
+                //    `#[serde(default)]` (and `#[serde(default =
+                //    "fn")]`) at schema-generation time, embedding
+                //    the result in the JSON-schema snapshot's
+                //    `default` field. A fresh UUIDv7 on every call
+                //    would break `verify-schemas`'s drift check
+                //    (PHASE-0A §61).
+                // 2. **Semantics.** `Default::default()` is the
+                //    "absent" marker; a fresh UUIDv7 is a
+                //    *distinct* value. Using the same constructor
+                //    for both confuses "not specified" with
+                //    "explicitly minted at this instant". Callers
+                //    that need a fresh id use `ID::new()`
+                //    explicitly.
+                Self::from_uuid(uuid::Uuid::nil())
             }
         }
 
@@ -125,9 +142,22 @@ mod tests {
     }
 
     #[test]
-    fn default_is_a_fresh_id() {
+    fn default_is_a_nil_uuid() {
+        // `Default::default()` is the "absent" marker and
+        // returns a nil UUID, NOT a fresh UUIDv7. Callers
+        // that need a fresh id use `ID::new()`. See the
+        // `Default` impl in the `define_uuid_id!` macro for
+        // the rationale (PHASE-1.md 1D.1).
         let a = ApprovalId::default();
         let b = ApprovalId::default();
+        assert_eq!(a, b);
+        assert_eq!(a.as_uuid(), uuid::Uuid::nil());
+    }
+
+    #[test]
+    fn new_mints_distinct_uuids() {
+        let a = ApprovalId::new();
+        let b = ApprovalId::new();
         assert_ne!(a, b);
     }
 

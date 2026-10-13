@@ -10,6 +10,7 @@ use std::sync::Arc;
 use ironmaint_adapter_api::ToolCapabilityKey;
 use thiserror::Error;
 
+use crate::input::ToolInputMode;
 use crate::limits::{ExecutionClass, ExecutionLimits};
 use crate::normalizer::ResultNormalizer;
 
@@ -36,6 +37,14 @@ pub trait ToolDefinition: Send + Sync {
     /// means the executor will fall back to its default
     /// `FixtureNormalizer` mapping.
     fn normalizer(&self) -> Option<Arc<dyn ResultNormalizer>>;
+    /// How the child receives the `ExecutionRequest::input`
+    /// payload (PHASE-1.md §7). Defaults to [`ToolInputMode::None`]
+    /// so existing implementers — and the six synthetic keys —
+    /// keep today's `Stdio::null()` behaviour without needing to
+    /// override anything.
+    fn input_mode(&self) -> ToolInputMode {
+        ToolInputMode::default()
+    }
 }
 
 #[derive(Default)]

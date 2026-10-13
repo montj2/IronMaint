@@ -18,6 +18,7 @@ ironmaint-evidence = { path = "../crates/ironmaint-evidence" }
 ironmaint-policy = { path = "../crates/ironmaint-policy" }
 ironmaint-state = { path = "../crates/ironmaint-state" }
 ironmaint-adapter-api = { path = "../crates/ironmaint-adapter-api" }
+ironmaint-runtime = { path = "../crates/ironmaint-runtime" }
 ironmaint-store-sqlite = { path = "../crates/ironmaint-store-sqlite" }
 ironmaint-mcp = { path = "../crates/ironmaint-mcp" }
 schemars = { workspace = true }
@@ -25,3 +26,24 @@ serde_json = { workspace = true }
 sqlx = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt"] }
 toml_edit = "0.22"
+# The seam checks in `verify-seams` (S1/S2/S4/S5) assert properties of
+# source *shape* — "this variant is constructed, not merely mentioned" —
+# which a regex cannot distinguish from a match arm. `syn` reads the
+# tree; `proc-macro2`'s span locations let a report name file:line, so a
+# failure points at the construction rather than at the file.
+syn = { version = "2", features = ["visit", "visit-mut", "full", "extra-traits"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+# `verify-schemas` snapshots the wire format of the
+# `debian.inspect.source_preparation` tool (PHASE-1.md
+# §13, 1C.1). A regular dep is the right shape —
+# xtask is a build-time tool, not a runtime
+# library, so "production dep of xtask" is not a
+# boundary violation: no downstream crate depends
+# on xtask at runtime.
+ironmaint-debian-tool = { path = "../bins/ironmaint-debian-tool" }
+# `verify-schemas` snapshots the wire format of the
+# `policy/debian/authorities.v1.json` manifest
+# (PHASE-1.md §19, 1D.1). Same reasoning as the
+# `ironmaint-debian-tool` dep above: a build-time
+# schema-snapshot tool, not a runtime library.
+debian = { path = "../adapters/debian" }

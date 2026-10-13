@@ -75,10 +75,12 @@ async fn create_job_persists_projection_at_version_zero() {
         .await
         .expect("create job");
 
-    // First write of a fresh projection lands at version 0 and
-    // sequence 1 (the seed Domain event).
+    // First write of a fresh projection lands at version 0. The
+    // log is seeded with two events — a `JobCreated` carrying the
+    // projection, then the `Domain` reference — so the command's
+    // sequence is 2.
     assert_eq!(result.new_version, 0);
-    assert_eq!(result.new_sequence, 1);
+    assert_eq!(result.new_sequence, 2);
     assert_eq!(result.side_effects.len(), 1);
     assert!(result.side_effects[0].starts_with("job:"));
 }
@@ -151,7 +153,8 @@ async fn set_active_candidate_attaches_fingerprint_to_projection() {
         .expect("set active");
 
     assert_eq!(set.new_version, 1);
-    assert_eq!(set.new_sequence, 2);
+    // Sequences 1 and 2 went to CreateJob's seed events.
+    assert_eq!(set.new_sequence, 3);
     assert!(set.side_effects.is_empty());
 
     // 4. Projection now has the candidate id set.
@@ -190,8 +193,13 @@ async fn set_active_candidate_rejects_unknown_fingerprint() {
     assert_eq!(err.kind, RuntimeErrorKind::InvalidInput);
 }
 
+/// The candidate-capture window used to close at
+/// `CandidateAssembly`, which made §61's repair loop — and §101's
+/// steps 15 and 20 — unreachable. What still closes the window is
+/// `ReadyForApproval`: past it, the source and the evidence behind
+/// it are what a human is about to decide on.
 #[tokio::test]
-async fn set_active_candidate_rejects_after_build() {
+async fn set_active_candidate_rejects_once_the_job_is_decided() {
     let store = Arc::new(MockStore::new());
     let svc = RuntimeService::new(
         store.clone(),
@@ -211,9 +219,10 @@ async fn set_active_candidate_rejects_after_build() {
 
     let (_candidate_id, fingerprint) = seed_candidate(&store, job_id).await;
 
-    // Force the projection past the candidate-capture window.
+    // Force the projection to the point where the decision is being
+    // made.
     let mut projection = store.get_projection(job_id).await.expect("get");
-    projection.state = JobState::SourceRevision;
+    projection.state = JobState::ReadyForApproval;
     let v = projection.version;
     store.put_projection(&projection, v).await.expect("put");
 

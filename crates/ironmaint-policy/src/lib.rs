@@ -14,6 +14,7 @@
 //! - [`Authority`], [`AuthorityClassification`] (§32)
 //! - [`PolicyReference`], [`PolicyBaseline`] (§33, §36)
 //! - [`ObligationStrength`], [`Applicability`], [`ObligationStatus`],
+//!   [`ObligationOutcome`],
 //!   [`Obligation`], [`ObligationSet`] (§34–§35)
 //! - [`ApprovalRequirement`], [`ApprovalCategory`], [`ApprovalDecision`] (§40)
 //! - [`AuthorizationState`], [`PrivilegedOperation`],
@@ -53,7 +54,8 @@ pub use approval::{ApprovalCategory, ApprovalDecision, ApprovalRegistry, Approva
 pub use authority::{Authority, AuthorityClassification};
 pub use issue_action::{IssueAction, IssueActionKind};
 pub use obligation::{
-    Applicability, Obligation, ObligationSet, ObligationStatus, ObligationStrength,
+    Applicability, Obligation, ObligationOutcome, ObligationSet, ObligationStatus,
+    ObligationStrength,
 };
 pub use policy::{PolicyBaseline, PolicyReference};
 pub use privileged::{AuthorizationState, PrivilegedOperation, PrivilegedOperationKind};

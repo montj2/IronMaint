@@ -9,6 +9,7 @@ use ironmaint_store::workspace::WorkspaceState;
 use time::OffsetDateTime;
 
 use crate::error::{WorkspaceError, WorkspaceErrorKind};
+use crate::git::GitInvocation;
 use crate::id::WorkspaceId;
 use crate::revision::WorkspaceRevision;
 
@@ -158,5 +159,71 @@ impl<S: WorkspaceMetadataStore> WorkspaceManager<S> {
                 "invalid workspace id `{raw}`: {e}"
             )))
         })
+    }
+
+    /// Resolve the workspace attached to `job_id`, if one exists.
+    pub async fn id_for_job(&self, job_id: JobId) -> Result<WorkspaceId, WorkspaceError> {
+        let handles = self
+            .store
+            .list_workspaces_for_job(job_id)
+            .await
+            .map_err(|e| {
+                WorkspaceError::new(WorkspaceErrorKind::Other(format!("store error: {e:?}")))
+            })?;
+        let handle = handles.last().ok_or_else(|| {
+            WorkspaceError::new(WorkspaceErrorKind::NotFound(format!("job {job_id}").into()))
+        })?;
+        Self::id_from_str(handle)
+    }
+
+    /// Resolve the workspace for `job_id`, creating and
+    /// materialising one if the job has none yet.
+    ///
+    /// `create` only persists metadata — it never touches the
+    /// filesystem (`let _ = self.root.join(&handle);` in this
+    /// module discards the path). Until 0B.9 the only callers were
+    /// tests, which each built their own repository by hand. A
+    /// daemon has no such caller, so the directory and its `git
+    /// init` are produced here instead.
+    ///
+    /// Auto-provisioning is what makes the workspace tools usable
+    /// at all: `workspace.stat`, `workspace.apply_patch` and
+    /// `candidate.capture` are all keyed by `job_id`, and nothing
+    /// in the MCP surface creates a workspace. Provisioning here
+    /// keeps the tool count at nine rather than adding a
+    /// `workspace.create` that an agent would have to discover
+    /// first.
+    pub async fn ensure_workspace(&self, job_id: JobId) -> Result<WorkspaceId, WorkspaceError> {
+        let id = match self.id_for_job(job_id).await {
+            Ok(id) => id,
+            Err(e) if matches!(e.kind(), WorkspaceErrorKind::NotFound(_)) => {
+                self.create(job_id).await?
+            }
+            Err(e) => return Err(e),
+        };
+
+        let dir = self.root.join(format!("{id}"));
+        tokio::fs::create_dir_all(&dir).await?;
+        if !dir.join(".git").exists() {
+            let inv = GitInvocation::sanitised_env(&dir);
+            inv.init().await?;
+            // Seed an initial commit. `capture_candidate` derives
+            // the candidate's commit OID from
+            // `most_recent_non_maintenance_commit`, which is a
+            // `git log` and therefore fails on a repository with no
+            // commits. The seed is what breaks the otherwise
+            // circular dependency: the maintenance commit that
+            // `capture_candidate` writes is itself the first thing
+            // that would give the repo a HEAD.
+            //
+            // It is authored by `sanitised_env`
+            // ("ironmaint-workspace@invalid"), not
+            // `for_maintenance_commit`, so it is not filtered out
+            // as a §22 maintenance commit and remains eligible as
+            // the fingerprint's commit input.
+            inv.commit("IronMaint workspace initialisation\n\nempty tree")
+                .await?;
+        }
+        Ok(id)
     }
 }

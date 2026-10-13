@@ -1,0 +1,166 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DebianIssueReportV1",
+  "description": "The 1E.2 BTS snapshot report.\n\n1E.2 RED: the struct is the *minimal* shape (`schema_version`, `report_kind`, `verdict`).\n\n1E.2 GREEN: the struct gains the §23 comprehensive fields (`source_package`, `snapshot_at`, `bugs`, `summary`). The minimal shape is the JSON shape the 1E.1 `bts-helper.py` shim emits; the comprehensive shape is the same shape a 1E.2 consumer can read directly (the `bugs` list and `summary` are the §23 inventory of observed issues). Both shapes are RFC 8259 JSON; both carry the same `report_kind` discriminator and `verdict` tri-state; the comprehensive shape adds the observation fields.\n\nThe `verdict` is the §17 tri-state minus `Fail` (the BTS snapshot has no \"fail\" semantics per §24 — a snapshot either succeeded or the transport failed). The normalizer maps `verdict: pass` to `EvidenceStatus::Pass` and `verdict: infrastructure_error` to `NormalizationError::Unclassifiable(...)` per §24.",
+  "type": "object",
+  "required": [
+    "report_kind",
+    "schema_version",
+    "verdict"
+  ],
+  "properties": {
+    "bugs": {
+      "description": "The list of bugs the BTS reported for `source_package`. Empty when the snapshot could not be retrieved.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/BugRecord"
+      }
+    },
+    "report_kind": {
+      "description": "Discriminator. Always `BTS_SNAPSHOT_REPORT_KIND` (= `\"debian.issue.bts_snapshot_v1\"`).",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Wire-format version. Always `BTS_SNAPSHOT_SCHEMA_VERSION` (= 1).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "snapshot_at": {
+      "description": "The RFC3339 UTC timestamp of when the snapshot was taken. Mirrors the 1E.1 shim's `snapshot_at` field. Empty when the snapshot could not be retrieved.",
+      "default": "",
+      "type": "string"
+    },
+    "source_package": {
+      "description": "The source package name the snapshot was taken against. Mirrors the 1E.1 shim's `source_package` field. Empty when the snapshot could not be retrieved (`verdict: \"infrastructure_error\"`).",
+      "default": "",
+      "type": "string"
+    },
+    "summary": {
+      "description": "The pre-computed summary fields. Mirrors the 1E.1 shim's `summary` field. `BugSummary::default()` when the snapshot could not be retrieved.",
+      "default": {
+        "forwarded": 0,
+        "open": 0,
+        "patch_tagged": 0,
+        "serious": 0
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/BugSummary"
+        }
+      ]
+    },
+    "verdict": {
+      "description": "The §17 tri-state (minus `Fail` per §24). `pass` for a successful snapshot (regardless of how many bugs); `infrastructure_error` for any transport failure (DNS / TLS / timeout / SOAP / malformed service response).",
+      "allOf": [
+        {
+          "$ref": "#/definitions/IssueVerdict"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "BugRecord": {
+      "description": "A single bug record from the BTS snapshot. The shape matches the 1E.1 `bts-helper.py` output's `bugs[]` elements; downstream consumers (the agent, the exit artifact) read `id`, `severity`, `status`, and the `tags` list. The `forwarded` and `patch_tagged` booleans are derived from the `tags` list (the `bts-helper.py` does the derivation; the wire format exposes both the raw tags and the derived booleans so a consumer that reads only the wire format can answer §23 \"is this bug patch-tagged? is it forwarded upstream?\" without re-implementing the derivation).",
+      "type": "object",
+      "required": [
+        "id",
+        "severity",
+        "status",
+        "subject"
+      ],
+      "properties": {
+        "forwarded": {
+          "description": "Derived flag: `true` iff the bug is `forwarded` upstream (the tag list contains `upstream` or `forwarded`). The 1E.1 shim computes this; the wire format exposes it so the §23 \"forwarded upstream\" question is answerable without re-deriving.",
+          "default": false,
+          "type": "boolean"
+        },
+        "id": {
+          "description": "The BTS bug number. The BTS uses integers; the wire format keeps the integer type.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        },
+        "patch_tagged": {
+          "description": "Derived flag: `true` iff the bug has a patch attached (the tag list contains `patch`). The 1E.1 shim computes this; the wire format exposes it so the §23 \"patch-tagged\" question is answerable without re-deriving.",
+          "default": false,
+          "type": "boolean"
+        },
+        "severity": {
+          "description": "The bug's severity as the BTS reports it. Common values: `critical`, `grave`, `serious`, `important`, `normal`, `minor`, `wishlist`. The wire format stores the raw string (the BTS does not constrain the set; new Debian releases can add severities without a wire-format change).",
+          "type": "string"
+        },
+        "status": {
+          "description": "The bug's status as the BTS reports it. Common values: `open`, `done`, `forwarded`, `pending` (the BTS uses `pending-fixed`, `pending-upload`, etc.; the wire format stores the raw string).",
+          "type": "string"
+        },
+        "subject": {
+          "description": "The bug's subject line. Stored verbatim from the BTS (the BTS does not enforce length; a §23 consumer can truncate for display).",
+          "type": "string"
+        },
+        "tags": {
+          "description": "The bug's tags. The BTS exposes a free-form tag list (e.g. `patch`, `upstream`, `security`, `l10n`, `d-i`). The wire format stores the raw strings.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "BugSummary": {
+      "description": "The §23 summary fields. Computed from the `bugs` list by the 1E.1 shim; the wire format exposes the pre-computed values so a consumer that only reads the summary doesn't have to walk the bug list.\n\nThe §24 example output names all four fields: `open`, `serious`, `patch_tagged`, `forwarded`.",
+      "type": "object",
+      "required": [
+        "forwarded",
+        "open",
+        "patch_tagged",
+        "serious"
+      ],
+      "properties": {
+        "forwarded": {
+          "description": "Number of bugs with `forwarded == true`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "open": {
+          "description": "Number of bugs with `status == \"open\"`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "patch_tagged": {
+          "description": "Number of bugs with `patch_tagged == true`.",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        },
+        "serious": {
+          "description": "Number of bugs with `status == \"open\"` AND `severity == \"serious\"` (or higher: `critical`, `grave`; the 1E.1 shim treats all of these as \"serious\" for the summary count).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      }
+    },
+    "IssueVerdict": {
+      "description": "The 1E.2 verdict tri-state. `Fail` is intentionally absent: §24 says the BTS snapshot has no `Fail` semantics — a snapshot either succeeded (the runtime observes the bug data) or the transport failed (the runtime gets `InfrastructureError → Blocked`). The `Pass` and `InfrastructureError` cases are the only two the 1E.2 normalizer distinguishes.",
+      "oneOf": [
+        {
+          "description": "The snapshot was retrieved successfully. The runtime records `EvidenceStatus::Pass`; the `bugs` list and `summary` (in the GREEN struct) carry the observation regardless of how many bugs there are — §24 \"A package having 50 open bugs is not a tool failure.\"",
+          "type": "string",
+          "enum": [
+            "pass"
+          ]
+        },
+        {
+          "description": "The snapshot could not be retrieved (DNS / TLS / timeout / SOAP unavailable / malformed service response). The runtime records `NormalizationError::Unclassifiable(...)` which becomes `ExecutorError::InfrastructureFailed` which becomes `GateStatus::Blocked` (§24). The state-machine recovery path is 1F.1 / 1G.1's work.",
+          "type": "string",
+          "enum": [
+            "infrastructure_error"
+          ]
+        }
+      ]
+    }
+  }
+}

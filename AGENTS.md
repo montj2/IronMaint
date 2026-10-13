@@ -84,7 +84,7 @@ If `gh` is missing or your token has expired, run `gh auth status` first and `gh
 Run before every commit, not just before the PR:
 
 1. Diff review: `git diff --staged` — confirm only intended changes are included.
-2. Tests pass locally (update this line with the project's actual test command).
+2. Tests pass: `make -f containers/Makefile gate` — the §97 set, in the `ironmaint/workspace` image. Use `gate-fast` (same checks, no test runs) while you are still editing. There is no hosted CI, so this is the only thing standing between a commit and a red branch; see `doc/CONTAINER-IMAGES.md` §10.
 3. Linter/formatter clean, no suppressed warnings without justification.
 4. No secrets, credentials, or `.env` files staged.
 5. Commit message follows the format above.

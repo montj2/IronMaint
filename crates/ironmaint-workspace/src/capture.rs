@@ -104,22 +104,77 @@ impl<S: WorkspaceMetadataStore + CandidateStore> WorkspaceManager<S> {
             OffsetDateTime::now_utc(),
         );
 
-        // Persist first to assign the CandidateId, then write
-        // the maintenance commit with that id in the message.
-        let candidate_id = self
+        // Re-capturing an unchanged tree resolves to the same
+        // fingerprint, and the fingerprint is the candidate's
+        // identity — `migrations/0001` declares it UNIQUE and 0A
+        // §22 says a source change creates a *new* candidate, so no
+        // change means no new candidate. So the fingerprint is
+        // looked up before the insert, and a hit resolves to the
+        // stored row.
+        //
+        // Without this, the second `candidate.capture` of an
+        // unchanged tree reached `put_source_candidate` and died on
+        // the UNIQUE constraint, surfacing to the agent as
+        // "UNIQUE constraint failed: source_candidates.fingerprint".
+        // `RuntimeCommand::CaptureCandidate` has always deduped this
+        // way; this path reaches the store directly, and so had
+        // neither the guard nor its benefit. Mock-backed tests could
+        // not see it — `MockStore::put_source_candidate` overwrites
+        // and mints a second row silently — and `MockStore` is not
+        // what the daemon runs.
+        let existing = self
             .store()
-            .put_source_candidate(&candidate)
+            .find_source_by_fingerprint(candidate.fingerprint())
             .await
             .map_err(|e| {
                 WorkspaceError::new(WorkspaceErrorKind::Other(format!(
-                    "put_source_candidate: {e:?}"
+                    "find_source_by_fingerprint: {e:?}"
                 )))
             })?;
+
+        let (candidate_id, candidate) = match existing {
+            Some(existing_id) => {
+                let stored = self
+                    .store()
+                    .get_source_candidate(existing_id)
+                    .await
+                    .map_err(|e| {
+                        WorkspaceError::new(WorkspaceErrorKind::Other(format!(
+                            "get_source_candidate: {e:?}"
+                        )))
+                    })?;
+                // Return the stored candidate, not the freshly
+                // built one. They agree on every fingerprinted
+                // field and disagree on `captured_at`, and the
+                // caller must not be handed a record that was
+                // never written.
+                (existing_id, stored)
+            }
+            None => {
+                // Persist first to assign the CandidateId, then
+                // write the maintenance commit with that id in the
+                // message.
+                let new_id = self
+                    .store()
+                    .put_source_candidate(&candidate)
+                    .await
+                    .map_err(|e| {
+                        WorkspaceError::new(WorkspaceErrorKind::Other(format!(
+                            "put_source_candidate: {e:?}"
+                        )))
+                    })?;
+                (new_id, candidate)
+            }
+        };
 
         // Read the workspace revision that this capture
         // captures under. The maintenance commit's message
         // records it so future audits can correlate the capture
-        // with the workspace state at that point.
+        // with the workspace state at that point. It is written on
+        // the dedup path too, naming the *existing* id — a commit
+        // that names a candidate id no row carries would be a
+        // dangling reference in the one place the audit trail
+        // points at.
         let revision = self.current_revision(id).await?;
         let message = format!(
             "IronMaint internal maintenance commit\n\njob_id={job_id}\ncandidate_id={candidate_id}\nworkspace_revision={}",

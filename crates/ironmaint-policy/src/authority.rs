@@ -68,8 +68,18 @@ impl AuthorityClassification {
 /// cross-distribution authorities (formal specs, generic best
 /// practices). The classifier is distribution-neutral; ranking is
 /// the adapter's job.
+///
+/// `id` is `#[serde(default)]`-able: a manifest entry that
+/// omits `id` deserialises to `AuthorityId::default()` (a nil
+/// UUID, per the `define_uuid_id!` macro in
+/// `ironmaint-core::identity`). The Debian authority
+/// loader (`adapters/debian/src/authority_manifest.rs::load_authorities`)
+/// re-mints each loaded entry's id to a fresh UUIDv7 before
+/// returning the list, so the runtime id is per-load even
+/// though the on-disk default is nil.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 pub struct Authority {
+    #[serde(default)]
     pub id: AuthorityId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub distribution: Option<DistributionFamily>,

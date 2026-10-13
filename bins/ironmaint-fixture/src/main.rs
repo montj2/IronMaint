@@ -17,6 +17,8 @@
 //! - `synthetic.qa.lintian`: exit 0, stdout `lintian: 0 warnings\n`.
 //! - `synthetic.build.fail`: exit 1, stdout `build failed: missing dep\n`.
 //! - `synthetic.qa.fail`: exit 1, stdout `lintian: E: syntax-error\n`.
+//! - `synthetic.policy.validate`: exit 0, stdout `policy: no violations\n`.
+//! - `synthetic.policy.fail`: exit 1, stdout `policy: E: source-not-maintained\n`.
 //! - `synthetic.build.truncate`: exit 0, stdout 256 KiB of `A`.
 //! - `synthetic.build.timeout`: sleeps 120s, then exit 0. The
 //!   executor's `tokio::time::timeout` is expected to kill it
@@ -67,6 +69,14 @@ fn main() -> ExitCode {
             let _ = writeln!(stdout, "lintian: E: syntax-error");
             ExitCode::from(1)
         }
+        "synthetic.policy.validate" => {
+            let _ = writeln!(stdout, "policy: no violations");
+            ExitCode::from(0)
+        }
+        "synthetic.policy.fail" => {
+            let _ = writeln!(stdout, "policy: E: source-not-maintained");
+            ExitCode::from(1)
+        }
         "synthetic.build.truncate" => {
             let chunk = [b'A'; 4096];
             let mut written = 0usize;
@@ -98,6 +108,31 @@ fn main() -> ExitCode {
             ExitCode::from(130)
         }
         "synthetic.build.infra_fail" => ExitCode::from(127),
+        "synthetic.build.echo_input" => {
+            // PR 1A.2 teeth-check tool. Reads the JSON payload
+            // the executor wrote to our stdin and writes it back
+            // to stdout verbatim. The executor's `JsonStdin`
+            // wiring is what populates stdin in the first place,
+            // so this tool is useless without it — a child reading
+            // `/dev/null` sees EOF immediately and prints nothing.
+            //
+            // We do not cache modules in `main.rs`: `ironmaint-fixture`
+            // is a control-flow shell, not domain code.
+            use std::io::Read;
+            let mut buf = Vec::new();
+            if let Err(e) = std::io::stdin().read_to_end(&mut buf) {
+                let _ = writeln!(stderr, "echo_input: stdin read failed: {e}");
+                return ExitCode::from(2);
+            }
+            // Write the bytes verbatim — including any trailing
+            // newline the runtime may or may not have written.
+            if let Err(e) = stdout.write_all(&buf) {
+                let _ = writeln!(stderr, "echo_input: stdout write failed: {e}");
+                return ExitCode::from(2);
+            }
+            let _ = stdout.flush();
+            ExitCode::from(0)
+        }
         other => {
             let _ = writeln!(stderr, "unknown synthetic tool: {other}");
             ExitCode::from(2)

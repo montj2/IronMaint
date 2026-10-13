@@ -1,0 +1,14 @@
+Source: example
+Maintainer: IronMaint Test <test@example.invalid>
+Section: utils
+Priority: optional
+Standards-Version: 4.6.2
+Build-Depends: debhelper-compat (= 13)
+
+Package: example
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: trivial example package
+ A trivial Debian source tree used as the 1C.1 hermetic
+ fixture. The package builds nothing of substance; it
+ exists to exercise the source_preparation check.

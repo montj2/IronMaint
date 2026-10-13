@@ -14,20 +14,24 @@ members = [
     "crates/ironmaint-executor",
     "crates/ironmaint-runtime",
     "crates/ironmaint-mcp",
+    "crates/ironmaint-synthetic-tools",
     "crates/ironmaint-testkit",
     "adapters/debian-stub",
     "adapters/fedora-stub",
+    "adapters/debian",
     "bins/ironmaintctl",
     "bins/ironmaint-fixture",
     "bins/ironmaintd",
+    "bins/ironmaint-debian-tool",
 ]
 
 [workspace.package]
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+# Floor is set by sqlx 0.9.0 (see rust-toolchain.toml), not by edition 2024.
+rust-version = "1.94"
 license = "MIT"
-authors = ["James Montgomery <montj2@github.com>"]
+authors = ["James Montgomery <james@bitrefactory.com>"]
 repository = "https://github.com/montj2/IronMaint"
 homepage = "https://github.com/montj2/IronMaint"
 publish = false
@@ -39,9 +43,22 @@ unsafe_code = "forbid"
 # (Per PHASE-0A.md §65: no env reads inside domain logic.)
 # These are workspace-level guards applied to every member crate.
 unused_must_use = "deny"
-# Reachable code and unused imports are noise during skeleton bootstrap but
-# will be promoted to deny once 0A.6 lands.
-dead_code = "warn"
+# Unused code is a defect, not a warning. Promoted from "warn" on
+# 2026-10-01 (D-04), the same day D-08 removed the last two
+# `#[allow(dead_code)]` markers in the executor — the promotion is
+# only meaningful for a crate that no longer needs the exemption, so
+# that order is the one that lets the deny be teeth-checked rather
+# than assumed.
+#
+# The cost of promoting early is that `warn` at least tells you what
+# you are choosing to ignore. The cost of not promoting is that a
+# `warn` is scrolled past, and a field nobody reads sits there for
+# months behind an `#[allow]` that names a future commit which never
+# arrives. D-08 is the concrete case: `ProcessExecutor` held an
+# artifact store and a guard factory behind `#[allow(dead_code)]`, and
+# the reason it is MEDIUM is that the daemon logged the store as
+# verified while nothing was ever written to it.
+dead_code = "deny"
 
 [workspace.lints.clippy]
 # Panic policy (PHASE-0A.md §85): no unwrap/expect/panic/todo/unimplemented
@@ -57,8 +74,18 @@ map_err_ignore = "deny"
 all = { level = "warn", priority = -1 }
 
 [workspace.metadata.ironmaint]
-phase = "0B"
+phase = "1"
 north_star = "Adding support for a new distribution requires implementing that distribution's maintenance contract — not rewriting IronMaint's fundamental trust, evidence, orchestration, or release model."
+
+# Profile tuning: the default dev profile uses debug = 2 (full debug info),
+# which is the main reason target/debug/ balloons to 30-60 GB on a 20-crate
+# workspace over a couple of weeks. debug = 1 keeps line tables only
+# (~half the size per .rlib/.o), which is enough for stepping and panic
+# backtraces. For a one-off need for full debug info, override on the
+# command line: cargo build --config 'profile.dev.debug=2'. Pair this
+# with `make -f containers/Makefile clean-target` for periodic cleanup.
+[profile.dev]
+debug = 1
 
 # -----------------------------------------------------------------------------
 # Workspace dependencies. Declared once at the root, inherited by member
@@ -67,12 +94,12 @@ north_star = "Adding support for a new distribution requires implementing that d
 # -----------------------------------------------------------------------------
 [workspace.dependencies]
 # Phase 0A forbids async in domain crates (PHASE-0A.md §84). The runtime
-# async deps (tokio, sqlx, rmcp, tracing, fs2, tempfile) land in Phase 0B
-# and are consumed only by the infrastructure crates (store, executor,
-# artifacts, workspace, runtime, mcp, daemon) — never by the domain crates
-# (core, evidence, policy, state, adapter-api). PHASE-0B.md §98 enforces this
-# via `cargo xtask verify-architecture`. Native `async fn` in traits is
-# stable on MSRV 1.85, so no `async-trait` dep is needed.
+# async deps (tokio, sqlx, rmcp, tracing, fs2, tempfile) are consumed only
+# by the infrastructure crates (store, executor, artifacts, workspace,
+# runtime, mcp, daemon) — never by the domain crates (core, evidence,
+# policy, state, adapter-api). `cargo run -p xtask -- verify-architecture`
+# enforces this dependency direction. Native `async fn` in traits is
+# stable on MSRV 1.94, so no `async-trait` dep is needed.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 schemars = { version = "0.8", features = ["uuid1", "url"] }
@@ -85,12 +112,49 @@ thiserror = "2"
 regex = "1"
 insta = { version = "1", features = ["json"] }
 pretty_assertions = "1"
-# Phase 0B runtime deps (PHASE-0B.md §86). Listed here so member crates
-# can opt in with `dep = { workspace = true }` and inherit the version.
-# No member yet consumes these — they are pinned for commits 2+.
+# Runtime deps. Listed here so member crates can opt in with
+# `dep = { workspace = true }` and inherit the version. The domain crates
+# (core, evidence, policy, state, adapter-api) must not consume them —
+# `cargo run -p xtask -- verify-architecture` enforces that.
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "process", "fs", "sync", "time", "io-util", "net"] }
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "tls-rustls-ring-native-roots", "sqlite", "macros", "json", "time"] }
+# Base64 encoding for `evidence.artifact.read` (PHASE-1.md §31). The MCP wire
+# format is JSON, so binary artifact bytes have to be encoded on the way out
+# and decoded on the way in. RFC 4648 §4 (standard alphabet, padding,
+# no line wrapping) is the only form the tool emits.
+base64 = "0.22"
+# Debian version parser/comparator (PHASE-1.md §15). Adopts the
+# `debversion` crate rather than reimplementing dpkg §5.6.12 lex
+# order, per the spec's "Do not reimplement Debian version
+# ordering casually." The crate implements the full grammar
+# (epoch, upstream, debian_revision, tilde, plus, colon, binNMU)
+# and returns `std::cmp::Ordering` directly. No default features
+# (the stub only needs parse + Ord).
+debversion = "0.5"
+# `deb822-lossless` for parsing `debian/control` and
+# `debian/copyright` (DEP-5). The crate is small, focused on the
+# RFC 822 dialect Debian uses, and is the same library
+# `debian-policy-compliance` tools adopt (1C.1).
+deb822-lossless = "0.5"
+# `clap` derive for the subcommand enum. The daemon's CLI is
+# hand-rolled (PHASE-0B §86 does not sanction a CLI-parsing
+# dependency), but the 1C.1 tool's surface is *only* its
+# subcommands; a tool that takes no other arguments does not
+# need a hand-rolled parser.
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
 rmcp = { version = "3", features = ["server", "transport-streamable-http-server", "macros"] }
+# The Streamable-HTTP transport is a tower Service, not an axum Router: the
+# daemon must supply the HTTP server itself. These are the versions rmcp's
+# own transport tests are written against, so `nest_service` compatibility is
+# proven upstream rather than assumed here. tokio-util is not re-exported by
+# rmcp, so the graceful-shutdown CancellationToken is a direct dependency.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+# HTTP client for the transport tests: they must exercise the
+# server over a real socket, since "the MCP server has no
+# transport" is precisely the claim under test.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+tokio-util = "0.7"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
 fs2 = "0.4"

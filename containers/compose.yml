@@ -1,0 +1,124 @@
+# compose.yml — local development orchestration for IronMaint.
+#
+# This file is intentionally MINIMAL. The workspace image is a toolchain;
+# it doesn't have a long-running default process. You use it via
+# `compose run --rm workspace <command>`:
+#
+#   docker compose run --rm workspace cargo test --workspace
+#   docker compose run --rm workspace cargo fmt --check
+#   docker compose run --rm workspace cargo clippy --workspace \
+#       --all-targets --all-features -- -D warnings
+#   docker compose run --rm workspace cargo run -p xtask -- verify-architecture
+#   docker compose run --rm workspace cargo run -p xtask -- verify-schemas
+#   docker compose run --rm workspace cargo run -p xtask -- verify-migrations
+#   docker compose run --rm workspace cargo run -p xtask -- verify-mcp-schemas
+#
+# To run ironmaintd itself (the §97 gate is offline-only; ironmaintd is
+# interactive):
+#
+#   echo "test-token-1234" > /tmp/ironmaint-token
+#   docker compose run --rm \
+#     -v /tmp/ironmaint-token:/run/secrets/token:ro \
+#     workspace ironmaintd \
+#       --state-dir /work/.ironmaint \
+#       --migrations-dir /work/migrations \
+#       --token-file /run/secrets/token
+#
+# Note on platforms: the `platform: linux/arm64` pin below assumes the
+# dev machine is aarch64 macOS (verified: spec §8). To run on an amd64
+# host, pass a SECOND compose file that overrides it —
+# `docker compose -f compose.yml -f override.yml run …` — because this
+# file sets `platform:` explicitly and an explicit key beats
+# COMPOSE_PLATFORM. (COMPOSE_PLATFORM=linux/ppc64le was tried against
+# compose v2.40.3 and the container came up bookworm anyway: the
+# override was ignored, silently. `make -f containers/Makefile gate`
+# generates that second file from the detected host platform.)
+#
+# Path resolution: this file lives at `containers/compose.yml`, so its
+# "project directory" is `containers/`. `..` is therefore the repo root.
+# `build.context: ..` and `source: ..` make both build and bind mount
+# resolve to the repo root.
+
+name: ironmaint
+
+services:
+  workspace:
+    build:
+      context: ..
+      dockerfile: containers/workspace/Dockerfile
+      args:
+        # BuildKit is required for the Dockerfile 1.7 syntax.
+        BUILDKIT_INLINE_CACHE: "1"
+    image: ironmaint/workspace:0.1
+    platform: linux/arm64
+    init: true                # Compose equivalent of `docker run --init`; uses tini
+    working_dir: /work
+    environment:
+      # Forwarded from the host, so a developer's local IRONMAINT_LOG carries
+      # over (e.g. for `IRONMAINT_LOG=ironmaintd=debug` runs).
+      IRONMAINT_LOG: ${IRONMAINT_LOG:-info}
+      # Cargo config — keep caches and build output in named volumes
+      # mounted outside the bind mount at /work (named volumes under a
+      # bind mount come up root-owned regardless of `:U`).
+      #
+      # CARGO_TARGET_DIR points at a named volume, not at /work/target on
+      # the bind mount. Two reasons, and the second is the one that used
+      # to be load-bearing:
+      #
+      # 1. Build throughput. /work is a bind mount through the Docker
+      #    VM's filesystem. rustc writes thousands of small files there
+      #    and contends badly; a cold workspace build took >20 minutes
+      #    with a dozen rustc processes fighting over it. A named
+      #    volume is a normal Linux filesystem and does not.
+      #
+      # 2. Cross-platform contamination. /work/target on the bind mount
+      #    is the HOST's target dir, so a macOS Mach-O binary sits at
+      #    /work/target/debug/ironmaint-fixture. It exists, so a
+      #    `path.exists()`-guarded lookup accepts it, the Linux fork
+      #    succeeds, exec fails ENOEXEC, and the child exits 127 —
+      #    indistinguishable from "command not found". That is the
+      #    whole of register entry D-18, which blamed
+      #    `ProcessExecutor::spawn` for a full audit cycle.
+      #
+      # The old comment here said the bind mount was required because
+      # "integration tests hardcode `workspace_dir.join("target")`".
+      # That stopped being true when the fixture binary stopped being
+      # resolved by walking to a hardcoded path: it is now resolved by
+      # ironmaint_fixture::fixture_binary_path(), which honours
+      # CARGO_TARGET_DIR because cargo re-exports it to test processes.
+      CARGO_HOME: /var/cargo
+      CARGO_TARGET_DIR: /var/cargo-target
+      CARGO_TERM_COLOR: always
+      # Backtraces on panic, because the §97 gate is allowed to fail loud.
+      RUST_BACKTRACE: "1"
+      # Don't make Cargo use the git CLI's stored credentials; we don't have any.
+      CARGO_NET_GIT_FETCH_WITH_CLI: "false"
+    volumes:
+      # Source — bind mount from the repo root (this file is in containers/,
+      # so `..` is the repo root). Edit-on-host semantics.
+      - type: bind
+        source: ..
+        target: /work
+      # cargo registry + git index caches — shared across projects.
+      # Mounted OUTSIDE the bind mount at /work because named volumes under
+      # a bind mount come up root-owned regardless of `:U`. CARGO_HOME
+      # points cargo here.
+      - cargo-registry:/var/cargo/registry:U
+      - cargo-git:/var/cargo/git:U
+      # Build output — mounted OUTSIDE the bind mount for the same
+      # reason as the caches above, and mounted at the path
+      # CARGO_TARGET_DIR points to rather than at /work/target. Keeps
+      # the container's Linux build output away from the host's macOS
+      # `target/`, which is what made a foreign binary visible at the
+      # path the fixture resolver reads (register entry D-18).
+      - cargo-target:/var/cargo-target:U
+      # IronMaint state — sqlite db, single-daemon lock, workspace + artifacts.
+      # Mounted OUTSIDE the bind mount at the same reason; the daemon is
+      # passed `--state-dir=/var/ironmaint-state` at run time.
+      - ironmaint-state:/var/ironmaint-state:U
+
+volumes:
+  cargo-registry:
+  cargo-git:
+  cargo-target:
+  ironmaint-state:

@@ -133,10 +133,3 @@ fn abandon_operation(op: &mut PrivilegedOperation) {
         op.authorization = ironmaint_policy::AuthorizationState::Failed;
     }
 }
-
-// Anchor the time::OffsetDateTime path so we don't accidentally
-// pull the trait into the public surface.
-#[allow(dead_code)]
-fn _ensure_time_import() -> OffsetDateTime {
-    OffsetDateTime::now_utc()
-}

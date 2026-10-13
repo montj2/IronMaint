@@ -1,6 +1,7 @@
 //! Execution request type.
 
 use ironmaint_adapter_api::ToolCapabilityKey;
+use ironmaint_core::JobId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +15,16 @@ use crate::retry::RetryClass;
 /// its own shape.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct ExecutionRequest {
+    /// The job this invocation belongs to.
+    ///
+    /// Required, and required *here* rather than passed separately
+    /// to `execute`, because §15's retention cap is per-job: the
+    /// executor asks a `JobArtifactGuardFactory` for this job's
+    /// guard, and a request that did not say which job would be a
+    /// request whose artifacts could not be budgeted at all. This
+    /// field was absent, and its absence is why `ProcessExecutor`
+    /// held a `guard_factory` it could not call — D-08.
+    pub job_id: JobId,
     pub tool_key: ToolCapabilityKey,
     pub retry_class: RetryClass,
     pub input: serde_json::Value,
@@ -27,11 +38,13 @@ pub struct ExecutionRequest {
 impl ExecutionRequest {
     #[must_use]
     pub fn new(
+        job_id: JobId,
         tool_key: ToolCapabilityKey,
         retry_class: RetryClass,
         input: serde_json::Value,
     ) -> Self {
         Self {
+            job_id,
             tool_key,
             retry_class,
             input,

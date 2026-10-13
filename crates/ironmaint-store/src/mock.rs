@@ -3,19 +3,20 @@
 //! integration tests.
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use ironmaint_core::{
-    ArtifactId, CandidateFingerprint, CandidateId, EvidenceId, GateId, JobId, JobProjection,
-    ObligationId, OperationId, ReleaseCandidateId, SourceCandidate,
+    ArtifactId, CandidateFingerprint, CandidateId, CheckId, EvidenceId, GateId, JobId,
+    JobProjection, ObligationId, OperationId, ReleaseCandidateId, SourceCandidate,
 };
 use ironmaint_evidence::{Evidence, GateDefinition, GateResult};
 use ironmaint_policy::{AuthorizationState, Obligation, PrivilegedOperation, ReleaseCandidate};
 
 use crate::artifact::{ArtifactMetadataStore, ArtifactRecord};
 use crate::candidate::CandidateStore;
+use crate::check::{CheckDefinition, CheckStore};
 use crate::envelope::EventEnvelope;
-use crate::error::StoreError;
+use crate::error::{StoreError, StoreErrorKind};
 use crate::event::EventStore;
 use crate::evidence::EvidenceStore;
 use crate::gate::GateStore;
@@ -66,6 +67,8 @@ struct MockInner {
     artifacts_by_job: HashMap<JobId, Vec<ArtifactId>>,
     workspaces: HashMap<WorkspaceHandle, WorkspaceState>,
     workspaces_by_job: HashMap<JobId, Vec<WorkspaceHandle>>,
+    checks: HashMap<CheckId, CheckDefinition>,
+    checks_by_job: HashMap<JobId, Vec<CheckId>>,
 }
 
 impl MockStore {
@@ -74,20 +77,54 @@ impl MockStore {
         Self::default()
     }
 
+    /// Recover the guard from a poisoned lock rather than
+    /// panicking.
+    ///
+    /// A lock poisons only when a holder panicked while holding it,
+    /// and in this crate that means a test has already failed and its
+    /// panic is already unwinding. Panicking again here — which is
+    /// what `.expect("MockStore lock poisoned")` did — replaces the
+    /// real failure with a message about a lock, which is strictly
+    /// worse for diagnosis and is a panic in a crate the no-panic
+    /// policy (PHASE-0A.md §85) is supposed to cover.
+    ///
+    /// Recovery is the right trade for a test double rather than a
+    /// compromise: the in-memory state may be half-updated, but the
+    /// test that caused it is already failing, and its own assertion
+    /// is the more useful signal.
     fn read(&self) -> RwLockReadGuard<'_, MockInner> {
-        self.inner.read().expect("MockStore lock poisoned")
+        self.inner.read().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// See [`MockStore::read`] for why a poisoned lock is recovered
+    /// rather than treated as a failure.
     fn write(&self) -> RwLockWriteGuard<'_, MockInner> {
-        self.inner.write().expect("MockStore lock poisoned")
+        self.inner.write().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The latest stored result for `fingerprint` under one gate.
+    ///
+    /// `.rev()` is load-bearing. `put_gate_result` appends, and the
+    /// contract it implements is *"persist (or update) … the store
+    /// treats `(gate_id, fingerprint)` as the key"* — one key, one
+    /// stored answer, last write wins. `SqliteStore` enforces that with
+    /// `PRIMARY KEY (gate_id, candidate)` and
+    /// `ON CONFLICT ... DO UPDATE`, so it holds a single row and
+    /// overwrites it. Finding the *first* match here instead made the
+    /// mock return the oldest evaluation a gate ever had, which is the
+    /// opposite of what the other backend does, and it is the read
+    /// every caller makes.
+    ///
+    /// Found by the conformance case
+    /// `re_evaluating_a_gate_overwrites_its_result`, which is green
+    /// against SQLite and was red against this.
     fn find_gate_result<'a>(
         entries: &'a [(CandidateFingerprint, GateResult)],
         fingerprint: &'a CandidateFingerprint,
     ) -> Option<&'a GateResult> {
         entries
             .iter()
+            .rev()
             .find(|(fp, _)| fp == fingerprint)
             .map(|(_, r)| r)
     }
@@ -177,19 +214,10 @@ impl ProjectionStore for MockStore {
         let Some(first) = events.first() else {
             return Err(StoreError::not_found(format!("no events for {job_id}")));
         };
-        let initial = match &first.event {
-            ironmaint_state::JobEvent::Transitioned(t) => t.projection_after.clone(),
-            ironmaint_state::JobEvent::Domain(_) => {
-                return Err(StoreError::corrupt(
-                    "first event is a Domain reference; no projection to seed rebuild",
-                ));
-            }
-            ironmaint_state::JobEvent::ToolRunFinished(_) => {
-                return Err(StoreError::corrupt(
-                    "first event is a ToolRunFinished; no projection to seed rebuild",
-                ));
-            }
-        };
+        let initial = first
+            .event
+            .seed_projection()
+            .map_err(|why| StoreError::corrupt(format!("{why}; no projection to seed rebuild")))?;
         let mut proj = initial;
         for env in events.iter().skip(1) {
             proj = ProjectionApply::apply(&proj, &env.event, env.occurred_at);
@@ -207,6 +235,32 @@ impl CandidateStore for MockStore {
         let fp = candidate.fingerprint().clone();
         let job = candidate.job_id();
         let mut w = self.write();
+
+        // `fingerprint` is `UNIQUE` in `migrations/0001_initial.sql`,
+        // and SQLite enforces it. This used not to: the insert below
+        // was unconditional, so re-capturing an unchanged tree minted a
+        // second candidate and silently repointed the index at it. The
+        // bug was invisible here because every test that captured
+        // candidates ran on this mock and the backend the daemon
+        // actually runs was never in the loop — defect instances 9 and
+        // 11 of the fourteen in `doc/SEAM-VERIFICATION.md` §1.1.
+        //
+        // `ironmaint-workspace`'s capture path guards against this
+        // before it reaches the store, which is why it went unnoticed
+        // for so long; the store is the wrong place for the only check,
+        // since a caller that does not know the rule reintroduces it.
+        // `ironmaint_testkit::assert_store_conformance` is what keeps
+        // the two backends from drifting apart again.
+        if w.source_by_fp
+            .get(&fp)
+            .is_some_and(|existing| *existing != id)
+        {
+            return Err(StoreError::new(
+                StoreErrorKind::Conflict,
+                format!("source candidate {id} duplicates the fingerprint of {fp}"),
+            ));
+        }
+
         let already = w.sources.contains_key(&id);
         w.sources.insert(id, candidate.clone());
         w.source_by_fp.insert(fp, id);
@@ -242,6 +296,26 @@ impl CandidateStore for MockStore {
             .get(&id)
             .cloned()
             .ok_or_else(|| StoreError::not_found(format!("release candidate {id}")))
+    }
+
+    async fn list_release_candidates_for_job(
+        &self,
+        job_id: JobId,
+    ) -> Result<Vec<ReleaseCandidate>, StoreError> {
+        // Creation order, to match the SQLite backend's `ORDER BY
+        // rowid`: a caller that assembles a list of snapshots and
+        // shows it to a person needs the same order from both
+        // backends or the mock will have taught it nothing.
+        let mut out: Vec<ReleaseCandidate> = self
+            .read()
+            .releases
+            .values()
+            .filter(|r| r.job_id == job_id)
+            .cloned()
+            .collect();
+        out.sort_by_key(|r| r.created_at);
+        out.sort_by_key(|r| r.id);
+        Ok(out)
     }
 
     async fn list_source_candidates_for_job(
@@ -598,6 +672,36 @@ impl WorkspaceMetadataStore for MockStore {
             .get(&job_id)
             .cloned()
             .unwrap_or_default())
+    }
+}
+
+impl CheckStore for MockStore {
+    async fn put_check(&self, check: &CheckDefinition) -> Result<(), StoreError> {
+        let mut w = self.write();
+        let id = check.id;
+        let already = w.checks.contains_key(&id);
+        w.checks.insert(id, check.clone());
+        if !already {
+            w.checks_by_job.entry(check.job_id).or_default().push(id);
+            // Keep the per-job list in id-sorted (UUIDv7) order.
+            if let Some(list) = w.checks_by_job.get_mut(&check.job_id) {
+                list.sort_unstable_by_key(|c| *c.as_uuid().as_bytes());
+            }
+        }
+        Ok(())
+    }
+
+    async fn get_check(&self, id: CheckId) -> Result<CheckDefinition, StoreError> {
+        let r = self.read();
+        r.checks
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| StoreError::not_found(format!("check {id}")))
+    }
+
+    async fn list_checks_for_job(&self, job_id: JobId) -> Result<Vec<CheckId>, StoreError> {
+        let r = self.read();
+        Ok(r.checks_by_job.get(&job_id).cloned().unwrap_or_default())
     }
 }
 

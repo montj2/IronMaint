@@ -38,11 +38,13 @@ pub trait StoreTransaction:
     + WorkspaceMetadataStore
 {
     /// Commit all writes accumulated during this transaction.
-    async fn commit(self: Box<Self>) -> Result<(), StoreError>;
+    fn commit(self: Box<Self>) -> impl std::future::Future<Output = Result<(), StoreError>> + Send;
 
     /// Discard all writes accumulated during this transaction.
     /// Default is a no-op.
-    async fn rollback(self: Box<Self>) -> Result<(), StoreError> {
-        Ok(())
+    fn rollback(
+        self: Box<Self>,
+    ) -> impl std::future::Future<Output = Result<(), StoreError>> + Send {
+        std::future::ready(Ok(()))
     }
 }

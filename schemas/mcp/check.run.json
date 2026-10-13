@@ -12,6 +12,11 @@
       }
     },
     "properties": {
+      "check_id": {
+        "description": "The check to run, as advertised by `job.next_actions`.\n\nThis replaced a `tool_key` field that the runtime's `RunCheck` command never accepted — three layers (`AllowedAction::RunCheck`, this input, and the runtime command) disagreed about the identity of a check, and only the runtime's `check_id` is one the store can resolve. `CheckStore` has no lookup-by-tool-key, so a tool key could not have been honoured even in principle.",
+        "format": "uuid",
+        "type": "string"
+      },
       "job_id": {
         "format": "uuid",
         "type": "string"
@@ -26,40 +31,124 @@
           }
         ],
         "default": null
-      },
-      "tool_key": {
-        "type": "string"
       }
     },
     "required": [
-      "job_id",
-      "tool_key"
+      "check_id",
+      "job_id"
     ],
     "title": "RunCheckInput",
     "type": "object"
   },
   {
     "$schema": "http://json-schema.org/draft-07/schema#",
+    "definitions": {
+      "EvidenceStatus": {
+        "description": "Status of an evidence evaluation (§23).\n\n`Pass` and `Fail` are the normal outcomes; `NotApplicable` exempts the producing gate; `Inconclusive` is \"we ran the check but the result wasn't actionable\" (different from `NotEvaluated` which means \"we haven't run it yet\"); `InfrastructureError` is a host/sandbox problem that must not be confused with `Fail` (§2.6: \"Tool failure ≠ infrastructure error\").",
+        "enum": [
+          "pass",
+          "fail",
+          "not_applicable",
+          "inconclusive",
+          "infrastructure_error"
+        ],
+        "type": "string"
+      },
+      "GateStatus": {
+        "description": "Status of a gate evaluation (§29).\n\n`NotEvaluated` is the initial state (no evaluation has run). `Blocked` means the evaluation couldn't complete (e.g. dependency missing). `ReviewRequired` means the evaluation ran but a human needs to weigh in.",
+        "oneOf": [
+          {
+            "description": "Initial state: no evaluation has run yet.",
+            "enum": [
+              "not_evaluated"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Evaluation succeeded; gate is satisfied.",
+            "enum": [
+              "pass"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Evaluation ran and found the gate violated.",
+            "enum": [
+              "fail"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Evaluation found the gate not applicable to this candidate.",
+            "enum": [
+              "not_applicable"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Evaluation couldn't complete (missing dependency, tool error).",
+            "enum": [
+              "blocked"
+            ],
+            "type": "string"
+          },
+          {
+            "description": "Evaluation ran but requires a human decision.",
+            "enum": [
+              "review_required"
+            ],
+            "type": "string"
+          }
+        ]
+      }
+    },
+    "description": "The durable result of a check.\n\nDeliberately does *not* carry `exit_code`/`stdout`/`stderr`. Those are the executor's raw bytes: `exit_code` is persisted nowhere, so the store could not corroborate it, and `SKILL.md` forbids the agent from acting on raw tool output. What survives a restart is the evidence row and the gate verdict, so those are what the tool returns.",
     "properties": {
-      "exit_code": {
-        "format": "int32",
-        "type": "integer"
-      },
-      "stderr": {
+      "check_id": {
+        "format": "uuid",
         "type": "string"
       },
-      "stdout": {
+      "evidence_id": {
+        "description": "The evidence row this run wrote, or `None` if the check has never been run.",
+        "format": "uuid",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "evidence_status": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/EvidenceStatus"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "The tool's own verdict, before gate aggregation."
+      },
+      "gate_status": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/GateStatus"
+          }
+        ],
+        "description": "The gate verdict after aggregation."
+      },
+      "job_id": {
+        "format": "uuid",
         "type": "string"
       },
-      "tool_key": {
-        "type": "string"
+      "truncated": {
+        "description": "Whether the executor bounded stdout/stderr.",
+        "type": "boolean"
       }
     },
     "required": [
-      "exit_code",
-      "stderr",
-      "stdout",
-      "tool_key"
+      "check_id",
+      "gate_status",
+      "job_id",
+      "truncated"
     ],
     "title": "RunCheckOutput",
     "type": "object"

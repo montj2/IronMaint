@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 use ironmaint_core::JobId;
 
-mod rebuild;
+use ironmaintctl::rebuild;
 
 #[derive(Debug)]
 struct Args {

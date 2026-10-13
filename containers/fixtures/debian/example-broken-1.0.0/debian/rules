@@ -1,0 +1,9 @@
+#!/usr/bin/make -f
+%:
+	dh $@
+
+override_dh_auto_build:
+	@echo "example: nothing to build"
+
+override_dh_auto_install:
+	@echo "example: nothing to install"

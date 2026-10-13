@@ -1,0 +1,18 @@
+[package]
+name = "ironmaint-synthetic-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Synthetic tool definitions shared by the testkit conformance runner and the daemon's tool registry (Phase 0B.9)."
+
+[lints]
+workspace = true
+
+[dependencies]
+ironmaint-adapter-api = { path = "../ironmaint-adapter-api" }
+ironmaint-executor = { path = "../ironmaint-executor" }
+thiserror = { workspace = true }

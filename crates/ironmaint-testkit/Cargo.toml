@@ -16,6 +16,12 @@ ironmaint-policy = { path = "../ironmaint-policy" }
 ironmaint-state = { path = "../ironmaint-state" }
 ironmaint-adapter-api = { path = "../ironmaint-adapter-api" }
 ironmaint-executor = { path = "../ironmaint-executor" }
+# Owns the `ironmaint-fixture` binary, and with it the resolver that
+# finds a loadable copy of it. Re-exported from `executor_conformance`
+# so the conformance drivers and the executor's own tests agree on one
+# lookup instead of each re-deriving one.
+ironmaint-fixture = { path = "../../bins/ironmaint-fixture" }
+ironmaint-synthetic-tools = { path = "../ironmaint-synthetic-tools" }
 ironmaint-runtime = { path = "../ironmaint-runtime" }
 ironmaint-store = { path = "../ironmaint-store" }
 serde_json = { workspace = true }
@@ -25,12 +31,28 @@ url = { workspace = true }
 [dev-dependencies]
 insta = { workspace = true }
 ironmaint-artifacts = { path = "../ironmaint-artifacts" }
+# The §101 acceptance scenario drives the real `SqliteStore` rather
+# than the mock, because steps 4, 5 and 30 are about surviving a
+# restart and a mock cannot be restarted. Allowed here (and already
+# in `ironmaint-runtime`) by PHASE-0B.md §98: the test-support crate
+# is not a production dependency direction.
+ironmaint-store-sqlite = { path = "../ironmaint-store-sqlite" }
+# The §101 acceptance scenario's MCP half (DoD #29) drives the same
+# walk through `dispatch` and reads the store for the facts no tool
+# exposes. It cannot live in `ironmaint-mcp`: §98.6 forbids that
+# crate from depending on a store backend in *either* dependency
+# kind, and "MCP must never bypass runtime" is a rule about the
+# crate, not about whether the caller is a test. Allowed here for the
+# same reason as the row above.
+ironmaint-mcp = { path = "../ironmaint-mcp" }
+ironmaint-workspace = { path = "../ironmaint-workspace" }
 pretty_assertions = { workspace = true }
 serde = { workspace = true }
 tempfile = { workspace = true }
 time = { workspace = true, features = ["macros"] }
 tokio = { workspace = true, features = ["macros", "rt"] }
 url = { workspace = true }
+uuid = { workspace = true }
 
 [lints]
 workspace = true
@@ -39,6 +61,30 @@ workspace = true
 integration = []
 
 [[test]]
+name = "acceptance_scenario"
+path = "tests/acceptance_scenario.rs"
+required-features = ["integration"]
+
+[[test]]
 name = "synthetic_e2e"
 path = "tests/synthetic_e2e.rs"
 required-features = ["integration"]
+
+[[test]]
+name = "mcp_acceptance_scenario"
+path = "tests/mcp_acceptance_scenario.rs"
+required-features = ["integration"]
+
+[[test]]
+name = "replay_roundtrip"
+path = "tests/replay_roundtrip.rs"
+
+# S9 (`doc/SEAM-VERIFICATION.md` §2). Two drivers rather than one
+# combined binary, so a failure names the backend that broke.
+[[test]]
+name = "store_parity"
+path = "tests/store_parity.rs"
+
+[[test]]
+name = "store_parity_sqlite"
+path = "tests/store_parity_sqlite.rs"

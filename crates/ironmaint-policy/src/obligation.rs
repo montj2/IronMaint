@@ -101,6 +101,66 @@ impl ObligationStatus {
     }
 }
 
+/// The verdict of evaluating one obligation against evidence.
+///
+/// Deliberately narrower than [`ObligationStatus`], and the narrowing
+/// is the point:
+///
+/// - `NotEvaluated` is an initial state, not an outcome. Nobody
+///   evaluates an obligation to discover it has not been evaluated.
+/// - `ExceptionApproved` is absent because 0A §35 requires an
+///   explicit approval record behind it and 0B §102 item 25 forbids
+///   MCP from setting obligations at all. A type that can name it
+///   would be a type that can express self-granting an exception,
+///   which the architecture rules call a red flag.
+///
+/// Every variant is something a policy evaluation can *return*. If a
+/// future obligation needs a fourth verdict, it is added here rather
+/// than smuggled in as an `ObligationStatus` cast.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ObligationOutcome {
+    /// Evaluated and satisfied against the bound evidence.
+    Pass,
+    /// Evaluated and violated; a mandatory obligation of this
+    /// status blocks any transition requiring policy completion.
+    Fail,
+    /// Evaluated, but a human must weigh in (ambiguity, risk).
+    RequiresReview,
+}
+
+impl ObligationOutcome {
+    #[must_use]
+    pub fn as_status(self) -> ObligationStatus {
+        match self {
+            Self::Pass => ObligationStatus::Pass,
+            Self::Fail => ObligationStatus::Fail,
+            Self::RequiresReview => ObligationStatus::RequiresReview,
+        }
+    }
+
+    /// Whether this verdict leaves a mandatory obligation blocking.
+    ///
+    /// Same predicate the transition engine applies in
+    /// `check_obligations`, kept here so the reporting path and the
+    /// enforcing path cannot disagree about what "unsatisfied" means.
+    #[must_use]
+    pub fn is_blocking(self) -> bool {
+        !matches!(self, Self::Pass)
+    }
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        self.as_status().name()
+    }
+}
+
+impl From<ObligationOutcome> for ObligationStatus {
+    fn from(o: ObligationOutcome) -> Self {
+        o.as_status()
+    }
+}
+
 /// A sourced policy assertion bound to a candidate (§34).
 ///
 /// The `evidence` field holds opaque [`EvidenceId`]s — the policy

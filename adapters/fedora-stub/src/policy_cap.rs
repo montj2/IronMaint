@@ -11,11 +11,13 @@
 use std::sync::LazyLock;
 
 use ironmaint_adapter_api::{
-    AdapterError, AdapterErrorKind, ObligationTemplate, PolicyCapability, PolicyContext, PolicyPlan,
+    AdapterError, AdapterErrorKind, ObligationTemplate, PolicyCapability, PolicyContext,
+    PolicyPlan, verdict_from_evidence_status,
 };
 use ironmaint_core::AuthorityId;
 use ironmaint_policy::{
-    Applicability, AuthorityClassification, ObligationStrength, PolicyBaseline, PolicyReference,
+    Applicability, AuthorityClassification, ObligationOutcome, ObligationStrength, PolicyBaseline,
+    PolicyReference,
 };
 
 static FEDORA_POLICY: LazyLock<FedoraPolicy> = LazyLock::new(FedoraPolicy::new);
@@ -52,41 +54,81 @@ impl PolicyCapability for FedoraPolicy {
             PolicyBaseline::new(ctx.candidate.package().package.distribution.clone())
         });
 
-        let packaging_ref = PolicyReference::new(AuthorityId::new())
-            .with_section("Packaging Guidelines")
-            .with_title("License must be OSI-approved")
-            .with_source("https://docs.fedoraproject.org/en-US/packaging-guidelines/")
-            .map_err(|source_err| AdapterError {
-                kind: AdapterErrorKind::InternalAdapterFailure,
-                message: format!("policy source validation failed: {source_err}"),
-            })?;
-        let fpc_ref = PolicyReference::new(AuthorityId::new())
-            .with_section("FPC Decision 2018-01")
-            .with_title("Dist tag policy (.fcNN)")
-            .with_source("https://fedoraproject.org/wiki/Packaging:DistTag")
-            .map_err(|source_err| AdapterError {
-                kind: AdapterErrorKind::InternalAdapterFailure,
-                message: format!("policy source validation failed: {source_err}"),
-            })?;
-
         Ok(PolicyPlan {
             baseline,
-            obligation_templates: vec![
-                ObligationTemplate {
-                    reference: packaging_ref,
-                    strength: ObligationStrength::Mandatory,
-                    applicability: Applicability::Applicable,
-                    requirement: "license must be OSI-approved".to_string(),
-                },
-                ObligationTemplate {
-                    reference: fpc_ref,
-                    strength: ObligationStrength::LocalPolicy,
-                    applicability: Applicability::Applicable,
-                    requirement: "release field must end with .fcNN tag".to_string(),
-                },
-            ],
+            obligation_templates: templates(packaging_reference()?, fpc_reference()?)?,
         })
     }
+
+    /// §48: the verdict is a function of the evidence, not of what
+    /// a caller says it is. Refusing a requirement this adapter
+    /// never proposed is the other half of that — the evaluator
+    /// must not be a general-purpose oracle a caller can point at
+    /// an arbitrary question.
+    fn evaluate_obligation(
+        &self,
+        _ctx: &PolicyContext,
+        obligation: &ObligationTemplate,
+        evidence: &ironmaint_evidence::Evidence,
+    ) -> Result<ObligationOutcome, AdapterError> {
+        let known = templates(packaging_reference()?, fpc_reference()?)?;
+        if !known
+            .iter()
+            .any(|t| t.requirement == obligation.requirement)
+        {
+            return Err(AdapterError::new(
+                AdapterErrorKind::InvalidConfiguration,
+                format!(
+                    "`{}` is not an obligation the Fedora stub derives",
+                    obligation.requirement
+                ),
+            ));
+        }
+        verdict_from_evidence_status(evidence.status)
+    }
+}
+
+/// Fedora Packaging Guidelines — normative.
+fn packaging_reference() -> Result<PolicyReference, AdapterError> {
+    PolicyReference::new(AuthorityId::new())
+        .with_section("Packaging Guidelines")
+        .with_title("License must be OSI-approved")
+        .with_source("https://docs.fedoraproject.org/en-US/packaging-guidelines/")
+        .map_err(|e| AdapterError::new(AdapterErrorKind::InternalAdapterFailure, e.to_string()))
+}
+
+/// FPC decision snapshot — local policy, the authority class
+/// Debian's ordering does not have (§80).
+fn fpc_reference() -> Result<PolicyReference, AdapterError> {
+    PolicyReference::new(AuthorityId::new())
+        .with_section("FPC Decision 2018-01")
+        .with_title("Dist tag policy (.fcNN)")
+        .with_source("https://fedoraproject.org/wiki/Packaging:DistTag")
+        .map_err(|e| AdapterError::new(AdapterErrorKind::InternalAdapterFailure, e.to_string()))
+}
+
+/// The fixed obligation set this adapter derives.
+///
+/// One place, so `evaluate_obligation` and `derive_obligation_plan`
+/// cannot disagree about what the set is.
+fn templates(
+    packaging_ref: PolicyReference,
+    fpc_ref: PolicyReference,
+) -> Result<Vec<ObligationTemplate>, AdapterError> {
+    Ok(vec![
+        ObligationTemplate::new(
+            packaging_ref,
+            ObligationStrength::Mandatory,
+            Applicability::Applicable,
+            "license must be OSI-approved",
+        ),
+        ObligationTemplate::new(
+            fpc_ref,
+            ObligationStrength::LocalPolicy,
+            Applicability::Applicable,
+            "release field must end with .fcNN tag",
+        ),
+    ])
 }
 
 #[must_use]

@@ -15,22 +15,28 @@ pub trait EvidenceStore: Send + Sync {
     /// caller (the runtime) because [`Evidence`] itself only carries
     /// a `CandidateFingerprint`; the job that produced the candidate
     /// is known to the caller at insert time.
-    async fn put_evidence(
+    fn put_evidence(
         &self,
         evidence: &Evidence,
         job_id: JobId,
-    ) -> Result<EvidenceId, StoreError>;
+    ) -> impl std::future::Future<Output = Result<EvidenceId, StoreError>> + Send;
 
     /// Look up an `Evidence` record by id.
-    async fn get_evidence(&self, id: EvidenceId) -> Result<Evidence, StoreError>;
+    fn get_evidence(
+        &self,
+        id: EvidenceId,
+    ) -> impl std::future::Future<Output = Result<Evidence, StoreError>> + Send;
 
     /// List `Evidence` records attached to a job, newest-first.
-    async fn list_evidence_for_job(&self, job_id: JobId) -> Result<Vec<Evidence>, StoreError>;
+    fn list_evidence_for_job(
+        &self,
+        job_id: JobId,
+    ) -> impl std::future::Future<Output = Result<Vec<Evidence>, StoreError>> + Send;
 
     /// List `Evidence` records bound to a specific candidate
     /// fingerprint. Used by gate evaluation.
-    async fn list_evidence_for_candidate(
+    fn list_evidence_for_candidate(
         &self,
         fingerprint: &CandidateFingerprint,
-    ) -> Result<Vec<Evidence>, StoreError>;
+    ) -> impl std::future::Future<Output = Result<Vec<Evidence>, StoreError>> + Send;
 }

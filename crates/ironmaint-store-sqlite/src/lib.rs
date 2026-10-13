@@ -136,7 +136,9 @@ impl SqliteStore {
         Ok(Self {
             pool,
             config: SqliteStoreConfig::new(":memory:"),
-            _lock: Arc::new(DaemonLock::empty_for_tests()),
+            _lock: Arc::new(DaemonLock::empty_for_tests().map_err(|e| {
+                StoreError::new(StoreErrorKind::Backend, format!("in-memory: {e}"))
+            })?),
         })
     }
 
@@ -229,6 +231,13 @@ impl CandidateStore for SqliteStore {
         id: ironmaint_core::ReleaseCandidateId,
     ) -> Result<ironmaint_policy::ReleaseCandidate, StoreError> {
         ops::candidates::get_release(&self.pool, id).await
+    }
+
+    async fn list_release_candidates_for_job(
+        &self,
+        job_id: ironmaint_core::JobId,
+    ) -> Result<Vec<ironmaint_policy::ReleaseCandidate>, StoreError> {
+        ops::candidates::list_release_for_job(&self.pool, job_id).await
     }
 
     async fn list_source_candidates_for_job(
@@ -454,6 +463,26 @@ impl WorkspaceMetadataStore for SqliteStore {
     }
 }
 
+impl ironmaint_store::CheckStore for SqliteStore {
+    async fn put_check(&self, check: &ironmaint_store::CheckDefinition) -> Result<(), StoreError> {
+        ops::checks::put_check(&self.pool, check).await
+    }
+
+    async fn get_check(
+        &self,
+        id: ironmaint_core::CheckId,
+    ) -> Result<ironmaint_store::CheckDefinition, StoreError> {
+        ops::checks::get_check(&self.pool, id).await
+    }
+
+    async fn list_checks_for_job(
+        &self,
+        job_id: ironmaint_core::JobId,
+    ) -> Result<Vec<ironmaint_core::CheckId>, StoreError> {
+        ops::checks::list_checks_for_job(&self.pool, job_id).await
+    }
+}
+
 /// Apply any committed migrations that have not been applied yet.
 ///
 /// PHASE-0B.md §30 requires the daemon to refuse to run against
@@ -513,16 +542,16 @@ async fn apply_migrations(
         // Refuse downgraded history: a recorded version higher
         // than any file on disk means a migration was removed or
         // the directory was rewound.
-        if let Some(disk_max_v) = disk_max {
-            if *rv > disk_max_v {
-                return Err(StoreError::new(
-                    StoreErrorKind::Corrupt,
-                    format!(
-                        "migration history downgraded: recorded v={rv} ({rf}) \
-                         has no matching file on disk (disk max v={disk_max_v})"
-                    ),
-                ));
-            }
+        if let Some(disk_max_v) = disk_max
+            && *rv > disk_max_v
+        {
+            return Err(StoreError::new(
+                StoreErrorKind::Corrupt,
+                format!(
+                    "migration history downgraded: recorded v={rv} ({rf}) \
+                     has no matching file on disk (disk max v={disk_max_v})"
+                ),
+            ));
         }
         // Refuse drift: every recorded `(version, filename)` pair
         // must have a matching file on disk. A rename or deletion

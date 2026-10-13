@@ -1,10 +1,12 @@
 active_source_candidates
 artifact_metadata
+check_definitions
 events
 evidence
 gate_definitions
 gate_results
 idx_artifact_metadata_job
+idx_check_definitions_job
 idx_events_job_sequence
 idx_evidence_candidate
 idx_evidence_job

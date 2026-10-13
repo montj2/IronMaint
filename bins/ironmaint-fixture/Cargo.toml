@@ -27,4 +27,8 @@ time = { workspace = true }
 
 [dev-dependencies]
 serde_json = { workspace = true }
+# The resolver's tests plant synthetic binaries in a temp dir to
+# exercise the rejection path, which cannot be reached through the
+# real workspace artifact.
+tempfile = { workspace = true }
 tokio = { workspace = true, features = ["macros", "rt", "process", "io-util"] }

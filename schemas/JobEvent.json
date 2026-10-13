@@ -4,6 +4,19 @@
   "description": "All events a job can emit.",
   "oneOf": [
     {
+      "description": "The job's first event, and the seed every projection replay starts from.\n\nIt carries the whole initial `JobProjection` rather than a reference, because nothing before it exists. Without this variant the log could not reconstruct a job that had never transitioned: the projection's contents lived only in the `put_projection` write, and a `Domain` event carries just an id. That made §102 item 3 — \"Job projections can be rebuilt from events\" — false for every real job, and left `ironmaintctl rebuild-projections` (§36's operator escape hatch) reporting every job as an error on a real database.\n\nA projection is not a transition, so this is not modelled as one: it has no `from`/`to` and never advances the FSM. It is the record that a job came into being, and what it looked like when it did.",
+      "type": "object",
+      "required": [
+        "job_created"
+      ],
+      "properties": {
+        "job_created": {
+          "$ref": "#/definitions/JobProjection"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
       "type": "object",
       "required": [
         "transitioned"
@@ -39,9 +52,63 @@
         }
       },
       "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "required": [
+        "resume_recorded"
+      ],
+      "properties": {
+        "resume_recorded": {
+          "$ref": "#/definitions/ResumeRecord"
+        }
+      },
+      "additionalProperties": false
+    },
+    {
+      "description": "A candidate became the job's active candidate.\n\nActivation is not a transition — it does not move the FSM and has no `from`/`to` — but it is not a bare domain back-reference either, and that is what this variant exists to fix. D-16: `activate_candidate` set `active_candidate`, bumped `version` and stamped `updated_at` in the **projection row**, then appended a `Domain` id. `ProjectionApply::apply` treats `Domain` as a no-op, so the log recorded *that* something happened and the row recorded *what* — and the two disagreed by construction on every activation.\n\n§36 makes the log the authority for a projection, and §30 binds every gate verdict to the active candidate, so a replay that drops this binding does not degrade the row — it invalidates the evidence for every check already run against it.\n\nThe three fields are exactly what the row gained. `job_id` is not carried: the envelope already has it, and duplicating it would let the two disagree. `Domain` is deliberately *not* widened — it is used for several unrelated domain writes and its bare id is an audit back-reference, not a state record.",
+      "type": "object",
+      "required": [
+        "candidate_activated"
+      ],
+      "properties": {
+        "candidate_activated": {
+          "$ref": "#/definitions/CandidateActivated"
+        }
+      },
+      "additionalProperties": false
     }
   ],
   "definitions": {
+    "CandidateActivated": {
+      "description": "The durable record of a candidate becoming the job's active one.\n\nA separate struct rather than inline variant fields, so the SQLite backend can `encode_json` / `map_json` it exactly as it does `ToolRunFinished` and `ResumeRecord`. Hand-rolling the JSON in one direction and parsing it in the other is how a payload ends up asymmetric, and nothing but a round-trip test would notice.",
+      "type": "object",
+      "required": [
+        "candidate_id",
+        "fingerprint",
+        "updated_at",
+        "version_after"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "fingerprint": {
+          "description": "The immutable identity of the source revision being activated. Carried alongside the id so an audit reader can tell *which* tree was made active without joining back to the candidates table — the same self-sufficiency argument that keeps this event out of the log's shadow.",
+          "type": "string"
+        },
+        "updated_at": {
+          "$ref": "#/definitions/Rfc3339DateTime"
+        },
+        "version_after": {
+          "description": "The projection version the activation left behind. Activation is a CAS write (`put_projection` with `current.version`), so without this the replay cannot know whether its write would have been accepted.",
+          "type": "integer",
+          "format": "uint64",
+          "minimum": 0.0
+        }
+      }
+    },
     "DistributionRef": {
       "description": "Pair of `DistributionFamily` + `DistributionRelease`.\n\nThe core represents the authority-target identity as a `family` + `release` pair. The adapter interprets the pair. Nothing here encodes Debian-vs-Fedora semantics.",
       "type": "object",
@@ -270,6 +337,26 @@
         },
         "source_name": {
           "type": "string"
+        }
+      }
+    },
+    "ResumeRecord": {
+      "description": "Recorded event allowing an exceptional state to be resumed (§21).\n\nCaptured at runtime by the executor; the engine treats it as an opaque input that bounds which transitions out of an exceptional state are valid.",
+      "type": "object",
+      "required": [
+        "from",
+        "recorded_at",
+        "to"
+      ],
+      "properties": {
+        "from": {
+          "$ref": "#/definitions/JobState"
+        },
+        "recorded_at": {
+          "$ref": "#/definitions/Rfc3339DateTime"
+        },
+        "to": {
+          "$ref": "#/definitions/JobState"
         }
       }
     },

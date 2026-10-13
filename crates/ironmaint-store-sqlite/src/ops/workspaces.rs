@@ -3,7 +3,7 @@
 use sqlx::SqlitePool;
 
 use ironmaint_core::JobId;
-use ironmaint_store::{StoreError, StoreErrorKind, workspace::WorkspaceState};
+use ironmaint_store::{StoreError, workspace::WorkspaceState};
 
 use super::{encode_json, map_json, map_sqlx_err};
 
@@ -82,11 +82,4 @@ pub(crate) async fn list_for_job(
             .await
             .map_err(map_sqlx_err)?;
     Ok(rows.into_iter().map(|(s,)| s).collect())
-}
-
-// Keep StoreErrorKind in scope for diagnostic helpers used by
-// future commits.
-#[allow(dead_code)]
-fn _kind() -> StoreErrorKind {
-    StoreErrorKind::Conflict
 }

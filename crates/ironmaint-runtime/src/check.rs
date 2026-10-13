@@ -1,0 +1,396 @@
+//! Check planning + materialisation (`PHASE-0B.md §44`, §45).
+//!
+//! Adapters produce [`PlannedCheck`] records (the *plan*). The
+//! runtime materialises those into durable
+//! [`CheckDefinition`] rows tied to a candidate and a
+//! `GateDefinition` (the *contract*). Materialisation is the
+//! only step where the adapter's tool namespace crosses the
+//! persistence boundary.
+//!
+//! ## Evidence-kind → gate-stage mapping
+//!
+//! [`PlannedCheck`] carries an `evidence_kind` rather than a
+//! `GateStage`. The mapping below is the canonical lookup;
+//! tests in `tests/materialize_checks.rs` pin it down so a
+//! future change is intentional.
+
+use ironmaint_adapter_api::ToolCapabilityKey;
+use ironmaint_core::{CandidateFingerprint, GateId, JobId};
+use ironmaint_evidence::{
+    Evidence, EvidenceKind, EvidenceStatus, GateDefinition, GateRequirement, GateResult, GateStage,
+    GateStatus, RequiredEvidenceStatus,
+};
+use ironmaint_store::{CheckDefinition, CheckStore, EvidenceStore, GateStore, StoreError};
+
+/// Map a `PlannedCheck`'s `evidence_kind` to the gate stage it
+/// contributes to.
+///
+/// `Other(_)` does not correspond to a known gate stage — those
+/// checks are filtered out by `materialize_planned_checks`
+/// rather than silently mapped.
+///
+/// The mapping is total over the enumerated kinds: every
+/// [`GateStage`] a [`TransitionRule`](ironmaint_state::TransitionRule)
+/// can require is the image of some kind, so no rule can ask for
+/// evidence that no adapter is able to plan. `Other(_)` is the
+/// only way out of the mapping, and it lands on `None` rather
+/// than on a stage, so an adapter cannot smuggle a check into a
+/// gate by naming an unrecognised kind.
+#[must_use]
+pub fn gate_stage_for(kind: &EvidenceKind) -> Option<GateStage> {
+    match kind {
+        EvidenceKind::SourcePreparation => Some(GateStage::SourcePreparation),
+        EvidenceKind::SourceIntegrity => Some(GateStage::SourceAnalysis),
+        EvidenceKind::IssueCorrelation => Some(GateStage::IssueAnalysis),
+        EvidenceKind::Maintenance => Some(GateStage::Maintenance),
+        EvidenceKind::PolicyEvaluation => Some(GateStage::PolicyEvaluation),
+        EvidenceKind::Build => Some(GateStage::BuildValidation),
+        EvidenceKind::PackageQa => Some(GateStage::PackageQa),
+        EvidenceKind::FunctionalTest => Some(GateStage::FunctionalValidation),
+        EvidenceKind::UpgradeTest => Some(GateStage::UpgradeValidation),
+        EvidenceKind::ReleaseReview => Some(GateStage::ReleaseReview),
+        EvidenceKind::ReleaseAssembly => Some(GateStage::CandidateAssembly),
+        EvidenceKind::Reproducibility | EvidenceKind::LicenseReview => {
+            Some(GateStage::FinalValidation)
+        }
+        EvidenceKind::PublicationValidation => Some(GateStage::Publication),
+        EvidenceKind::Other(_) => None,
+    }
+}
+
+/// A planned check as an adapter hands it back, after the
+/// runtime has stripped the `key` and pinned it to a candidate
+/// and a gate stage.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterialisedCheck {
+    pub gate_definition: GateDefinition,
+    pub tool_key: ToolCapabilityKey,
+    pub evidence_kind: EvidenceKind,
+    pub mandatory: bool,
+}
+
+/// Convert a list of `(PlannedCheck, ToolCapabilityKey, mandatory)`
+/// tuples into durable `GateDefinition`s. Pure: no I/O.
+///
+/// The caller is responsible for persisting each returned
+/// `gate_definition` via `GateStore::put_gate_definition` and
+/// building the corresponding `CheckDefinition` rows.
+#[must_use]
+pub fn plan_to_materialised(
+    candidate: CandidateFingerprint,
+    planned: &[(ToolCapabilityKey, EvidenceKind, bool)],
+) -> Vec<MaterialisedCheck> {
+    planned
+        .iter()
+        .filter_map(|(tool_key, evidence_kind, mandatory)| {
+            let stage = gate_stage_for(evidence_kind)?;
+            let requirement = GateRequirement {
+                evidence_kind: evidence_kind.clone(),
+                minimum_status: RequiredEvidenceStatus::Pass,
+            };
+            // `GateDefinition::new` auto-mints a GateId.
+            let gate_definition =
+                GateDefinition::new(candidate.clone(), stage, requirement, *mandatory);
+            Some(MaterialisedCheck {
+                gate_definition,
+                tool_key: tool_key.clone(),
+                evidence_kind: evidence_kind.clone(),
+                mandatory: *mandatory,
+            })
+        })
+        .collect()
+}
+
+/// Persist the materialised checks (gate definitions + check
+/// definitions) for a job/candidate pair. Returns the freshly
+/// minted `CheckDefinition`s in the same order as the input.
+///
+/// Idempotent: a second call with the same `(job_id, candidate,
+/// tool_key)` mints fresh `CheckId`s but does not collide on
+/// any store uniqueness key (gate definitions are upserted by
+/// their auto-minted `GateId`, and check definitions are
+/// upserted by the new `CheckId`).
+///
+/// # Errors
+///
+/// Returns `StoreError` on persistence failure. Callers map
+/// to `RuntimeErrorKind::Store`.
+pub async fn persist_materialised<S>(
+    store: &S,
+    job_id: JobId,
+    candidate: CandidateFingerprint,
+    materialised: &[MaterialisedCheck],
+) -> Result<Vec<CheckDefinition>, StoreError>
+where
+    S: GateStore + CheckStore + ?Sized,
+{
+    let mut out = Vec::with_capacity(materialised.len());
+    for m in materialised {
+        store
+            .put_gate_definition(&m.gate_definition, job_id)
+            .await?;
+        let gate_id: GateId = m.gate_definition.id;
+        let stage = m.gate_definition.stage;
+        let check = CheckDefinition::new(
+            job_id,
+            candidate.clone(),
+            gate_id,
+            stage,
+            m.tool_key.clone(),
+            m.evidence_kind.clone(),
+            m.mandatory,
+        );
+        store.put_check(&check).await?;
+        out.push(check);
+    }
+    Ok(out)
+}
+
+/// For each `CheckDefinition` attached to a given gate (gate_id
+/// matching), find the latest `Evidence` whose `evidence_kind`
+/// matches the check's, scope is `Candidate(candidate)`, and
+/// return the row itself. Returns `None` for any check with no
+/// matching evidence.
+///
+/// Returning `Evidence` rather than `EvidenceId` means callers
+/// that only need the verdict (gate aggregation, the
+/// `GetCheckOutcome` query) do not each pay a second
+/// `get_evidence` round trip.
+pub async fn latest_evidence_for_check<S>(
+    store: &S,
+    candidate: &CandidateFingerprint,
+    check: &CheckDefinition,
+) -> Result<Option<Evidence>, StoreError>
+where
+    S: EvidenceStore + ?Sized,
+{
+    let all = store.list_evidence_for_candidate(candidate).await?;
+    let mut latest: Option<(time::OffsetDateTime, Evidence)> = None;
+    for ev in all {
+        if ev.kind != check.evidence_kind {
+            continue;
+        }
+        let better = match &latest {
+            None => true,
+            Some((prior, _)) => ev.observed_at > *prior,
+        };
+        if better {
+            latest = Some((ev.observed_at, ev));
+        }
+    }
+    Ok(latest.map(|(_, ev)| ev))
+}
+
+/// Aggregate the latest evidence for every check attached to a
+/// gate into a single `GateResult`. Pure aggregation — does not
+/// persist.
+///
+/// **This doc-comment is the specification for the rule.** No section
+/// of `doc/phases/PHASE-0B.md` states it; an earlier version of this
+/// comment cited §29, which is *"Execution Request"* and has nothing to
+/// do with aggregation. The behaviour below was written here first and
+/// the citation added later, which is how the citation ended up
+/// pointing at the wrong section and the code ended up contradicting
+/// the sentence directly below it.
+///
+/// Aggregation rules:
+///   - All non-empty sets of latest evidence reach `Pass` only
+///     when every check shows `Pass`.
+///   - Any check showing `Fail` blocks the gate with `Fail`.
+///   - Any check showing `InfrastructureError` blocks with
+///     `Blocked` (the gate cannot be answered by evidence).
+///   - Any check showing `Inconclusive` blocks with
+///     `ReviewRequired`.
+///   - If a check has no evidence yet, the gate is `NotEvaluated`.
+///   - `NotApplicable` checks contribute nothing (the gate
+///     ignores them).
+///   - Where two of the above could compete, an **unanswerable** gate
+///     outranks an answered one. `Blocked` and `NotEvaluated` mean
+///     "no verdict"; `Fail`, `Pass` and `ReviewRequired` all mean
+///     "a verdict". A gate in the first group cannot borrow a verdict
+///     from the second, so `Blocked` wins over `Fail` and the reasons
+///     for every check remain in `GateResult::evidence`.
+///
+/// `now` is the evaluation time stamped on the result.
+pub async fn evaluate_gate<S>(
+    store: &S,
+    gate_id: GateId,
+    candidate: CandidateFingerprint,
+    checks: &[CheckDefinition],
+    now: time::OffsetDateTime,
+) -> Result<GateResult, StoreError>
+where
+    S: EvidenceStore + ?Sized,
+{
+    // Empty: nothing to evaluate.
+    if checks.is_empty() {
+        return Ok(GateResult {
+            gate_id,
+            candidate,
+            status: GateStatus::NotEvaluated,
+            evidence: Vec::new(),
+            evaluated_at: now,
+        });
+    }
+
+    let mut evidence_ids: Vec<ironmaint_core::EvidenceId> = Vec::new();
+    let mut aggregate: GateStatus = GateStatus::NotEvaluated;
+
+    for check in checks {
+        if check.gate_id != gate_id {
+            continue;
+        }
+        let Some(ev) = latest_evidence_for_check(store, &candidate, check).await? else {
+            // No evidence yet — gate stays NotEvaluated.
+            aggregate = combine_status(aggregate, GateStatus::NotEvaluated);
+            continue;
+        };
+        let mapped = evidence_to_gate_status(ev.status);
+        evidence_ids.push(ev.id);
+        aggregate = combine_status(aggregate, mapped);
+    }
+
+    Ok(GateResult {
+        gate_id,
+        candidate,
+        status: aggregate,
+        evidence: evidence_ids,
+        evaluated_at: now,
+    })
+}
+
+/// Combine two gate-status values from checks into the worst
+/// one seen so far. `NotEvaluated` is the absence of evidence;
+/// it is *not* a downgrade signal — it simply leaves the
+/// aggregate unchanged when paired with a real status.
+///
+/// The ranking answers one question: *how much does this status
+/// commit to?* The statuses split into two groups, and the split is
+/// the whole point:
+///
+/// ```text
+///   0  NotEvaluated   no answer yet   — inert, never downgrades
+///   1  NotApplicable  out of scope    — contributes nothing
+///   2  Pass           answered: satisfied
+///   3  ReviewRequired answered: a human must weigh in
+///   4  Fail           answered: no
+///   5  Blocked        NOT answered — the evaluation could not complete
+/// ```
+///
+/// `Blocked` sits above `Fail` because a gate that could not be
+/// completed has no verdict to report, and must not borrow one from a
+/// co-occurring failure. Ranking it below let a single unanswerable
+/// check be overwritten by any real failure in the same gate, so the
+/// aggregate said "this gate failed" about a gate that was never
+/// finished — a claim about the package the evidence does not support.
+///
+/// That is not cosmetic downstream. `Blocked` becomes
+/// `TransitionBlocker::IncompleteGate` ("this is not answerable") and
+/// `Fail` becomes `FailedGate` ("repair this package"), and
+/// `check.run` hands the aggregate straight to IronClaw. Told `Fail`,
+/// the repair loop starts rewriting source to fix an outage.
+fn combine_status(a: GateStatus, b: GateStatus) -> GateStatus {
+    let rank = |s: GateStatus| -> u8 {
+        match s {
+            GateStatus::Blocked => 5,
+            GateStatus::Fail => 4,
+            GateStatus::ReviewRequired => 3,
+            GateStatus::NotApplicable => 1,
+            GateStatus::Pass => 2,
+            // `NotEvaluated` carries no signal: rank 0 so it
+            // never wins a comparison against a real status.
+            GateStatus::NotEvaluated => 0,
+        }
+    };
+    let ra = rank(a);
+    let rb = rank(b);
+    if ra == 0 && rb == 0 {
+        // Both inert: gate still not evaluated.
+        GateStatus::NotEvaluated
+    } else if ra == 0 {
+        b
+    } else if rb == 0 {
+        a
+    } else if rb > ra {
+        b
+    } else {
+        a
+    }
+}
+
+/// Map an evidence-status to the gate-status it implies.
+fn evidence_to_gate_status(status: EvidenceStatus) -> GateStatus {
+    match status {
+        EvidenceStatus::Pass => GateStatus::Pass,
+        EvidenceStatus::Fail => GateStatus::Fail,
+        EvidenceStatus::NotApplicable => GateStatus::NotApplicable,
+        EvidenceStatus::Inconclusive => GateStatus::ReviewRequired,
+        EvidenceStatus::InfrastructureError => GateStatus::Blocked,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{combine_status, evidence_to_gate_status};
+    use ironmaint_evidence::{EvidenceStatus, GateStatus};
+
+    /// `GateStatus::Blocked` is documented as *"evaluation couldn't
+    /// complete"* and `Fail` as *"evaluation ran and found the gate
+    /// violated"*. Folding them together is only sound if the one
+    /// meaning "no answer" is never overwritten by the one meaning
+    /// "negative answer" — a partial evaluation is not a clean bill of
+    /// health, and reporting it as one is a false claim about the
+    /// package.
+    ///
+    /// The order is asserted in both directions because the fold is
+    /// called per check in an arbitrary order, so a ranking that only
+    /// works one way round is not a ranking.
+    #[test]
+    fn an_unanswerable_check_outranks_a_failed_one() {
+        assert_eq!(
+            combine_status(GateStatus::Fail, GateStatus::Blocked),
+            GateStatus::Blocked,
+            "a failed check must not let a gate that could not be completed \
+             report a verdict"
+        );
+        assert_eq!(
+            combine_status(GateStatus::Blocked, GateStatus::Fail),
+            GateStatus::Blocked,
+            "the fold must not depend on the order checks arrive in"
+        );
+    }
+
+    /// The distinction has to survive every co-occurrence, not just the
+    /// one that was found by hand. Anything that means "no answer"
+    /// outranks anything that means "an answer".
+    #[test]
+    fn no_answer_outranks_every_answer() {
+        for answer in [
+            GateStatus::Pass,
+            GateStatus::Fail,
+            GateStatus::NotApplicable,
+            GateStatus::ReviewRequired,
+        ] {
+            assert_eq!(
+                combine_status(answer, GateStatus::Blocked),
+                GateStatus::Blocked,
+                "{answer:?} must not overwrite `Blocked`"
+            );
+        }
+    }
+
+    /// The two statuses the type is built to keep apart must not
+    /// collapse into each other on the way in. This is the arm D-18
+    /// added, and the one the aggregation was throwing away.
+    #[test]
+    fn an_infrastructure_error_does_not_become_a_failure() {
+        assert_eq!(
+            evidence_to_gate_status(EvidenceStatus::InfrastructureError),
+            GateStatus::Blocked
+        );
+        assert_eq!(
+            evidence_to_gate_status(EvidenceStatus::Fail),
+            GateStatus::Fail
+        );
+    }
+}

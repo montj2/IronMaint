@@ -88,4 +88,15 @@ impl DistributionAdapter for DebianStubAdapter {
     fn release(&self) -> Option<&dyn ReleaseCapability> {
         Some(release::debian_release())
     }
+
+    fn inspection(&self) -> Option<&dyn ironmaint_adapter_api::InspectionCapability> {
+        // The Debian stub does NOT advertise `AdapterCapability::SourceInspection`
+        // (see `descriptor.rs`), so this method returns `None`. The
+        // production Debian adapter that lands in 1B.3 will advertise
+        // AND implement `SourceInspection`; the per-PR asymmetry
+        // (`source_inspection_only_fedora_advertises_it` in
+        // `crates/ironmaint-adapter-api/tests/descriptor_families_differ.rs`)
+        // is the contract that 1B.1 leaves intact.
+        None
+    }
 }

@@ -1,0 +1,16 @@
+Source: example
+Maintainer: IronMaint Test <test@example.invalid>
+Section: utils
+Priority: optional
+Standards-Version: 4.9.0
+Build-Depends: debhelper-compat (= 13)
+
+Package: example
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: trivial example package (future Standards-Version)
+ A trivial Debian source tree used as the 1D.2 hermetic
+ fixture. Standards-Version: 4.9.0 is above the §19
+ manifest's `baseline_policy_version: 4.7.4.1`; the
+ §22 gate must block the candidate with
+ `E_POLICY_BASELINE_STALE`.

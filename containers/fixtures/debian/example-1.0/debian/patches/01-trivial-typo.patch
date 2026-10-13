@@ -1,0 +1,13 @@
+Description: Trivial README typo fix (DEP-3).
+Author: IronMaint Test <test@example.invalid>
+Forwarded: not-needed
+Last-Update: 2026-10-09
+
+--- a/README
++++ b/README
+@@ -1,4 +1,4 @@
+-example - hermetic 1C.1 fixture
++example — hermetic 1C.1 fixture
+
+ This is the Phase 1 source_preparation corpus. The fixture
+ is a real Debian 3.0 (quilt) source tree with the minimum

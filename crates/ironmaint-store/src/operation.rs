@@ -23,29 +23,37 @@ pub trait OperationStore: Send + Sync {
     /// `job_id` is supplied by the caller (see [`EvidenceStore`]).
     ///
     /// [`EvidenceStore`]: crate::evidence::EvidenceStore
-    async fn put_operation(
+    fn put_operation(
         &self,
         operation: &PrivilegedOperation,
         job_id: JobId,
-    ) -> Result<OperationId, StoreError>;
+    ) -> impl std::future::Future<Output = Result<OperationId, StoreError>> + Send;
 
     /// Look up an operation by id.
-    async fn get_operation(&self, id: OperationId) -> Result<PrivilegedOperation, StoreError>;
+    fn get_operation(
+        &self,
+        id: OperationId,
+    ) -> impl std::future::Future<Output = Result<PrivilegedOperation, StoreError>> + Send;
 
     /// Persist a state change. Used by the privileged service to
     /// advance `AuthorizationState` and by the executor to record
     /// the final outcome.
-    async fn update_operation(
+    fn update_operation(
         &self,
         id: OperationId,
         updated: &PrivilegedOperation,
-    ) -> Result<(), StoreError>;
+    ) -> impl std::future::Future<Output = Result<(), StoreError>> + Send;
 
     /// List operations currently in `Executing` state. Used at
     /// daemon startup to identify `Interrupted` records for
     /// recovery.
-    async fn list_executing_operations(&self) -> Result<Vec<OperationId>, StoreError>;
+    fn list_executing_operations(
+        &self,
+    ) -> impl std::future::Future<Output = Result<Vec<OperationId>, StoreError>> + Send;
 
     /// List operations attached to a job, newest-first.
-    async fn list_operations_for_job(&self, job_id: JobId) -> Result<Vec<OperationId>, StoreError>;
+    fn list_operations_for_job(
+        &self,
+        job_id: JobId,
+    ) -> impl std::future::Future<Output = Result<Vec<OperationId>, StoreError>> + Send;
 }

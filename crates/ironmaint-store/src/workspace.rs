@@ -5,6 +5,8 @@
 //! The `WorkspaceRevision` newtype itself lives in
 //! `ironmaint-workspace` (commit 6 of Phase 0B).
 
+use std::sync::Arc;
+
 use ironmaint_core::{CandidateId, JobId};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
@@ -48,23 +50,58 @@ pub struct WorkspaceState {
 /// Durable storage for workspace metadata.
 pub trait WorkspaceMetadataStore: Send + Sync {
     /// Read the current state for a workspace.
-    async fn get_workspace_state(
+    fn get_workspace_state(
         &self,
         handle: &WorkspaceHandle,
-    ) -> Result<WorkspaceState, StoreError>;
+    ) -> impl std::future::Future<Output = Result<WorkspaceState, StoreError>> + Send;
 
     /// Persist a new state for a workspace, taking the previous
     /// revision as `expected_revision` for CAS. Returns
     /// [`crate::error::StoreErrorKind::Conflict`] on mismatch.
+    fn put_workspace_state(
+        &self,
+        state: &WorkspaceState,
+        expected_revision: u64,
+    ) -> impl std::future::Future<Output = Result<(), StoreError>> + Send;
+
+    /// List workspaces attached to a job.
+    fn list_workspaces_for_job(
+        &self,
+        job_id: JobId,
+    ) -> impl std::future::Future<Output = Result<Vec<WorkspaceHandle>, StoreError>> + Send;
+}
+
+/// Forwarding impl so a shared, reference-counted store can be
+/// handed to a second consumer.
+///
+/// `RuntimeService` owns its store privately as `Arc<S>` and
+/// exposes no accessor (PHASE-0B.md §98.6 — the MCP layer reaches
+/// persistence through the runtime, never around it). The workspace
+/// manager needs the *same* store, not a second connection: a
+/// daemon's SQLite backend takes an exclusive `fs2` lock on its
+/// state directory, so opening it twice is not an option. This impl
+/// lets `WorkspaceManager` borrow the runtime's handle instead of
+/// demanding ownership of an `S` it cannot construct.
+impl<T: WorkspaceMetadataStore + ?Sized> WorkspaceMetadataStore for Arc<T> {
+    async fn get_workspace_state(
+        &self,
+        handle: &WorkspaceHandle,
+    ) -> Result<WorkspaceState, StoreError> {
+        (**self).get_workspace_state(handle).await
+    }
+
     async fn put_workspace_state(
         &self,
         state: &WorkspaceState,
         expected_revision: u64,
-    ) -> Result<(), StoreError>;
+    ) -> Result<(), StoreError> {
+        (**self).put_workspace_state(state, expected_revision).await
+    }
 
-    /// List workspaces attached to a job.
     async fn list_workspaces_for_job(
         &self,
         job_id: JobId,
-    ) -> Result<Vec<WorkspaceHandle>, StoreError>;
+    ) -> Result<Vec<WorkspaceHandle>, StoreError> {
+        (**self).list_workspaces_for_job(job_id).await
+    }
 }

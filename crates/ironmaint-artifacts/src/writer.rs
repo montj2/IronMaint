@@ -39,10 +39,55 @@ static STAGING_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// sharded path. See PHASE-0B.md §15.
 pub async fn write_from<R, B>(
     root: &ArtifactRoot,
+    reader: R,
+    abort: B,
+    max_artifact_bytes: Option<u64>,
+) -> Result<(Sha256Hex, u64), WriteError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    B: AbortToken,
+{
+    let (digest, written, _observed) =
+        write_common(root, reader, abort, max_artifact_bytes, false).await?;
+    Ok((digest, written))
+}
+
+/// As [`write_from`], but a stream longer than `limit` is
+/// **truncated at the cap** rather than rejected, and the total
+/// observed is returned so the caller can say how much it did not
+/// keep.
+///
+/// The two policies answer different questions. Rejecting is right
+/// for a caller that knows the input's size and wants a store
+/// quota respected. Truncating is right for a caller capturing a
+/// stream of unknown length — a subprocess's stdout — where losing
+/// the whole log because it was too big is worse than keeping its
+/// first `limit` bytes and saying so. PHASE-0B.md §15 asks for the
+/// second ("bounded capture"); the first is the quota check.
+///
+/// Returns `(digest, bytes_written, bytes_observed)`. The digest
+/// is over the retained prefix only, so a truncated artifact and a
+/// complete one that happens to share a prefix cannot collide.
+pub async fn write_from_truncating<R, B>(
+    root: &ArtifactRoot,
+    reader: R,
+    abort: B,
+    limit: u64,
+) -> Result<(Sha256Hex, u64, u64), WriteError>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    B: AbortToken,
+{
+    write_common(root, reader, abort, Some(limit), true).await
+}
+
+async fn write_common<R, B>(
+    root: &ArtifactRoot,
     mut reader: R,
     abort: B,
     max_artifact_bytes: Option<u64>,
-) -> Result<Sha256Hex, WriteError>
+    truncate: bool,
+) -> Result<(Sha256Hex, u64, u64), WriteError>
 where
     R: tokio::io::AsyncRead + Unpin,
     B: AbortToken,
@@ -63,7 +108,10 @@ where
         .await?;
 
     let mut buf = vec![0u8; 64 * 1024];
-    let mut total: u64 = 0;
+    // `written` is what reaches the file; `observed` is what the
+    // reader produced. They are equal except in truncating mode.
+    let mut written: u64 = 0;
+    let mut observed: u64 = 0;
     loop {
         if abort.is_aborted() {
             // Best-effort cleanup of the partial file. The
@@ -76,24 +124,47 @@ where
             Ok(n) => n,
             Err(e) => return Err(WriteError::Io(e)),
         };
-        if let Some(limit) = max_artifact_bytes {
-            let next = total.checked_add(n as u64).ok_or(WriteError::TooLarge {
-                limit,
-                observed: u64::MAX,
-            })?;
-            if next > limit {
-                // Reject before hashing/writing so the staging
-                // temp never holds more than `limit` bytes.
-                let _ = fs::remove_file(&tmp_path).await;
-                return Err(WriteError::TooLarge {
-                    limit,
-                    observed: next,
-                });
-            }
-            total = next;
+        // Counted unconditionally, not only when a cap is set.
+        // The count is returned so a caller that streamed an
+        // unknown-length input — `put_stream` has to report a real
+        // size, and the previous `size: 0` was a placeholder that
+        // survived because no caller had yet needed it.
+        observed = observed.saturating_add(n as u64);
+        let take = n as u64;
+        // How much of this chunk the cap still has room for.
+        //
+        // Truncating mode writes *that much*, not "as many whole
+        // chunks as fit". The distinction is the difference between
+        // a caller who asked for 32 768 bytes getting 32 768 and
+        // getting 28 672 — the largest multiple of the 64 KiB read
+        // buffer that happened to fit. A cap that rounds itself
+        // down by an arbitrary amount is not the cap that was asked
+        // for, and the shortfall is invisible to the caller, which
+        // is what made the first draft of the executor's spill test
+        // fail with `left: 28672, right: 32768`.
+        let headroom = max_artifact_bytes.map(|limit| limit.saturating_sub(written));
+        let accepted = headroom.map_or(take, |h| h.min(take));
+        if accepted < take && !truncate {
+            // Reject before hashing/writing so the staging
+            // temp never holds more than `limit` bytes.
+            let _ = fs::remove_file(&tmp_path).await;
+            return Err(WriteError::TooLarge {
+                limit: max_artifact_bytes.unwrap_or(0),
+                observed,
+            });
         }
-        hasher.update(&buf[..n]);
-        file.write_all(&buf[..n]).await?;
+        // In truncating mode, `accepted < take` is not an error: the
+        // part that fits is written and the rest is drained, so the
+        // child is not blocked on a full pipe. One partial write is
+        // all there will ever be, because `written` reaches the cap
+        // on this iteration.
+        if accepted == 0 {
+            continue;
+        }
+        let slice = &buf[..accepted as usize];
+        hasher.update(slice);
+        file.write_all(slice).await?;
+        written += accepted;
     }
     file.sync_all().await?;
     drop(file);
@@ -106,7 +177,7 @@ where
         // semantically identical. Drop our partial and return
         // the existing digest.
         let _ = fs::remove_file(&tmp_path).await;
-        return Ok(digest);
+        return Ok((digest, written, observed));
     }
     if let Some(parent) = final_path.parent() {
         fs::create_dir_all(parent).await?;
@@ -123,7 +194,7 @@ where
         }
     }
     let _ = ensure_gone(&tmp_path);
-    Ok(digest)
+    Ok((digest, written, observed))
 }
 
 fn ensure_gone(path: &Path) -> std::io::Result<()> {

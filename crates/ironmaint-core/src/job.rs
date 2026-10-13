@@ -122,6 +122,45 @@ impl JobState {
             Self::HumanReviewRequired | Self::InfrastructureBlocked
         )
     }
+
+    /// States in which the job's release decision has been made,
+    /// or is being made by a person.
+    ///
+    /// The line is `ReadyForApproval`: that state exists so a human
+    /// reviews *this* candidate, and past it the source revision and
+    /// the evidence behind it are frozen. Re-capturing a candidate
+    /// or re-running a check here would change what is being
+    /// reviewed without recording that it changed.
+    ///
+    /// Everything before it is repairable — §61's loop is
+    /// "inspect the failure, capture a new candidate, rerun the
+    /// required checks", and §101 walks that loop from
+    /// `BuildValidation`, `PackageQaValidation` and
+    /// `FinalValidation` alike.
+    #[must_use]
+    pub fn is_decided(self) -> bool {
+        matches!(
+            self,
+            Self::ReadyForApproval
+                | Self::Approved
+                | Self::PublicationPending
+                | Self::Published
+                | Self::Cancelled
+        )
+    }
+
+    /// Whether an agent may still change the job's evidence:
+    /// capture a new candidate, or re-run a check against the
+    /// active one.
+    ///
+    /// The complement of `is_decided` and `is_exceptional` — a job
+    /// in an exceptional state is waiting on a human, and an agent
+    /// re-running checks behind their back is exactly the move
+    /// the state exists to prevent.
+    #[must_use]
+    pub fn is_repairable(self) -> bool {
+        !self.is_decided() && !self.is_exceptional()
+    }
 }
 
 impl std::fmt::Display for JobState {

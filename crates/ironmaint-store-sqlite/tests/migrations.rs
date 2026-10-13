@@ -7,6 +7,12 @@
 //! internally calls `apply_migrations`) plus a parallel raw-SQL
 //! connection to poison `schema_migrations`.
 
+// Integration tests are compiled as a separate crate and don't inherit
+// `cfg_attr(test, allow(...))` from `lib.rs`. Allow `unwrap`/`expect`
+// here for the same reason as the unit tests: a failed `unwrap` is a
+// failed test, and the values under test are constructed in this file.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use ironmaint_store_sqlite::{SqliteStore, SqliteStoreConfig};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
 
@@ -44,13 +50,16 @@ async fn apply_migrations_refuses_downgraded_history() {
         .unwrap();
     drop(store);
 
-    // Inject a ghost row: recorded v=2 with no file on disk. The
-    // disk max is 1, so recorded max=2 > disk max=1 must trigger
-    // the downgrade refusal on reopen.
+    // Inject a ghost row: recorded v=99 with no file on disk.
+    // The disk max is whatever the real migration set has
+    // (currently 0001 + 0003 = 3), so recorded max=99 > disk
+    // max must trigger the downgrade refusal on reopen. Use a
+    // high version so future migrations don't collide with the
+    // ghost row.
     let pool = raw_pool(&state_dir).await;
     sqlx::query(
         "INSERT INTO schema_migrations (version, filename, applied_at) \
-         VALUES (2, '0002_ghost.sql', '2026-01-01 00:00:00+00:00')",
+         VALUES (99, '00099_ghost.sql', '2026-01-01 00:00:00+00:00')",
     )
     .execute(&pool)
     .await
@@ -68,7 +77,7 @@ async fn apply_migrations_refuses_downgraded_history() {
     );
     let msg = format!("{err}");
     assert!(
-        msg.contains("downgraded") || msg.contains("0002_ghost.sql"),
+        msg.contains("downgraded") || msg.contains("00099_ghost.sql"),
         "expected downgrade message, got: {msg}"
     );
 }

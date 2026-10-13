@@ -24,12 +24,30 @@ fn pv(s: &str) -> PackageVersion {
 }
 
 #[test]
-fn tilde_version_acceptance_differs() {
+fn tilde_sort_behavior_differs_between_families() {
+    // 1B.2: both adapters accept tilde in the version string
+    // (the Debian stub's `~` rejection is removed in the GREEN
+    // commit). The divergence is the *ordering*:
+    //   - Debian (dpkg): `~` sorts before any non-`~` character
+    //     and before end-of-string, so `1.0.0~rc1 < 1.0.0`.
+    //   - Fedora (bytewise): `~` is byte 0x7E, which sorts after
+    //     end-of-string in bytewise compare, so `1.0.0~rc1 > 1.0.0`.
     let debian = DebianStubAdapter::new();
     let fedora = FedoraStubAdapter::new();
     let tilde = pv("1.0.0~rc1");
-    assert!(debian.versioning().validate(&tilde).is_err());
+    let base = pv("1.0.0");
+    assert!(debian.versioning().validate(&tilde).is_ok());
     assert!(fedora.versioning().validate(&tilde).is_ok());
+    assert_eq!(
+        debian.versioning().compare(&tilde, &base).unwrap(),
+        Ordering::Less,
+        "Debian (dpkg): 1.0.0~rc1 < 1.0.0 (tilde sorts before non-tilde)"
+    );
+    assert_eq!(
+        fedora.versioning().compare(&tilde, &base).unwrap(),
+        Ordering::Greater,
+        "Fedora (bytewise): 1.0.0~rc1 > 1.0.0 (~ sorts after end-of-string as 0x7E)"
+    );
 }
 
 #[test]

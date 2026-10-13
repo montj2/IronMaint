@@ -114,6 +114,9 @@ mod tests {
             stderr: String::new(),
             retries_exhausted: false,
             truncated: false,
+            // The fixture tools are in-process; nothing spilled.
+            artifacts: Vec::new(),
+            artifacts_dropped: Vec::new(),
         }
     }
 

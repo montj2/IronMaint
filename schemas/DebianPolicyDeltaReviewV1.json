@@ -1,0 +1,184 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DebianPolicyDeltaReviewV1",
+  "description": "The 1D.2 policy-delta report.\n\nThe 1D.2 RED commit's struct is the *minimal* shape: just `schema_version`, `report_kind`, `verdict`, `diagnostics`, plus the three core fields (`candidate_standards_version`, `baseline_standards_version`, and `comparison_outcome`). The 1D.2 GREEN commit's struct extends the same shape with the §22 comprehensive fields (the `diagnostics` carries the `E_POLICY_BASELINE_STALE` line, the `comparison_outcome` is the `AboveBaseline` / `AtBaseline` / `BelowBaseline` tri-state).",
+  "type": "object",
+  "required": [
+    "report_kind",
+    "schema_version",
+    "verdict"
+  ],
+  "properties": {
+    "baseline_standards_version": {
+      "description": "The manifest's `baseline_policy_version` (currently `\"4.7.4.1\"`). Always present when the manifest loaded successfully.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "candidate_standards_version": {
+      "description": "The candidate's declared `Standards-Version` from `debian/control`. `None` when the field is absent (Policy-violation, but the report records the absence — `verdict: \"fail\"` with `E_STANDARDS_VERSION_MISSING`).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "comparison_outcome": {
+      "description": "The §22 comparison outcome. `None` when one or both `Standards-Version` values are missing.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/StandardsVersionComparison"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "diagnostics": {
+      "description": "Per-check failure / informational lines. Empty when `verdict` is `pass`.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Diagnostic"
+      }
+    },
+    "provenance": {
+      "description": "The candidate's BLAKE3 fingerprint, Git commit, and Git tree; the inspector binary's version. 1C.2's `Provenance` type, reused.",
+      "default": {
+        "candidate_commit": "",
+        "candidate_fingerprint": "",
+        "candidate_tree": "",
+        "inspector_version": ""
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/Provenance"
+        }
+      ]
+    },
+    "report_kind": {
+      "description": "Discriminator. Always `POLICY_DELTA_REPORT_KIND` (= `\"debian.policy_delta_review_v1\"`).",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Wire-format version. Always `POLICY_DELTA_SCHEMA_VERSION` (= 1).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "verdict": {
+      "description": "The §17 tri-state verdict.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Verdict"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "Diagnostic": {
+      "description": "A single failure or informational line from the tool.",
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "description": "A stable, machine-readable error code, e.g. `E_DEBIAN_DIR_MISSING`. Future tools can match on this without parsing the message.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Human-readable explanation. The tool does not embed the offending value (a) to keep PII out of the report and (b) so the same diagnostic text can serve any fixture.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The on-disk path that triggered the diagnostic, when applicable (e.g. `debian/`, `debian/changelog`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Provenance": {
+      "description": "The provenance block (§18 provenance group).\n\nThe candidate fingerprint, Git commit, and Git tree are the candidate's identity (the §18 lines 842-846 requirement). `inspector_version` is the version of the `ironmaint-debian-tool` binary that produced the report, so a downstream consumer can tell which parser version emitted the report.",
+      "type": "object",
+      "required": [
+        "candidate_commit",
+        "candidate_fingerprint",
+        "candidate_tree",
+        "inspector_version"
+      ],
+      "properties": {
+        "candidate_commit": {
+          "description": "The candidate's Git commit OID.",
+          "type": "string"
+        },
+        "candidate_fingerprint": {
+          "description": "The candidate's BLAKE3 fingerprint.",
+          "type": "string"
+        },
+        "candidate_tree": {
+          "description": "The candidate's Git tree OID.",
+          "type": "string"
+        },
+        "inspector_version": {
+          "description": "The `ironmaint-debian-tool` binary's version (e.g. `0.1.0`).",
+          "type": "string"
+        }
+      }
+    },
+    "StandardsVersionComparison": {
+      "description": "The §22 Standards-Version comparison outcome.\n\n`AboveBaseline` is the gate-triggering case: the candidate declares a `Standards-Version` newer than the manifest's `baseline_policy_version`, so the candidate cannot be evaluated against the adapter's known Policy and the §22 gate is blocked. `AtBaseline` and `BelowBaseline` are both pass-path cases (the candidate's declared version is known).",
+      "oneOf": [
+        {
+          "description": "The candidate's `Standards-Version` is strictly newer than the manifest's `baseline_policy_version`. The §22 gate is blocked; the verdict is `Fail`.",
+          "type": "string",
+          "enum": [
+            "above_baseline"
+          ]
+        },
+        {
+          "description": "The candidate's `Standards-Version` equals the manifest's `baseline_policy_version`. The candidate is at the manifest's known Policy; the verdict is `Pass`.",
+          "type": "string",
+          "enum": [
+            "at_baseline"
+          ]
+        },
+        {
+          "description": "The candidate's `Standards-Version` is strictly older than the manifest's `baseline_policy_version`. The candidate is within the manifest's known Policy; the verdict is `Pass`.",
+          "type": "string",
+          "enum": [
+            "below_baseline"
+          ]
+        }
+      ]
+    },
+    "Verdict": {
+      "description": "The §17 tri-state.",
+      "oneOf": [
+        {
+          "description": "Every check in §17 succeeded.",
+          "type": "string",
+          "enum": [
+            "pass"
+          ]
+        },
+        {
+          "description": "At least one §17 check failed (mismatched name, mismatched version, unparsable `debian/control`, unparsable `debian/changelog`, missing `debian/`, unidentifiable source format, unparsable mandatory metadata). Diagnostics list the specific failure.",
+          "type": "string",
+          "enum": [
+            "fail"
+          ]
+        },
+        {
+          "description": "The tool could not establish the fact at all: the workspace path is unreadable, an IO error occurred, a parser binary is missing. The §17 rule \"parser binary missing → InfrastructureError\" lives here.",
+          "type": "string",
+          "enum": [
+            "infrastructure_error"
+          ]
+        }
+      ]
+    }
+  }
+}

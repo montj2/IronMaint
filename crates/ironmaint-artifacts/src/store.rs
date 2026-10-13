@@ -168,11 +168,24 @@ impl ArtifactStore {
     }
 
     /// Stream from `reader` into the store and return the record.
+    ///
+    /// `size` is the number of bytes actually written, counted
+    /// during the stream. It used to be a hardcoded `0` on the
+    /// stated grounds that a stream's size is unknown without
+    /// pre-counting — true, and the reason `write_from` now counts
+    /// as it goes rather than the reason the record should lie.
+    /// An `ExecutionRecord` that reports a retained artifact as
+    /// zero bytes is a record an operator cannot budget against.
+    ///
+    /// A stream longer than the store's `max_artifact_bytes` is
+    /// **rejected** (`WriteError::TooLarge`) and the staging temp
+    /// is removed. For a stream of unknown length, see
+    /// [`Self::put_stream_truncating`].
     pub async fn put_stream<R>(&self, reader: R) -> Result<Record, StoreError>
     where
         R: tokio::io::AsyncRead + Unpin,
     {
-        let digest = writer::write_from(
+        let (digest, size) = writer::write_from(
             &self.root,
             reader,
             NeverAbort,
@@ -185,9 +198,59 @@ impl ArtifactStore {
         Ok(Record {
             digest,
             path,
-            size: 0, // stream size unknown without pre-counting
+            size,
             stored_at,
         })
+    }
+
+    /// Stream from `reader`, keeping at most `limit` bytes, and
+    /// report what was observed.
+    ///
+    /// This is the streaming twin of [`Self::put_bytes_truncating`]:
+    /// same policy, but without requiring the caller to hold the
+    /// input in memory, which is the whole reason a subprocess's
+    /// output is streamed rather than read.
+    ///
+    /// `TruncationInfo.observed_before_truncate` is the number of
+    /// bytes the stream produced, so a caller can report the loss
+    /// rather than assume there was none.
+    pub async fn put_stream_truncating<R>(
+        &self,
+        reader: R,
+        limit: u64,
+    ) -> Result<(Record, TruncationInfo), StoreError>
+    where
+        R: tokio::io::AsyncRead + Unpin,
+    {
+        // The store's own per-write cap still applies: `limit` is
+        // the caller's bound, and a store configured tighter than
+        // the caller asked for is a policy the store is entitled
+        // to enforce. Taking the minimum keeps that true without
+        // a second code path.
+        let effective = match self.config.max_artifact_bytes {
+            Some(store_cap) => limit.min(store_cap),
+            None => limit,
+        };
+        let (digest, written, observed) =
+            writer::write_from_truncating(&self.root, reader, NeverAbort, effective)
+                .await
+                .map_err(StoreError::Write)?;
+        let path = self.root.final_path_for(digest.as_str());
+        let stored_at = OffsetDateTime::now_utc();
+        Ok((
+            Record {
+                digest,
+                path,
+                size: written,
+                stored_at,
+            },
+            TruncationInfo {
+                limit_bytes: effective,
+                observed_before_truncate: observed,
+                stored_bytes: written,
+                truncated: observed > effective,
+            },
+        ))
     }
 
     pub async fn get(&self, digest: &Sha256Hex) -> Result<Vec<u8>, StoreError> {
@@ -221,7 +284,7 @@ async fn write_atomic(
     use tokio::io::BufReader;
     let cursor = std::io::Cursor::new(bytes.to_vec());
     let reader = BufReader::new(cursor);
-    let digest = writer::write_from(root, reader, NeverAbort, max_artifact_bytes)
+    let (digest, _size) = writer::write_from(root, reader, NeverAbort, max_artifact_bytes)
         .await
         .map_err(StoreError::Write)?;
     // Sanity-check that the produced path lines up with the

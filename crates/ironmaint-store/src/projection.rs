@@ -14,19 +14,25 @@ use crate::error::StoreError;
 /// Durable cache of [`JobProjection`] keyed by `JobId`.
 pub trait ProjectionStore: Send + Sync {
     /// Read the projection for `job_id`.
-    async fn get_projection(&self, job_id: JobId) -> Result<JobProjection, StoreError>;
+    fn get_projection(
+        &self,
+        job_id: JobId,
+    ) -> impl std::future::Future<Output = Result<JobProjection, StoreError>> + Send;
 
     /// Write `projection` only if the stored version equals
     /// `expected_version`. On success the stored version becomes
     /// `projection.version`.
-    async fn put_projection(
+    fn put_projection(
         &self,
         projection: &JobProjection,
         expected_version: u64,
-    ) -> Result<(), StoreError>;
+    ) -> impl std::future::Future<Output = Result<(), StoreError>> + Send;
 
     /// Reconstruct the projection from the event log. The default
     /// implementation walks events and applies them; backends can
     /// override for efficiency.
-    async fn rebuild_projection(&self, job_id: JobId) -> Result<JobProjection, StoreError>;
+    fn rebuild_projection(
+        &self,
+        job_id: JobId,
+    ) -> impl std::future::Future<Output = Result<JobProjection, StoreError>> + Send;
 }

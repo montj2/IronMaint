@@ -15,6 +15,7 @@ workspace = true
 [dependencies]
 ironmaint-core = { path = "../ironmaint-core" }
 ironmaint-store = { path = "../ironmaint-store" }
+schemars = { workspace = true }
 serde = { workspace = true }
 sha2 = { workspace = true }
 thiserror = { workspace = true }

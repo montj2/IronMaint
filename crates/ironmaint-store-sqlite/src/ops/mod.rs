@@ -45,6 +45,7 @@ pub(crate) fn encode_json<T: serde::Serialize>(value: &T) -> Result<String, Stor
 
 pub mod artifacts;
 pub mod candidates;
+pub mod checks;
 pub mod events;
 pub mod evidence;
 pub mod gates;

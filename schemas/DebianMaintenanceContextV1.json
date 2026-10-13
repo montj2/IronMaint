@@ -1,0 +1,513 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DebianMaintenanceContextV1",
+  "description": "The 1C.3 maintenance-context report. The 1C.3 RED commit's struct is the *minimal* shape (§17 tri-state + provenance + diagnostics); the 1C.3 GREEN commit extends it with the §26 comprehensive fields (patches, tests, watch, gbp, maintainer scripts, upstream_relationship). The sub-types `Patch`, `Autopkgtest`, `WatchConfig`, `GbpConfig`, `MaintainerScripts`, and `Provenance` are reused from the 1C.2 `DebianSourceReportV1` — they live in the same `report` module and the 1C.3 parser composition re-uses the 1C.2 helpers.",
+  "type": "object",
+  "required": [
+    "report_kind",
+    "schema_version",
+    "verdict"
+  ],
+  "properties": {
+    "diagnostics": {
+      "description": "Diagnostics (e.g. `E_DEBIAN_DIR_MISSING`). Empty when `verdict` is `pass`.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Diagnostic"
+      }
+    },
+    "gbp": {
+      "description": "§26 maintenance dimension: gbp / dch configuration presence. Reused from 1C.2's `GbpConfig` type. Always present (the struct's `gbp_conf_present: false` carries the absence signal).",
+      "default": {
+        "gbp_conf_present": false,
+        "gbp_dch_conf_present": false
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/GbpConfig"
+        }
+      ]
+    },
+    "maintainer_scripts": {
+      "description": "§26 maintenance dimension: presence and executable bit of `debian/{preinst, postinst, prerm, postrm}`. Reused from 1C.2's `MaintainerScripts` type.",
+      "default": {},
+      "allOf": [
+        {
+          "$ref": "#/definitions/MaintainerScripts"
+        }
+      ]
+    },
+    "patches": {
+      "description": "§26 maintenance dimension: applied patches with DEP-3 metadata. Reused from 1C.2's `Patch` type. Empty when `debian/patches/` is absent or `series` is empty.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Patch"
+      }
+    },
+    "provenance": {
+      "description": "The candidate's BLAKE3 fingerprint, Git commit, and Git tree; the inspector binary's version. 1C.2's `Provenance` type, reused.",
+      "default": {
+        "candidate_commit": "",
+        "candidate_fingerprint": "",
+        "candidate_tree": "",
+        "inspector_version": ""
+      },
+      "allOf": [
+        {
+          "$ref": "#/definitions/Provenance"
+        }
+      ]
+    },
+    "report_kind": {
+      "description": "Discriminator. Always `MAINTENANCE_CONTEXT_REPORT_KIND` (= `\"debian.maintenance_context_v1\"`).",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Wire-format version. Always `MAINTENANCE_CONTEXT_SCHEMA_VERSION` (= 1).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "tests": {
+      "description": "§26 maintenance dimension: autopkgtest stanzas from `debian/tests/control`. Reused from 1C.2's `Autopkgtest` type. Empty when the file is absent.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Autopkgtest"
+      }
+    },
+    "upstream_relationship": {
+      "description": "§26 maintenance dimension: upstream relationship metadata (Upstream-Name, Upstream-Contact, Vcs-Git, Vcs-Browser, Homepage). New in 1C.3.",
+      "default": {},
+      "allOf": [
+        {
+          "$ref": "#/definitions/UpstreamRelationship"
+        }
+      ]
+    },
+    "verdict": {
+      "description": "The §17 tri-state verdict.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/Verdict"
+        }
+      ]
+    },
+    "watch": {
+      "description": "§26 maintenance dimension: `debian/watch` v4 configuration. Reused from 1C.2's `WatchConfig` type. `None` when the file is absent.",
+      "anyOf": [
+        {
+          "$ref": "#/definitions/WatchConfig"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "Autopkgtest": {
+      "description": "One autopkgtest stanza from `debian/tests/control` (§18 tests group).",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "command": {
+          "description": "Subsequent tokens on the `Tests:` line (the command to run, when it's not the `debian/tests/<name>` default). `None` when the `Tests:` line is just the test name.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "depends": {
+          "description": "The `Depends:` field, split into individual entries. Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "features": {
+          "description": "The `Features:` field, split into individual tokens. Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "name": {
+          "description": "The `Tests:` field, first token (the test name).",
+          "type": "string"
+        },
+        "restrictions": {
+          "description": "The `Restrictions:` field, split into individual tokens (e.g. `[\"rw-build-tree\"]`). Empty when absent.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "Diagnostic": {
+      "description": "A single failure or informational line from the tool.",
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "description": "A stable, machine-readable error code, e.g. `E_DEBIAN_DIR_MISSING`. Future tools can match on this without parsing the message.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Human-readable explanation. The tool does not embed the offending value (a) to keep PII out of the report and (b) so the same diagnostic text can serve any fixture.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The on-disk path that triggered the diagnostic, when applicable (e.g. `debian/`, `debian/changelog`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "GbpBranchSettings": {
+      "description": "The branch / tag settings from `debian/gbp.conf`'s `[BUILD-DEFAULTS]` section.",
+      "type": "object",
+      "properties": {
+        "branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "debian_branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "debian_tag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream_branch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream_tag": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "GbpConfig": {
+      "description": "The GBP config inventory (§18 GBP group).\n\nThe tool reports presence of `debian/gbp.conf` and `debian/gbp-dch.conf` and, when present, the branch / tag settings from the INI-formatted `[BUILD-DEFAULTS]` / `[DCH]` sections. The `branch_settings` block is a structural mirror of the most-commonly-used keys; it is not a full parse of every gbp.conf key.",
+      "type": "object",
+      "required": [
+        "gbp_conf_present",
+        "gbp_dch_conf_present"
+      ],
+      "properties": {
+        "branch_settings": {
+          "description": "The branch / tag settings parsed from `gbp.conf`. `None` when `gbp.conf` is absent or has no `[BUILD-DEFAULTS]` section.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GbpBranchSettings"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "gbp_conf_present": {
+          "description": "`true` when `debian/gbp.conf` exists.",
+          "type": "boolean"
+        },
+        "gbp_dch_conf_present": {
+          "description": "`true` when `debian/gbp-dch.conf` exists.",
+          "type": "boolean"
+        }
+      }
+    },
+    "MaintainerScripts": {
+      "description": "The full maintainer-script inventory (§18 maintainer scripts group).\n\nThe four canonical scripts are `preinst`/`postinst`/`prerm`/`postrm`. The `triggers` file (a non-executable control file) and \"other recognized scripts\" (e.g. `postinst-config`, `preinst-base`) are observational — the report captures what is there without claiming anything about what *should* be there.",
+      "type": "object",
+      "properties": {
+        "other_scripts": {
+          "description": "Other recognized scripts in `debian/` (e.g. `preinst-base`, `postinst-config`). Each entry is a `ScriptPresence` keyed by the script's name. Excluded: the four canonical scripts (above), `rules` (covered separately), and the patch series (also covered separately).",
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/NamedScript"
+          }
+        },
+        "postinst": {
+          "description": "`Some` when `debian/postinst` exists.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScriptPresence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "postrm": {
+          "description": "`Some` when `debian/postrm` exists.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScriptPresence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "preinst": {
+          "description": "`Some` when `debian/preinst` exists.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScriptPresence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "prerm": {
+          "description": "`Some` when `debian/prerm` exists.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScriptPresence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "triggers": {
+          "description": "`Some` when `debian/triggers` exists. The `triggers` file is a control file (not executable) that declares the package's interest in dpkg triggers.",
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ScriptPresence"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "NamedScript": {
+      "description": "A named maintainer script entry for the `other_scripts` list.",
+      "type": "object",
+      "required": [
+        "name",
+        "presence"
+      ],
+      "properties": {
+        "name": {
+          "description": "The script's file name (e.g. `preinst-base`).",
+          "type": "string"
+        },
+        "presence": {
+          "description": "Presence + executable bit.",
+          "allOf": [
+            {
+              "$ref": "#/definitions/ScriptPresence"
+            }
+          ]
+        }
+      }
+    },
+    "Patch": {
+      "description": "One patch in `debian/patches/series` with its DEP-3 header (§18 patches group).",
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "author": {
+          "description": "The DEP-3 `Author:` header. `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "description": {
+          "description": "The DEP-3 `Description:` header. `None` when the patch file has no DEP-3 header.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "forwarded": {
+          "description": "The DEP-3 `Forwarded:` header (e.g. `yes`, `no`, `not-needed`). `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "last_update": {
+          "description": "The DEP-3 `Last-Update:` header (ISO 8601 date). `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "name": {
+          "description": "The patch file name as listed in `series` (e.g. `01-fix-typo.patch`).",
+          "type": "string"
+        }
+      }
+    },
+    "Provenance": {
+      "description": "The provenance block (§18 provenance group).\n\nThe candidate fingerprint, Git commit, and Git tree are the candidate's identity (the §18 lines 842-846 requirement). `inspector_version` is the version of the `ironmaint-debian-tool` binary that produced the report, so a downstream consumer can tell which parser version emitted the report.",
+      "type": "object",
+      "required": [
+        "candidate_commit",
+        "candidate_fingerprint",
+        "candidate_tree",
+        "inspector_version"
+      ],
+      "properties": {
+        "candidate_commit": {
+          "description": "The candidate's Git commit OID.",
+          "type": "string"
+        },
+        "candidate_fingerprint": {
+          "description": "The candidate's BLAKE3 fingerprint.",
+          "type": "string"
+        },
+        "candidate_tree": {
+          "description": "The candidate's Git tree OID.",
+          "type": "string"
+        },
+        "inspector_version": {
+          "description": "The `ironmaint-debian-tool` binary's version (e.g. `0.1.0`).",
+          "type": "string"
+        }
+      }
+    },
+    "ScriptPresence": {
+      "description": "One maintainer script's presence + executable bit (§18 maintainer scripts group).",
+      "type": "object",
+      "required": [
+        "executable"
+      ],
+      "properties": {
+        "executable": {
+          "description": "`true` when the script file exists and the executable bit is set.",
+          "type": "boolean"
+        }
+      }
+    },
+    "UpstreamRelationship": {
+      "description": "The upstream-relationship metadata block (§26 upstream relationship group; 1C.3's only new sub-type).\n\nCarries the raw `Option<String>` fields from `debian/copyright` (Upstream-Name, Upstream-Contact, Source) and `debian/control` (Vcs-Git, Vcs-Browser, Homepage). The `team_maintained: bool` classification (§26 \"Team maintained\" bullet) is intentionally deferred to a future PR — the spec does not define the heuristic and committing to one prematurely risks rework.",
+      "type": "object",
+      "properties": {
+        "homepage": {
+          "description": "The `Homepage:` field from `debian/control`. `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream_contact": {
+          "description": "The DEP-5 `Upstream-Contact:` field from `debian/copyright`. `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream_name": {
+          "description": "The DEP-5 `Upstream-Name:` field from `debian/copyright`. `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "upstream_url": {
+          "description": "The DEP-5 `Source:` field from `debian/copyright` (the canonical upstream URL for the Files stanzas that follow). `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vcs_browser": {
+          "description": "The `Vcs-Browser:` field from `debian/control`. `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "vcs_git": {
+          "description": "The `Vcs-Git:` field from `debian/control`. `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "Verdict": {
+      "description": "The §17 tri-state.",
+      "oneOf": [
+        {
+          "description": "Every check in §17 succeeded.",
+          "type": "string",
+          "enum": [
+            "pass"
+          ]
+        },
+        {
+          "description": "At least one §17 check failed (mismatched name, mismatched version, unparsable `debian/control`, unparsable `debian/changelog`, missing `debian/`, unidentifiable source format, unparsable mandatory metadata). Diagnostics list the specific failure.",
+          "type": "string",
+          "enum": [
+            "fail"
+          ]
+        },
+        {
+          "description": "The tool could not establish the fact at all: the workspace path is unreadable, an IO error occurred, a parser binary is missing. The §17 rule \"parser binary missing → InfrastructureError\" lives here.",
+          "type": "string",
+          "enum": [
+            "infrastructure_error"
+          ]
+        }
+      ]
+    },
+    "WatchConfig": {
+      "description": "The parsed `debian/watch` file (§18 watch group).\n\nThe Debian watch file is a small RFC 822-ish grammar: `version=N\\n<url-pattern>` with optional `pgpsigurlmangle=` and `opts=...` directives. The tool captures the version, the URL pattern, and any PGP-signature-mangling directive.",
+      "type": "object",
+      "required": [
+        "url_pattern",
+        "version"
+      ],
+      "properties": {
+        "pgpsig": {
+          "description": "The `pgpsigurlmangle=...` directive, when present. `None` when absent.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "url_pattern": {
+          "description": "The watch file's URL pattern (the first non-comment, non-directive line).",
+          "type": "string"
+        },
+        "version": {
+          "description": "The watch file's `version=N` directive (typically `4`).",
+          "type": "integer",
+          "format": "uint32",
+          "minimum": 0.0
+        }
+      }
+    }
+  }
+}

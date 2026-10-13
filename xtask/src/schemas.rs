@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::Write as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MismatchKind {
@@ -130,6 +130,46 @@ fn generate_all() -> Result<BTreeMap<String, String>, Box<dyn Error>> {
         "StateTransitioned.json".into(),
         serde_json::to_string_pretty(&schemars::schema_for!(ironmaint_state::StateTransitioned))?,
     );
+    out.insert(
+        "ReconcileOutcome.json".into(),
+        serde_json::to_string_pretty(&schemars::schema_for!(ironmaint_runtime::ReconcileOutcome))?,
+    );
+    out.insert(
+        "DebianSourcePreparationV1.json".into(),
+        serde_json::to_string_pretty(&schemars::schema_for!(
+            ironmaint_debian_tool::DebianSourcePreparationV1
+        ))?,
+    );
+    out.insert(
+        "DebianSourceReportV1.json".into(),
+        serde_json::to_string_pretty(&schemars::schema_for!(
+            ironmaint_debian_tool::DebianSourceReportV1
+        ))?,
+    );
+    out.insert(
+        "DebianMaintenanceContextV1.json".into(),
+        serde_json::to_string_pretty(&schemars::schema_for!(
+            ironmaint_debian_tool::DebianMaintenanceContextV1
+        ))?,
+    );
+    out.insert(
+        "DebianAuthorityManifestV1.json".into(),
+        serde_json::to_string_pretty(&schemars::schema_for!(
+            debian::authority_manifest::DebianAuthorityManifestV1
+        ))?,
+    );
+    out.insert(
+        "DebianPolicyDeltaReviewV1.json".into(),
+        serde_json::to_string_pretty(&schemars::schema_for!(
+            ironmaint_debian_tool::DebianPolicyDeltaReviewV1
+        ))?,
+    );
+    out.insert(
+        "DebianIssueReportV1.json".into(),
+        serde_json::to_string_pretty(&schemars::schema_for!(
+            ironmaint_debian_tool::DebianIssueReportV1
+        ))?,
+    );
     Ok(out)
 }
 
@@ -207,12 +247,4 @@ fn write_snapshots(generated: &BTreeMap<String, String>) -> Result<(), Box<dyn E
         std::fs::write(dir.join(name), content)?;
     }
     Ok(())
-}
-
-// Helper used by tests and main; not strictly required for the
-// subcommand but mirrors the architecture.rs public surface.
-#[allow(dead_code)]
-pub fn schemas_path() -> Result<PathBuf, Box<dyn Error>> {
-    let dir = schemas_dir()?;
-    Ok(Path::new(&dir).canonicalize()?)
 }

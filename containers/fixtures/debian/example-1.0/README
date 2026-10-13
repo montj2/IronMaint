@@ -1,0 +1,16 @@
+example — hermetic 1C.1 fixture
+
+This is the Phase 1 source_preparation corpus. The fixture
+is a real Debian 3.0 (quilt) source tree with the minimum
+shape §17 enumerates:
+
+  debian/control          parses
+  debian/changelog        parses; first entry is `example (1.0.0-1) unstable; urgency=medium`
+  debian/source/format    `3.0 (quilt)`
+  debian/rules            executable
+  debian/copyright        DEP-5 (machine-readable)
+  debian/patches/         DEP-3 (single patch)
+
+The candidate the runtime captures is `source_name = example`,
+`version = 1.0.0-1`. The cross-checks in `source_preparation.rs`
+all succeed, and the tool's verdict is `pass`.

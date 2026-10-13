@@ -100,6 +100,8 @@ fn rec(exit_code: i32, stdout: &str) -> ExecutionRecord {
         stdout: stdout.to_string(),
         stderr: String::new(),
         retries_exhausted: false,
+        artifacts: Vec::new(),
+        artifacts_dropped: Vec::new(),
         truncated: false,
     }
 }

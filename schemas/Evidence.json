@@ -193,21 +193,24 @@
       }
     },
     "EvidenceKind": {
-      "description": "Kind of an evidence value (§26).\n\nGeneral categories only — individual tools are not encoded into the enum. A tool like `lintian` or `rpmlint` is captured in the [`EvidenceProducer::name`], not in the kind.",
+      "description": "Kind of an evidence value (§26).\n\nGeneral categories only — individual tools are not encoded into the enum. A tool like `lintian` or `rpmlint` is captured in the [`EvidenceProducer::name`], not in the kind.\n\n## Coverage of [`GateStage`](crate::GateStage)\n\nEvery non-`Other` kind names a fact about a candidate, and [`ironmaint_runtime`'s](https://docs.rs/ironmaint-runtime) `gate_stage_for` maps it to the one gate stage it can contribute to. A gate stage that no kind maps to is a stage no check can ever produce evidence for, and therefore a gate definition that [`ironmaint_runtime::check::gate_stage_for`] can never be asked to materialise.\n\nThree such stages existed until 0B.10 — `SourcePreparation`, `Maintenance` and `ReleaseReview` — and each is required by a [`TransitionRule`](https://docs.rs/ironmaint-state). The transition walk to `ReadyForApproval` was therefore unreachable for any adapter, not merely unimplemented. The kinds above close that gap; `every_required_gate_stage_has_an_evidence_kind` in `crates/ironmaint-runtime/tests/materialize_checks.rs` is what keeps it closed.",
       "oneOf": [
         {
           "type": "string",
           "enum": [
+            "source_preparation",
             "source_integrity",
+            "issue_correlation",
+            "maintenance",
+            "policy_evaluation",
             "build",
             "package_qa",
             "functional_test",
             "upgrade_test",
-            "reproducibility",
-            "policy_evaluation",
-            "license_review",
-            "issue_correlation",
+            "release_review",
             "release_assembly",
+            "reproducibility",
+            "license_review",
             "publication_validation"
           ]
         },
