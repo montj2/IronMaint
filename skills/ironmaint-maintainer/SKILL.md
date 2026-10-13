@@ -1,6 +1,6 @@
 ---
 name: ironmaint-maintainer
-version: "0.1.0"
+version: "0.2.0"
 description: Drives a Debian or Fedora package from EventDetected to ReadyForApproval through the IronMaint MCP server. Use when the user asks to advance, repair, push through gates, or otherwise progress a package through IronMaint.
 activation:
   keywords:
@@ -32,7 +32,7 @@ calling the IronMaint MCP server. The runtime is the only writer of
 
 ## Tool surface
 
-Every action goes through one of these eleven MCP tools:
+Every action goes through one of these fourteen MCP tools:
 
 | Tool | When |
 |---|---|
@@ -42,6 +42,9 @@ Every action goes through one of these eleven MCP tools:
 | `job.reconcile` | When `next_actions` returns no actionable blocker |
 | `candidate.capture` | When the active candidate must change |
 | `check.run` | To execute the next gate's check (use the `check_id` from `next_actions`) |
+| `evidence.list` | To enumerate every evidence row attached to a job (optionally narrowed to one candidate) — the readable substrate of the `check.run` verdict |
+| `evidence.get` | To read one evidence row by `evidence_id` — the row carries the `EvidenceKind`, the `EvidenceStatus`, the producer, and the bound artifact ids |
+| `evidence.artifact.read` | To read the bytes of a structured report artifact bound to an evidence row — the §18 source analysis, the §26 maintenance context, the §22 policy delta, and the §23 BTS snapshot all live here |
 | `workspace.apply_patch` | To apply a candidate patch to the workspace |
 | `workspace.stat` | To read the current `WorkspaceRevision` before patching |
 | `operation.get` | To inspect a privileged operation's status |
@@ -76,6 +79,83 @@ loop:
         blocked | concurrent_modification  → stop, narrate to the user
 ```
 
+### Reading a check's verdict
+
+After `check.run` returns an `evidence_id`, every claim about what the
+check established must be sourced from the evidence row, not from
+memory of the tool:
+
+```text
+check.run returns evidence_id
+        ↓
+evidence.get(evidence_id)                # the row's EvidenceKind, EvidenceStatus, producer, bound artifacts
+        ↓
+evidence.artifact.read(evidence_id, artifact_id)   # the structured report (§18, §22, §23, §26)
+        ↓
+understand the package from the report
+        ↓
+continue / reconcile
+```
+
+The `evidence_status` returned by `check.run` is the runner's first
+classification; the evidence row is the durable fact, and the artifact
+is the source of every value the runner's verdict summarised. Trust
+the row, not the runner's prose.
+
+## Pass, Fail, and Blocked are not the same word
+
+The skill's single most important mental model, called out by the spec
+because the Phase 1 evidence surface is rich enough to confuse:
+
+```text
+Pass     means the check successfully established its stated fact.
+         It does NOT mean the package is "good".
+
+         A BTS snapshot with serious open bugs can Pass — the
+         snapshot's job is to enumerate bugs, not to declare the
+         package broken.
+
+         A Policy-delta report identifying required review can Pass
+         — the report's job is to surface the delta, not to enforce
+         it.
+
+         A source-analysis report carrying four patches can Pass —
+         the report's job is to inventory them, not to judge them.
+
+Fail     means the candidate itself violated the check contract.
+
+         The changelog's source name does not match the candidate's
+         source name. The control file is unparsable. A patch
+         referenced in `debian/patches/series` does not exist on
+         disk. A check that exists to enforce a structural fact found
+         the structure broken.
+
+Blocked  means the check could not establish its fact at all.
+
+         The workspace path is unreadable. A parser binary is
+         missing. The BTS host returned malformed JSON. The check
+         that exists to report on something could not even read the
+         thing it was supposed to report on. A Blocked verdict
+         becomes an `InfrastructureError` in the normalizer and an
+         `ExecutorError::InfrastructureFailed` in the runtime —
+         distinct from a Fail so a future repair loop can react
+         correctly.
+```
+
+The three are different in what the next move is:
+
+- **Pass** → read the report, decide whether the *fact* the check
+  established means a real problem (BTS bugs are real; Standards-Version
+  delta is real; four patches is real). The check is not the
+  judgement; the report is.
+- **Fail** → the check found the candidate broken. Read the report's
+  diagnostics, decide whether to patch the workspace, capture a new
+  candidate, or narrate the failure.
+- **Blocked** → the check could not answer. Re-run it later, or
+  surface an operator. Do not patch the workspace in response to a
+  Blocked verdict — the package may be fine; the check could not see
+  it.
+
 `next_actions` returns **three** fields, and they mean different things.
 `allowed` names the moves the runtime will accept *now* — every entry has a
 tool behind it, and calling anything else is not your move. `requires_human`
@@ -104,8 +184,18 @@ variant:
 | `exceptional` | `{current}` | the job is in `human_review_required` or `infrastructure_blocked`; stop |
 | `concurrent_modification` | — | another writer advanced the projection; re-read `job.get` and retry |
 
-`reconcile` advances at most **one** transition per call. A job walks the
-chain only if you call it again.
+`reconcile` walks **every** satisfied rule in a single call. The
+walker is bounded by the rule table's length and stops at the first
+rule whose gate is unsatisfied, the first rule whose state is
+exceptional, or a `ConcurrentModification`. The returned `advanced`
+shape carries the *final* `to` state of the walk (i.e., the
+"where the state machine stopped advancing" state), not an
+intermediate one — the §41 spec and
+`ReconcileOutcome::Advanced`'s own doc comment both promise that
+single-call multi-step walk, and the runtime's `service.rs:1533`
+walker implements it. A `no_op` reply on a fresh job is therefore
+not "call again"; it is "no transition is currently enabled from
+this state".
 
 ## Human review
 
@@ -247,14 +337,35 @@ runtime command behind it is refused by design.
 
 ## Where the loop currently stops
 
-The capture path is closed at `SourceIntegrity` while Phase 1 lands the
-real Debian adapter (`doc/phases/PHASE-1.md` §36). Until that lands, a
-captured Debian or Fedora job will activate and materialise gates, but
-the gates report `no tool registered for capability debian.build.sbuild`
-(etc.) — visible, typed, reported in the capture's own notes — and
-`next_actions` reads correctly as "the orchestrator must register the
-tool surface for the active candidate's family". Fabricating an
-`AllowedAction` you do not actually have a tool for is the one thing
-the rules above exist to prevent.
+Phase 1 closed the read-only intake path through the state machine's
+first six transitions: a real Debian job, against the hermetic
+fixture, walks `EventDetected → Intake → SourceReview →
+CandidateAssembly → SourceRevision → SourceIntegrity` in a single
+`reconcile` call, and stops at `SourceIntegrity` because the next
+rule (`SourceIntegrity → BuildValidation`) has no Phase 1 gate
+(`doc/phases/PHASE-1.md` §14, §36; the §97 integration test in
+`bins/ironmaintd/tests/startup_shutdown.rs` is the proof). The
+reconcile return is `Blocked{current: source_integrity, target:
+build_validation}` — the gate is named in the blocker string, not
+guessed.
 
-`doc/PHASE-0B-COMPLETION.md` §16.8 records this precisely.
+The five pre-build checks the intake path now exercises are:
+
+| Routing key | EvidenceKind | Report kind |
+|---|---|---|
+| `debian.inspect.source_preparation` | `SourcePreparation` | `DebianSourcePreparationV1` |
+| `debian.inspect.source_analysis` | `SourceIntegrity` | `DebianSourceReportV1` (§18) |
+| `debian.inspect.maintenance_context` | `Maintenance` | `DebianMaintenanceContextV1` (§26) |
+| `debian.policy.delta_review` | `PolicyEvaluation` | `DebianPolicyDeltaV1` (§20, §22) |
+| `debian.issue.bts_snapshot` | `IssueCorrelation` | `DebianIssueReportV1` (§23, §24) |
+
+After all five have produced `Pass` verdicts, every claim in the
+maintainer intake summary is sourced from the bound artifacts; no
+summary line is sourced from the LLM's memory (the §43 invariant).
+The next Phase 2 stage — `BuildValidation` and the build / QA /
+IssueWrite / publication capabilities that follow it — has no
+implementation in this tree, and S6's seam check structurally
+prevents the production Debian adapter from advertising any of
+those capabilities. The seam check is the reason a future
+patch cannot silently re-introduce a Phase 2 capability against
+the intent of §11 and §106.

@@ -28,9 +28,10 @@ reader no way to tell which ones are waiting on them:
 
 Of the ten rows open at the start of 2026-10-02: two are architect decisions
 (D-09's open half, and D-20, now closed by answering the question rather than
-coding it), two are environment-blocked (D-06, D-15), two are Phase 1 by
-design (D-11, D-12), one is a recorded non-decision (D-10), one is process
-(D-13), and two are real but bounded and not Phase 1's problem (D-17, D-19).
+coding it), two are environment-blocked (D-06, D-15), **one is Phase 1 by
+design and now closed (D-11, by PR 1G.1)**, one is Phase 1 by design (D-12),
+one is a recorded non-decision (D-10), one is process (D-13), and two are
+real but bounded and not Phase 1's problem (D-17, D-19).
 
 **One class this register could not hold.** D-20's root cause turned out to be
 that a doc comment described a wire format a *later* sub-phase changed, and
@@ -162,7 +163,7 @@ Recorded so a future session does not repeat the sweep. Each was verified on
 | D-08 | MEDIUM | `ProcessExecutor` held `artifact_store` and `guard_factory` and read neither; oversized tool output was silently discarded while the daemon logged the store as verified | **CLOSED** — every run's complete stdout and stderr are spilled to the store, bounded by the job's guard, and the record names each digest, how much it could not keep, and any refusal. Closing it exposed two more defects: the "per-job" caps were per-call because neither factory memoised, and the truncating writer rounded its own cap down to a whole buffer |
 | D-09 | LOW | `CaptureResume` / `infrastructure_blocked` signal absent | **PARTLY CLOSED** by 0B.10 C2 — the *exit* is complete (`ResumeRecord` is persisted as a `JobEvent::ResumeRecorded`, and `job.resume` consumes it for **both** exceptional states), but nothing *writes* an `InfrastructureBlocked` transition, so the state has a way out and no way in. **NEEDS AN ARCHITECT DECISION** — the open half is the *same question* as §17 question 8 and D-20 part 2: who may put a job into an exceptional state, and on what evidence. Closes when that question is answered and an entry point exists |
 | D-10 | LOW | No background reconcile loop in the daemon | **NOT TAKEN, by decision** — §41 defines `reconcile` as a per-call function, and no spec text requires a loop. Recorded rather than deferred again. **Note for Phase 1:** §17 question 8 option (c) would re-open this, and should not be chosen without saying so |
-| D-11 | LOW | No real Debian/Fedora adapters | **DEFERRED TO PHASE 1 BY DESIGN** (§106). The stubs return real, distribution-distinct plan data and both pass the shared conformance suite; they have no production caller, and that call is Phase 1's first task |
+| D-11 | LOW | No real Debian/Fedora adapters | **CLOSED** by 1B.3 (production `adapters/debian/`), 1C.1–1C.3 (the three pre-build inspection checks), 1D.2 (policy delta), 1E.2 (BTS snapshot), 1F.1 (state-machine vertical slice), and 1G.1 (maintainer intake scenario). The production Debian adapter is exercised through a real daemon path via MCP: five `check.run` calls against the hermetic fixture, the §43-shaped intake summary assembled by reading every bound artifact through `evidence.list` / `evidence.get` / `evidence.artifact.read`, and `job.reconcile` walks to `SourceIntegrity` and stops at the `BuildValidation` boundary. The Debian stub is no longer registered in `ironmaintd` (1B.3); it remains a Phase 0 test fixture for the shared conformance suite. **Fedora side**: 1B.3 leaves the Fedora stub in place per the spec ("Phase 1 is Debian-only"); the Fedora real adapter is Phase 2 |
 | D-12 | LOW | 0B.8 hardening suite is not exhaustive | **DEFERRED BY DESIGN** — it was written against cases found during 0B.8, not derived from the spec. Deriving it is a spec-reading exercise, not a defect hunt |
 | D-13 | LOW | `git add -A` in this repo can sweep in unrelated local artifacts | **PROCESS** — `.gitignore` now covers the case that actually bit (`.playwright-mcp/`, removed in `0acaedc`). Closes on habit, not on a code change; it stays open deliberately |
 | D-14 | MEDIUM | `rebuild_projection` rejects every real job's event log, so the §36 operator escape hatch cannot rebuild anything | **CLOSED** by 0B.10 — `JobEvent::JobCreated` carries the birth projection, so the log is authoritative for a never-transitioned job. **Amended 2026-10-01**: the closure is true about the birth and false about everything after it; the `active_candidate` gap is **D-16** |
@@ -1544,14 +1545,57 @@ no agent asking — an agent-initiated design has no way to notice that.
 
 ## D-11 — no real Debian/Fedora adapters (LOW, deferred)
 
-`adapters/debian-stub` and `adapters/fedora-stub` return **real, distribution-distinct
-plan data** — `debian.build.sbuild` / `debian.qa.{lintian,piuparts}` /
-`debian.test.autopkgtest`, and `fedora.build.mock` / `fedora.qa.{rpmlint,spectool}` /
-`fedora.test.functional` — with correct mandatory flags, and both pass the shared
-conformance suite. They are not returning constants or empties.
+**CLOSED 2026-10-13** (PR 1G.1, the maintainer-intake scenario; the production
+Debian adapter is now exercised by a real daemon path through MCP, end-to-end
+through the state machine, against the hermetic fixture).
 
-What is missing is that `build_plan()` / `qa_plan()` are called **only** by the
-conformance harness. Phase 1, §106. See §16.5.
+What was missing at registration time was that `build_plan()` / `qa_plan()` /
+`inspection_plan()` were called **only** by the conformance harness — the
+production `adapters/debian/` and `adapters/fedora-stub/` registered in
+`ironmaintd` had no real caller.
+
+The Phase 1 sequence that closed it:
+
+- **1B.3** shipped `adapters/debian/` as a real `DistributionAdapter`
+  implementation; the production Debian adapter advertises `SourceInspection`,
+  `VersionComparison`, and `IssueRead`. The Debian stub is removed from
+  `ironmaintd`'s adapter registration (the seam check `S6` structurally
+  prevents the production adapter from advertising any Phase 2 capability).
+- **1C.1** / **1C.2** / **1C.3** shipped the three pre-build inspection
+  checks (`debian.inspect.source_preparation`, `debian.inspect.source_analysis`,
+  `debian.inspect.maintenance_context`) with deterministic tools, normalizers,
+  and the `DebianSourcePreparationV1` / `DebianSourceReportV1` /
+  `DebianMaintenanceContextV1` schema snapshots. The three checks' evidence
+  kinds (`SourcePreparation`, `SourceIntegrity`, `Maintenance`) and gate
+  stages map directly to the first three pre-build transitions.
+- **1D.1** shipped the §19 Debian policy-knowledge baseline at
+  `policy/debian/authorities.v1.json` (4 authorities, including the 4.7.4.1
+  `baseline_policy_version`).
+- **1D.2** shipped `debian.policy.delta_review` with the `BaselineStale`
+  gate, satisfying the §22 `PolicyEvaluation` obligation.
+- **1E.1** / **1E.2** shipped the BTS read-only transport
+  (`python3-debianbts` shim) and the fake-BTS hermetic normalization,
+  satisfying the `IssueCorrelation` obligation.
+- **1F.1** shipped the state-machine vertical-slice test in
+  `bins/ironmaintd/tests/startup_shutdown.rs` that runs all five pre-build
+  checks against the hermetic fixture and walks `EventDetected → Intake →
+  SourceReview → CandidateAssembly → SourceRevision → SourceIntegrity`
+  in five `reconcile` calls, then asserts the sixth call returns
+  `NoOp{current: SourceIntegrity}` because the `BuildValidation` gate is
+  not satisfied.
+- **1G.1** (this PR) shipped the maintainer-intake scenario: the
+  `maintainer_intake_scenario_assembles_a_43_shaped_exit_artifact_from_trusted_evidence`
+  test in the same file walks the five checks, reads every bound report
+  artifact through `evidence.list` / `evidence.get` / `evidence.artifact.read`,
+  builds a §43-shaped intake summary where every line is traceable to a
+  specific evidence row, and asserts the workflow line of the summary
+  names `build_validation` as the next unimplemented stage (not anything
+  the LLM remembers).
+
+The debt is now closed for the Debian side. The Fedora side is **not**
+closed in Phase 1 — the spec names Fedora as the architectural reality
+check and 1B.3 left `adapters/fedora-stub/` in place; the Fedora real
+adapter is Phase 2's work. The Debian side is what §106 was protecting.
 
 ---
 
@@ -2021,7 +2065,7 @@ was deliberately not done, so this list is shorter and its shape has changed.
 3. **D-09** — the remaining half is a *producer* for `InfrastructureBlocked`, and
    the decision of "who may mark a job blocked, on what evidence" is a Phase 1
    question, not a 0B one. Write the decision down before writing the code.
-4. **D-11** — Phase 1, gated on the `ReadyForApproval`-through-the-tools criterion above.
+4. **D-11** — **CLOSED 2026-10-13** (PR 1G.1; see the dedicated section above).
 5. **D-06** and **D-15** — same root cause, same fix: an external binary. Nothing to
    do until one exists; the repro steps are in D-15.
 8. **D-12**, **D-13** — as scheduled.

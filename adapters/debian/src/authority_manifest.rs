@@ -40,14 +40,14 @@ pub struct DebianAuthorityManifestV1 {
 /// match a `Plan.authority` against a manifest entry
 /// by ID needs to see the same IDs back.
 #[allow(clippy::expect_used)] // The manifest is bundled via `include_str!` at
-                              // compile time; the deserialiser only runs at first
-                              // access. A `Result::Err` here means the JSON is
-                              // structurally broken, which is a build-time
-                              // defect the dev must fix before this binary can
-                              // even start. The `expect` is the right tool for
-                              // a precondition violation: it surfaces the
-                              // diagnostic clearly and the binary is
-                              // unrecoverable in any meaningful sense.
+// compile time; the deserialiser only runs at first
+// access. A `Result::Err` here means the JSON is
+// structurally broken, which is a build-time
+// defect the dev must fix before this binary can
+// even start. The `expect` is the right tool for
+// a precondition violation: it surfaces the
+// diagnostic clearly and the binary is
+// unrecoverable in any meaningful sense.
 static LOADED: LazyLock<Vec<Authority>> = LazyLock::new(|| {
     let raw = include_str!("../../../policy/debian/authorities.v1.json");
     let manifest: DebianAuthorityManifestV1 = serde_json::from_str(raw)
@@ -79,9 +79,9 @@ pub fn load_authorities() -> &'static [Authority] {
 /// `delta_review` evaluator reads this.
 #[must_use]
 #[allow(clippy::expect_used)] // See `LOADED`: the manifest is bundled
-                              // at compile time; an `Err` here is a
-                              // build-time defect, not a runtime
-                              // concern.
+// at compile time; an `Err` here is a
+// build-time defect, not a runtime
+// concern.
 pub fn baseline_policy_version() -> &'static str {
     static BASELINE: LazyLock<String> = LazyLock::new(|| {
         let raw = include_str!("../../../policy/debian/authorities.v1.json");

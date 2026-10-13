@@ -2482,3 +2482,341 @@ async fn debian_state_machine_vertical_slice_walks_event_detected_to_source_inte
 
     d.shutdown().await;
 }
+
+/// `doc/phases/PHASE-1.md` §37 + §43 — maintainer intake
+/// scenario.
+///
+/// Walks the five pre-build gates against the hermetic
+/// fixture, reads every bound report artifact through the
+/// `evidence.*` tool surface, and assembles a §43-shaped
+/// intake summary. Every line in the summary must be
+/// traceable to a specific evidence row's structured
+/// report — not to the test's memory of what the fixture
+/// looks like. The state machine then reconciles to
+/// `SourceIntegrity` and stops at the `BuildValidation`
+/// boundary (§14), confirming the workflow line of the
+/// summary.
+///
+/// RED state: the §43 lines that depend on per-check
+/// evidence (the structured report content) are absent
+/// or wrong because the artifact read has not yet
+/// happened in the loop — the summary is built from
+/// `evidence_id` strings alone, with no field-level
+/// claims. GREEN state: the summary is built by reading
+/// the artifact and asserting on its parsed JSON.
+#[tokio::test]
+async fn maintainer_intake_scenario_assembles_a_43_shaped_exit_artifact_from_trusted_evidence() {
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    // 1. job.create + candidate.capture for `example`.
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+    let _captured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    // 2. Stage the good fixture into the job's workspace
+    //    handle, mirroring the 1F.1 setup so the binary
+    //    finds the source tree it expects.
+    let workspaces_root = tmp.path().join("workspaces");
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(handles.len(), 1, "expected exactly one workspace handle");
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+
+    // 3. Discover the five pre-build check_ids via
+    //    `job.next_actions`, in the same order the
+    //    production `DebianInspection::inspection_plan`
+    //    emits them.
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let allowed = next["actions"]["allowed"]
+        .as_array()
+        .expect("allowed array");
+    let check_ids: Vec<String> = allowed
+        .iter()
+        .filter_map(|a| a.get("run_check")?.get("check_id")?.as_str())
+        .map(String::from)
+        .collect();
+    assert_eq!(
+        check_ids.len(),
+        5,
+        "the production Debian inspection plan must plan five pre-build checks: {check_ids:?}"
+    );
+
+    // 4. Run each of the five checks, collect each
+    //    `evidence_id` the runtime hands back. The
+    //    `evidence_status == "pass"` assertion is the
+    //    §17 trip-wire; the hermetic fixture passes
+    //    all five (1C.1/1C.2/1C.3/1D.2/1E.2).
+    let mut evidence_ids: Vec<(String, String)> = Vec::new();
+    for (label, check_id) in [
+        ("source_preparation", &check_ids[0]),
+        ("source_analysis", &check_ids[1]),
+        ("maintenance_context", &check_ids[2]),
+        ("policy_delta_review", &check_ids[3]),
+        ("bts_snapshot", &check_ids[4]),
+    ] {
+        let run_result = d
+            .call("check.run", json!({"job_id": job_id, "check_id": check_id}))
+            .await;
+        assert_eq!(
+            run_result["evidence_status"], "pass",
+            "the {label} check must pass against the good fixture: {run_result}"
+        );
+        let evidence_id = run_result["evidence_id"]
+            .as_str()
+            .expect("evidence_id string")
+            .to_string();
+        evidence_ids.push((label.to_string(), evidence_id));
+    }
+
+    // 5. For each evidence_id, walk the `evidence.*`
+    //    surface end-to-end. The 1A.4 contract is
+    //    "read-only access to the durable evidence
+    //    substrate"; the §37 contract is "produce a
+    //    summary based only on trusted evidence
+    //    artifacts." Every line in the §43-shaped
+    //    summary below is sourced from one of these
+    //    three calls — `evidence.list` enumerates the
+    //    rows, `evidence.get` reads the row's
+    //    producer/artifact binding, and
+    //    `evidence.artifact.read` returns the §18 /
+    //    §22 / §23 / §26 structured report.
+    use base64::Engine as _;
+    let mut report_by_label: std::collections::BTreeMap<String, Value> =
+        std::collections::BTreeMap::new();
+    let mut candidate_fingerprint: Option<String> = None;
+
+    for (label, evidence_id) in &evidence_ids {
+        // 5a. evidence.list — confirm the row is
+        //     visible through the job-scoped list
+        //     (the §31 read-only access surface).
+        let list_result = d
+            .call(
+                "evidence.list",
+                json!({ "job_id": job_id, "candidate_fingerprint": Value::Null }),
+            )
+            .await;
+        let listed: Vec<&str> = list_result["rows"]
+            .as_array()
+            .expect("rows array")
+            .iter()
+            .filter_map(|row| row.get("id")?.as_str())
+            .collect();
+        assert!(
+            listed.contains(&evidence_id.as_str()),
+            "evidence.list must include the {label} evidence row {evidence_id}: {list_result}"
+        );
+
+        // 5b. evidence.get — read the row, capture
+        //     the candidate fingerprint, and pull the
+        //     first bound artifact id.
+        let get_result = d
+            .call("evidence.get", json!({ "evidence_id": evidence_id }))
+            .await;
+        if candidate_fingerprint.is_none() {
+            candidate_fingerprint = Some(
+                get_result["evidence"]["candidate"]
+                    .as_str()
+                    .expect("candidate fingerprint string")
+                    .to_string(),
+            );
+        }
+        let artifacts = get_result["evidence"]["artifacts"]
+            .as_array()
+            .expect("artifacts array");
+        assert!(
+            !artifacts.is_empty(),
+            "the {label} check must bind at least one report artifact: {get_result}"
+        );
+        let artifact_id = artifacts[0]["id"]
+            .as_str()
+            .expect("artifact id string")
+            .to_string();
+
+        // 5c. evidence.artifact.read — read the
+        //     structured report the binary emitted.
+        let read_result = d
+            .call(
+                "evidence.artifact.read",
+                json!({
+                    "evidence_id": evidence_id,
+                    "artifact_id": artifact_id,
+                }),
+            )
+            .await;
+        let bytes_base64 = read_result["bytes_base64"]
+            .as_str()
+            .expect("bytes_base64 string");
+        let artifact_bytes = base64::engine::general_purpose::STANDARD
+            .decode(bytes_base64)
+            .expect("base64-decode artifact bytes");
+        let report: Value = serde_json::from_slice(&artifact_bytes)
+            .unwrap_or_else(|e| panic!("{label} report is not valid JSON: {e}"));
+        report_by_label.insert(label.clone(), report);
+    }
+
+    // 6. Build the §43-shaped intake summary. Every
+    //    field is sourced from one of the parsed
+    //    reports — nothing is hand-written from the
+    //    test's memory of the fixture.
+    let source_analysis = report_by_label
+        .get("source_analysis")
+        .expect("source_analysis report must have been read");
+    let maintenance_context = report_by_label
+        .get("maintenance_context")
+        .expect("maintenance_context report must have been read");
+    let bts_snapshot = report_by_label
+        .get("bts_snapshot")
+        .expect("bts_snapshot report must have been read");
+    let policy_delta = report_by_label
+        .get("policy_delta_review")
+        .expect("policy_delta_review report must have been read");
+
+    let identity = &source_analysis["identity"];
+    let source_metadata = &source_analysis["source_metadata"];
+    let build_metadata = &source_analysis["build_metadata"];
+    let binary_packages: Vec<&str> = source_analysis["binary_packages"]
+        .as_array()
+        .expect("binary_packages array")
+        .iter()
+        .filter_map(|p| p.get("name")?.as_str())
+        .collect();
+    let patches_count = maintenance_context["patches"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let tests_count = maintenance_context["tests"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    let watch_present = maintenance_context
+        .get("watch")
+        .map(|w| !w.is_null())
+        .unwrap_or(false);
+
+    let intake = json!({
+        "debian_package": identity.get("source").cloned().unwrap_or(Value::Null),
+        "candidate": candidate_fingerprint
+            .clone()
+            .map(Value::from)
+            .unwrap_or(Value::Null),
+        "source_version": identity.get("version").cloned().unwrap_or(Value::Null),
+        "source_format": source_analysis.get("source_format").cloned().unwrap_or(Value::Null),
+        "binary_packages": binary_packages,
+        "packaging": {
+            "build_depends": build_metadata.get("build_depends").cloned().unwrap_or(Value::Null),
+            "standards_version": source_metadata.get("standards_version").cloned().unwrap_or(Value::Null),
+            "rules_requires_root": source_metadata.get("rules_requires_root").cloned().unwrap_or(Value::Null),
+        },
+        "patches": patches_count,
+        "tests": tests_count,
+        "upstream_monitoring": { "watch_present": watch_present },
+        "bts": {
+            "verdict": bts_snapshot.get("verdict").cloned().unwrap_or(Value::Null),
+            "summary": bts_snapshot.get("summary").cloned().unwrap_or(Value::Null),
+        },
+        "policy": {
+            "baseline": policy_delta.get("baseline_standards_version").cloned().unwrap_or(Value::Null),
+            "declared": policy_delta.get("candidate_standards_version").cloned().unwrap_or(Value::Null),
+            "delta": policy_delta.get("comparison_outcome").cloned().unwrap_or(Value::Null),
+        },
+    });
+
+    // 7. Assert the §43 shape against the parsed
+    //    reports. The §43 invariant: every substantive
+    //    statement in the report must trace to a
+    //    candidate / check / evidence / artifact /
+    //    producer / authority chain. Here we walk
+    //    the same six links the §43 spec lists and
+    //    assert each one resolves to a real value
+    //    (not Null) sourced from the reports.
+    assert_eq!(
+        intake["debian_package"], "example",
+        "§43 line `Debian package` traces to source_analysis.identity.source: {intake}"
+    );
+    assert!(
+        intake["candidate"].as_str().is_some(),
+        "§43 line `Candidate` traces to the active candidate fingerprint: {intake}"
+    );
+    assert!(
+        intake["source_version"].as_str().is_some(),
+        "§43 line `Source version` traces to source_analysis.identity.version: {intake}"
+    );
+    assert_eq!(
+        intake["source_format"], "3.0 (quilt)",
+        "§43 line `Source format` traces to source_analysis.source_format: {intake}"
+    );
+    assert!(
+        !binary_packages.is_empty(),
+        "§43 line `Binary packages` traces to source_analysis.binary_packages[].name: {intake}"
+    );
+    assert!(
+        intake["packaging"]["build_depends"].as_array().is_some(),
+        "§43 line `Packaging` traces to source_analysis.source_metadata.build_depends: {intake}"
+    );
+    assert!(
+        intake["packaging"]["standards_version"].as_str().is_some(),
+        "§43 line `Packaging.Standards-Version` traces to source_analysis.source_metadata.standards_version: {intake}"
+    );
+    assert_eq!(
+        intake["upstream_monitoring"]["watch_present"], true,
+        "§43 line `Upstream monitoring` traces to maintenance_context.watch: {intake}"
+    );
+    assert_eq!(
+        intake["bts"]["verdict"], "pass",
+        "§43 line `BTS.verdict` traces to bts_snapshot.verdict: {intake}"
+    );
+    assert!(
+        intake["policy"]["baseline"].as_str().is_some(),
+        "§43 line `Policy.baseline` traces to policy_delta_review.baseline_policy_version: {intake}"
+    );
+    assert!(
+        intake["policy"]["declared"].as_str().is_some(),
+        "§43 line `Policy.declared` traces to policy_delta_review.declared_standards_version: {intake}"
+    );
+    assert!(
+        intake["policy"]["delta"].is_string(),
+        "§43 line `Policy.delta` traces to policy_delta_review.delta: {intake}"
+    );
+
+    // 8. The workflow line is sourced from the state
+    //    machine's `Blocked` outcome at the
+    //    `BuildValidation` boundary — the §14
+    //    architectural fact the skill has to teach
+    //    the agent, not a value the LLM remembers.
+    let reconcile = d.call("job.reconcile", json!({"job_id": job_id})).await;
+    let outcome = &reconcile["outcome"];
+    let workflow = json!({
+        "read_only_intake": "complete",
+        "next_unimplemented_stage": outcome["blocked"]["target"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string(),
+    });
+    assert_eq!(
+        workflow["next_unimplemented_stage"], "build_validation",
+        "§43 line `Workflow.next` traces to the §14 BuildValidation boundary, \
+         not to LLM memory: {reconcile}"
+    );
+    assert_eq!(
+        outcome["blocked"]["current"].as_str(),
+        Some("source_integrity"),
+        "the §43 `Workflow` line's source state is SourceIntegrity, not anything earlier: {reconcile}"
+    );
+
+    d.shutdown().await;
+}
