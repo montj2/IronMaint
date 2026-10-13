@@ -482,6 +482,133 @@ would not catch a regression where a Phase 2 capability
 re-appeared. The S6 check is the build-time catch; the §97
 gate's step 8 is what makes it run on every PR.
 
+**This honesty is deliberate, not an oversight.** Surfacing the
+gap is the review input the architect needs in order to plan
+Phase 2. The questions below are open as of Phase 1 close; they
+are not defects on the Phase 1 ledger because every answer
+depends on a Phase 2 design choice that Phase 1 deliberately
+does not pre-empt.
+
+### Open questions for Phase 2 planning
+
+Six questions Phase 2 must answer. Each is a real architectural
+decision the Phase 2 spec will need to make; Phase 1 closed
+without answering any of them on purpose. The seam check S6
+sits at the centre of all six.
+
+1. **What does "S6 allowlist removal" look like in practice?**
+   The current S6 deny list is a `const PHASE_2_CAPABILITIES`
+   of 8 variants in `xtask/src/seams/adapters.rs`. Phase 2
+   *re-enables* capabilities by removing them from the deny
+   list, not by adding a positive allowlist. The Phase 2 spec
+   needs to decide: do we shrink the deny list one capability
+   at a time (each removal is its own PR with its own
+   seam-check diff, and the seam check is *tightened* in
+   inverse proportion to the deny list shrinking), or do we
+   replace the deny list with a positive allowlist ("the
+   production adapter enumerates exactly the capabilities it
+   intends to advertise")? The positive-allowlist shape catches
+   a wider class of regressions but requires every adapter
+   descriptor to be updated when new capabilities are added;
+   the deny-list shape is local to the seam-check file but
+   encodes Phase 2's intent in a single place. Neither is
+   right by default; the choice is Phase 2's.
+
+2. **What is the "runtime refusal" test equivalent?** Phase 1
+   has no test that calls `DebianAdapter::inspection()` and
+   asserts the returned `Vec<PlannedCheck>` does not contain
+   a `BuildPlanning` key — the assertion is unnecessary because
+   the seam check already rejected the descriptor. Phase 2's
+   first PR to enable a build capability needs to decide: is
+   the runtime refusal covered by a `debug_assert!` in
+   `AdapterCapabilities::new()` (runtime, infallible, fires
+   only in debug builds), by a unit test that exercises
+   `plan_checks` end-to-end (runtime, always-on, requires a
+   test fixture that exercises the build path), or by relying
+   on the seam check alone (build-time, as today)? The current
+   design is the third. The first two are stronger but add
+   cost; the third is cheaper but the gap is exactly the gap
+   the architect sees today.
+
+3. **How does S6 scale to a Fedora production adapter?** Phase
+   1 is Debian-only; the production Debian adapter is the
+   only consumer S6 enforces. The Phase 2 spec calls for a
+   production Fedora adapter; the deny list (currently
+   Debian-shaped: `BuildPlanning` = `sbuild`,
+   `PackageQaPlanning` = Lintian, `ReleaseMetadata` = `dak`)
+   needs to either (a) extend to Fedora's `koji` / `bodhi` /
+   `packit` capabilities in a Fedora-shape (one deny-list
+   per distribution, or a single deny list of capability
+   names that are distribution-agnostic), or (b) become
+   per-distribution (each `adapters/<dist>/src/descriptor.rs`
+   carries its own seam-check). The seam check today is a
+   single shared table; the Phase 2 plan needs to choose a
+   shape that works for both, and the answer is not
+   obvious because Fedora's `koji` build is structurally
+   similar to Debian's `sbuild` build (both are
+   `BuildPlanning`) but Fedora's `bodhi` update is
+   structurally different from Debian's `dak` upload (both
+   are `PublicationPlanning`, but the authority shape is
+   different — `bodhi` is a per-release-gate, `dak` is a
+   per-suite-push).
+
+4. **What is the granularity of Phase 2 capability re-enable?**
+   The S6 deny list treats `BuildPlanning`,
+   `PackageQaPlanning`, `FunctionalTestPlanning`,
+   `UpgradeTestPlanning`, `ReproducibilityPlanning`,
+   `IssueWrite`, `ReleaseMetadata`, `PublicationPlanning`
+   as one deny set. Phase 2's first capability to be
+   re-enabled (almost certainly `BuildPlanning` for the
+   `sbuild` vertical slice) will open the question: should
+   subsequent capabilities be enabled one-by-one across 8
+   PRs, in groups ("build + QA" as one PR, "release +
+   publication" as another), or all at once? Each shape has
+   different review load, different test surface, and
+   different blast radius if a regression slips in. The
+   Phase 2 spec should pick a default and let deviations
+   be deliberate, not accidental.
+
+5. **What if a future PR introduces a new `AdapterCapability`**
+   **variant?** Today, the deny list is a `const` of variant
+   names. A new capability added in a future crate — e.g., a
+   `DryRun` capability for end-to-end testing, or a
+   `ReproducibleBuildAttestation` capability for the
+   reproducible-builds integration — is *not* in the deny
+   list and *not* required to be advertised by any
+   production descriptor. The seam check would let the new
+   capability through silently. The Phase 2 spec needs to
+   decide: is the deny-list shape correct (every new
+   capability is implicitly permitted until added to the
+   deny list; the new capability is "innocent until proven
+   guilty"), or should S6 also have a "every capability must
+   be advertised by some adapter" check (the new capability
+   is silently dead code until an adapter picks it up; this
+   is the "guilty until proven innocent" shape)? The second
+   is a stricter test but requires every new capability to
+   be paired with a stub adapter in the same PR.
+
+6. **What if a future PR replaces the `AdapterCapabilities::new()`**
+   **constructor?** S6 parses the literal call shape of
+   `AdapterCapabilities::new(...)`. A refactor that introduces
+   `AdapterCapabilities::from_iter(...)` or
+   `AdapterCapabilities::builder()` would silently bypass the
+   check. The Phase 2 spec needs to decide: is the build-time
+   AST check correct (catches regressions in the common case;
+   refactor work has to update S6, which is a known cost of
+   the seam-check approach), or should S6 move to a runtime
+   check (e.g., a `debug_assert!` in
+   `AdapterCapabilities::new()` that the seam check becomes a
+   verifier of, not a parser)? The runtime shape is more
+   refactor-robust but requires the runtime to be aware of the
+   S6 deny list; today the deny list is a `xtask`-only
+   concept.
+
+Each of these six is a Phase 2 design decision. Phase 1 closed
+without answering them on purpose; the closure of the
+negative-space rows (29–32) is conditional on Phase 2
+re-validating the answers. The Phase 2 spec is the right
+document to record the chosen shape for each.
+
 ### What the §97 gate proves
 
 | Step | What it proves about Phase 1 |
