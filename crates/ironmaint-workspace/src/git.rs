@@ -382,6 +382,29 @@ impl GitInvocation {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
+    /// `git rev-parse HEAD^{tree}` — the tree OID of the
+    /// current HEAD. Used by the frozen-worktree drift check
+    /// (PHASE-1.1 PR 1.1.B): the runtime re-derives the
+    /// worktree's tree after the check completes and asserts
+    /// it still matches the candidate's captured tree, so a
+    /// check tool that wrote to the frozen copy fails the
+    /// drift check with a typed conflict.
+    pub async fn head_tree(&self) -> Result<String, WorkspaceError> {
+        let out = self
+            .cmd()
+            .args(["rev-parse", "HEAD^{tree}"])
+            .output()
+            .await
+            .map_err(|e| WorkspaceError::new(WorkspaceErrorKind::Command(format!("wait: {e}"))))?;
+        if !out.status.success() {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git rev-parse HEAD^{{tree}} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ))));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
     /// `git commit --allow-empty -m <message>` with this
     /// invocation's sanitised environment as author/committer.
     /// The `--allow-empty` flag is required so a capture flow
@@ -426,5 +449,31 @@ impl GitInvocation {
             ))));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// `git worktree add --detach <frozen_path> <tree>` —
+    /// materialise a read-only checkout of the workspace at the
+    /// given tree OID. PHASE-1.1 PR 1.1.B (evidence integrity):
+    /// the `check.run` path needs a frozen view of the captured
+    /// tree, so a concurrent `apply_patch` to the live workspace
+    /// cannot change the evidence's binding to that tree. The
+    /// resulting directory is a full working tree, but the
+    /// architectural property the runtime relies on is that
+    /// the check tool *only reads* from it — the drift check
+    /// after the check completes (`tree_sha` on the worktree)
+    /// catches a tool that writes.
+    pub async fn worktree_add_detached(
+        &self,
+        frozen_path: &Path,
+        tree: &str,
+    ) -> Result<(), WorkspaceError> {
+        let _ = (frozen_path, tree);
+        // PHASE-1.1 PR 1.1.B GREEN: this body becomes
+        // `git worktree add --detach <frozen_path> <tree>` with
+        // a non-zero exit mapped to a typed `WorkspaceError`.
+        // The 1.1.B RED commit leaves it as a deliberate
+        // `unimplemented!()` so the new test fails, and the
+        // existing workspace tests are untouched.
+        unimplemented!("worktree_add_detached lands in 1.1.B GREEN")
     }
 }
