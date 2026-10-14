@@ -13,6 +13,67 @@ use crate::git::GitInvocation;
 use crate::id::WorkspaceId;
 use crate::revision::WorkspaceRevision;
 
+/// A frozen, read-only view of a workspace at a captured tree.
+///
+/// PHASE-1.1 PR 1.1.B (evidence integrity): the `check.run`
+/// path operates on this view, not on the live workspace, so a
+/// concurrent `apply_patch` cannot change the evidence's
+/// binding to the captured tree. The view is materialised via
+/// `git worktree add --detach` (the only path that ever
+/// inspects the tree for a check); on `Drop` the worktree is
+/// removed and the directory deleted.
+///
+/// The architectural property the runtime relies on is that
+/// the check tool *only reads* from `path()`. A tool that
+/// writes is a contract violation, and the drift check the
+/// runtime runs after the check (`git rev-parse HEAD^{tree}`
+/// on the worktree) catches it. The path is also a
+/// sub-directory of the workspace handle so the
+/// `.ironmaint-checks` namespace is owned by the runtime and
+/// never overlaps with a patch the agent might apply.
+pub struct FrozenWorktree {
+    path: PathBuf,
+    repo_root: PathBuf,
+}
+
+impl FrozenWorktree {
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// The tree OID of the frozen worktree, computed via
+    /// `git rev-parse HEAD^{tree}`. The runtime calls this
+    /// both before and after the check (the pre-check value
+    /// is bound to the source candidate; the post-check value
+    /// must match — a mismatch means the tool wrote).
+    pub async fn tree_sha(&self) -> Result<String, WorkspaceError> {
+        let inv = GitInvocation::sanitised_env(&self.path);
+        inv.head_tree().await
+    }
+}
+
+impl Drop for FrozenWorktree {
+    fn drop(&mut self) {
+        // Best-effort cleanup. The git worktree remove is
+        // synchronous because the runtime's check pipeline is
+        // not async at the drop site; the directory is then
+        // deleted with `remove_dir_all` so the next capture
+        // does not see stale files. Errors are swallowed
+        // because the worktree will be removed the next time
+        // `git worktree add` is called with `--force` if a
+        // test crashes mid-check.
+        let _ = std::process::Command::new("git")
+            .args(["worktree", "remove", "--force"])
+            .arg(&self.path)
+            .current_dir(&self.repo_root)
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", "/var/empty")
+            .output();
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// Coordinates creation, lookup, and CAS-guarded mutation of
 /// per-job workspace metadata.
 ///
@@ -225,5 +286,62 @@ impl<S: WorkspaceMetadataStore> WorkspaceManager<S> {
                 .await?;
         }
         Ok(id)
+    }
+
+    /// Materialise a frozen view of `id` at the captured
+    /// tree `tree_sha`, returning a `FrozenWorktree` whose
+    /// `path()` the runtime hands to the check tool. PHASE-1.1
+    /// PR 1.1.B (evidence integrity): the previous `check.run`
+    /// path passed the live workspace to the tool, so a
+    /// concurrent `apply_patch` would change the evidence's
+    /// tree hash between capture and check. The worktree is
+    /// created at
+    /// `<root>/<handle>/.ironmaint-checks/<worktree_id>` via
+    /// `git worktree add --detach`; the directory is owned by
+    /// the runtime and never overlaps with a patch the agent
+    /// might apply.
+    ///
+    /// `tree_sha` is the candidate's tree OID. The
+    /// `frozen.tree_sha()` method (a `git rev-parse
+    /// HEAD^{tree}` on the worktree) returns the same value
+    /// after the worktree is created, which is the
+    /// post-check drift check the runtime runs.
+    ///
+    /// `worktree_id` is a caller-supplied label (typically the
+    /// evidence id) that namespaces the worktree within the
+    /// `.ironmaint-checks` directory so concurrent checks
+    /// against the same workspace do not collide.
+    pub async fn frozen_for_check(
+        &self,
+        id: WorkspaceId,
+        worktree_id: &str,
+        tree_sha: &str,
+    ) -> Result<FrozenWorktree, WorkspaceError> {
+        let handle = format!("{id}");
+        let ws_root = self.root.join(&handle);
+        let checks_dir = ws_root.join(".ironmaint-checks");
+        tokio::fs::create_dir_all(&checks_dir).await?;
+        let frozen_path = checks_dir.join(worktree_id);
+        // A pre-existing directory (a stale worktree from a
+        // crashed run, or a name collision) is removed before
+        // the worktree is created. The `git worktree add`
+        // command will not overwrite a populated directory.
+        if frozen_path.exists() {
+            let _ = std::process::Command::new("git")
+                .args(["worktree", "remove", "--force"])
+                .arg(&frozen_path)
+                .current_dir(&ws_root)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", "/var/empty")
+                .output();
+            let _ = tokio::fs::remove_dir_all(&frozen_path).await;
+        }
+        let inv = GitInvocation::sanitised_env(&ws_root);
+        inv.worktree_add_detached(&frozen_path, tree_sha).await?;
+        Ok(FrozenWorktree {
+            path: frozen_path,
+            repo_root: ws_root,
+        })
     }
 }
