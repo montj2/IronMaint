@@ -68,9 +68,14 @@ fn make_record(stdout: &str) -> ExecutionRecord {
 /// failure" — the snapshot is binary (pass or
 /// infrastructure_error), so a populated bug list is
 /// never a `Fail`.
+///
+/// The test does *not* set `BTS_HELPER`, so the
+/// `run` function falls through to the in-process
+/// hermetic fixture. The live-path tests are in
+/// `tests/bts_snapshot_live.rs`.
 #[test]
 fn hermetic_fixture_emits_pass_verdict() {
-    let report = run(&good_input());
+    let report = run(&good_input()).expect("hermetic fixture does not error");
     assert_eq!(report.verdict, IssueVerdict::Pass);
     assert_eq!(report.report_kind, BTS_SNAPSHOT_REPORT_KIND);
     assert_eq!(report.schema_version, BTS_SNAPSHOT_SCHEMA_VERSION);
@@ -82,7 +87,7 @@ fn hermetic_fixture_emits_pass_verdict() {
 /// downstream readers would reject the discriminator.
 #[test]
 fn hermetic_report_kind_discriminator_is_stable() {
-    let report = run(&good_input());
+    let report = run(&good_input()).expect("hermetic fixture does not error");
     assert_eq!(report.report_kind, "debian.issue.bts_snapshot_v1");
 }
 

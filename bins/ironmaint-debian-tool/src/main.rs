@@ -41,6 +41,9 @@ use ironmaint_debian_tool::maintenance_context::{
 use ironmaint_debian_tool::policy_delta::{
     self as policy_delta_run, CandidateInput as PolicyDeltaInput,
 };
+use ironmaint_debian_tool::report::{
+    BTS_SNAPSHOT_REPORT_KIND, BTS_SNAPSHOT_SCHEMA_VERSION, BugSummary, IssueVerdict,
+};
 use ironmaint_debian_tool::source_analysis::{
     self as source_analysis_run, CandidateInput as AnalysisInput,
 };
@@ -207,14 +210,55 @@ fn run_policy_delta_cmd() -> Result<()> {
 /// Run the `bts-snapshot` subcommand. Reads
 /// `ironmaint.candidate_input.v3` from stdin (no schema
 /// bump from 1C.2 / 1C.3 / 1D.2), emits
-/// `DebianIssueReportV1` on stdout. The 1E.2 hermetic
-/// mode emits a hard-coded fixture (no subprocess, no
-/// network); the live mode would shell out to the 1E.1
-/// `bts-helper.py` shim and is opt-in.
+/// `DebianIssueReportV1` on stdout.
+///
+/// PHASE-1.1 PR 1.1.C (real BTS integration): the
+/// pre-1.1.C body always returned a hard-coded
+/// three-bug fixture regardless of the candidate's
+/// source package, so the live BTS transport was never
+/// exercised. The new body shells out to the
+/// `bts-helper.py` shim (path controlled by the
+/// `BTS_HELPER` env var; default: a hermetic Rust-side
+/// fallback so the §97 gate does not need the helper
+/// to be installed).
+///
+/// A `BtsError` (transport / helper-exit / malformed
+/// JSON) is converted to a `verdict:
+/// infrastructure_error` report. The §24 "transport
+/// failures are infrastructure errors, not tool
+/// failures" mapping is preserved: the binary exits 0
+/// (it has produced a valid report) and the
+/// `verdict: infrastructure_error` field is what the
+/// normalizer reads.
 fn run_bts_snapshot_cmd() -> Result<()> {
     let input: BtsInput =
         read_stdin_json().context("reading ironmaint.candidate_input.v3 from stdin")?;
-    let report = bts_snapshot_run::run(&input);
+    let source_package = input.package.name.clone();
+    let report = match bts_snapshot_run::run(&input) {
+        Ok(report) => report,
+        Err(err) => {
+            // The helper could not be spawned / exited
+            // non-zero / emitted malformed JSON. Emit a
+            // valid `DebianIssueReportV1` with
+            // `verdict: infrastructure_error` so the
+            // normalizer can map it to `Unclassifiable`
+            // (→ `ExecutorError::InfrastructureFailed` →
+            // `GateStatus::Blocked` per §24). The
+            // diagnostic message is the source of
+            // truth for the runtime; the exit code
+            // remains 0 (a valid report was emitted).
+            eprintln!("ironmaint-debian-tool: bts-snapshot: {err}");
+            ironmaint_debian_tool::report::DebianIssueReportV1 {
+                schema_version: BTS_SNAPSHOT_SCHEMA_VERSION,
+                report_kind: BTS_SNAPSHOT_REPORT_KIND.to_string(),
+                verdict: IssueVerdict::InfrastructureError,
+                source_package,
+                snapshot_at: String::new(),
+                bugs: Vec::new(),
+                summary: BugSummary::default(),
+            }
+        }
+    };
     write_stdout_json(&report).context("writing DebianIssueReportV1 to stdout")?;
     Ok(())
 }
