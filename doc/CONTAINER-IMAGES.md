@@ -371,6 +371,44 @@ docker run --rm -v "$PWD":/w -w /w -v ironmaint-target:/w/target \
 A named volume for `target/` is what makes iteration bearable. A bind mount would
 recompile from scratch on every run and defeat the point.
 
+### 5.1.1 Opt-in tests — `IRONMAINT_REAL_FIXTURE_REACHABLE`
+
+The §97 gate above is hermetic by design — the workspace image does no network
+fetches. A handful of opt-in tests in `bins/ironmaintd/tests/startup_shutdown.rs`
+are designed to be skipped when the §97 gate runs and exercised when a developer
+opts in locally. The opt-in pattern is an env var the §97 gate never sets.
+
+PHASE-1.1 PR 1.1.E added the first such test:
+`pinned_real_debian_source_package_inspection` (P2 #1 from
+`doc/PHASE-1-FEEDBACK.md`, spec §29). The test runs the five pre-build checks
+(`source_preparation`, `source_analysis`, `maintenance_context`,
+`policy_delta_review`, `bts_snapshot`) against
+`containers/fixtures/debian/pinned-real/` — a hand-crafted-but-real-format
+Debian source tree (`hello` 2.10-2), not one of the synthetic
+`example-1.0` / `example-broken-1.0.0` / `example-future-1.0` fixtures. The
+test is the spec the §13 inspection must satisfy against a real Debian source
+tree, separately from the synthetic ones.
+
+To run it locally:
+
+```sh
+IRONMAINT_REAL_FIXTURE_REACHABLE=1 \
+  cargo test -p ironmaintd --test startup_shutdown -- --exact \
+    pinned_real_debian_source_package_inspection
+```
+
+Without the env var, the test returns early (`if
+std::env::var("IRONMAINT_REAL_FIXTURE_REACHABLE").is_err() { return; }`). The
+test is **not run** in the §97 gate and **not failed** by its absence — a CI
+runner that has no network access to the Debian source archive (or chooses
+not to make the fetch) skips the test cleanly.
+
+Future opt-in tests follow the same pattern. A test that needs a network
+resource (a real Debian tarball, a real BTS endpoint, a remote mock) declares
+the env var in its docstring, returns early when it is unset, and is wired
+into the §97 gate only by *not setting* the env var. The opt-in is local —
+the §97 gate's hermetic property is preserved.
+
 ### 5.2 The item-30 run
 
 ```text

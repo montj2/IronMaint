@@ -3471,20 +3471,26 @@ async fn maintainer_intake_scenario_assembles_a_43_shaped_exit_artifact_from_tru
 /// full §13 inspection suite against a real-format
 /// Debian source tree.
 ///
-/// ## RED state (this commit)
+/// ## GREEN state (this commit)
 ///
-/// The test exists and the env-var skip is wired,
-/// but the body is the broken half of the broken-
-/// then-fixed pattern: it is a no-op after the
-/// env-var check. The fixture's METADATA is the
-/// only thing checked in — the source tree itself
-/// is not yet populated. The GREEN commit adds the
-/// real-format source tree and the assertions the
-/// test makes against it. The test passes vacuously
-/// today (the env-var check returns early); when
-/// the GREEN state is in place and the env var is
-/// set, the test runs the full §13 inspection
-/// suite.
+/// The test stages the pinned-real fixture, captures
+/// a candidate with `expected_version: Some("2.10-2")`,
+/// runs the five pre-build checks
+/// (`source_preparation`, `source_analysis`,
+/// `maintenance_context`, `policy_delta_review`,
+/// `bts_snapshot`), and asserts all five return
+/// `Pass`. The pinned-real fixture's
+/// `Standards-Version: 4.7.4` is *at* the post-1.1.D
+/// manifest's `standards_version_target` — the §22
+/// gate classifies it as `AtBaseline`, the
+/// `intervening_checklist_entries` field is empty
+/// (no entries needed for the at-baseline case), and
+/// the candidate's `source_version` matches the
+/// `debian/changelog`'s first entry (1.1.A's
+/// resolution). The bts_snapshot subcommand is the
+/// hermetic mode (1E.2 + 1.1.C), so the verdict is
+/// `pass` regardless of which source package the
+/// candidate names.
 #[tokio::test]
 async fn pinned_real_debian_source_package_inspection() {
     if std::env::var("IRONMAINT_REAL_FIXTURE_REACHABLE").is_err() {
@@ -3502,21 +3508,121 @@ async fn pinned_real_debian_source_package_inspection() {
         return;
     }
 
-    // RED body. The GREEN state replaces this
-    // with: stage the pinned-real fixture into a
-    // temp workspace, capture a candidate with
-    // `expected_version: Some("2.10-2")`, run the
-    // five pre-build checks (source_preparation,
-    // source_analysis, maintenance_context,
-    // policy_delta_review, bts_snapshot), and
-    // assert all five return `Pass` with the
-    // expected record shapes (§13 / §19 / §22).
-    //
-    // Without the GREEN body, the test passes
-    // vacuously — the env-var check returns early
-    // in the §97 gate (the env var is not set),
-    // and the broken body returns if the env var
-    // is set without asserting anything. The GREEN
-    // commit makes the assertions real and the
-    // fixture a real Debian source tree.
+    let _ = tracing_subscriber::fmt::try_init();
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    // 1. Job creation.
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+
+    // 2. Stage the pinned-real fixture into the
+    //    daemon's per-job workspace. The first
+    //    capture provisions the empty workspace;
+    //    the fixture is then copied in; the second
+    //    capture reads the staged tree.
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/pinned-real");
+    let _first = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args_with_version(&job_id, "hello", None),
+        )
+        .await;
+    let workspaces_root = d.workspaces_root();
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        handles.len(),
+        1,
+        "expected exactly one workspace handle; got {handles:?}"
+    );
+    let workspace_path = handles.pop().unwrap();
+    copy_recursive(&fixture_root, &workspace_path);
+
+    // 3. Re-capture with the pinned version. The
+    //    pinned-real fixture's `debian/changelog`
+    //    declares `hello (2.10-2) unstable;` —
+    //    `expected_version: Some("2.10-2")` matches.
+    let _second = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args_with_version(&job_id, "hello", Some("2.10-2")),
+        )
+        .await;
+
+    // 4. The five pre-build checks advertised by
+    //    `next_actions`. The order is
+    //    1C.1 → 1C.2 → 1C.3 → 1D.2 → 1E.2 (per
+    //    `debian_issue_bts_snapshot_passes_...`
+    //    above and the other `debian_inspect_*`
+    //    tests).
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let allowed = next["actions"]["allowed"]
+        .as_array()
+        .expect("allowed array");
+    let check_ids: Vec<&str> = allowed
+        .iter()
+        .filter_map(|a| a.get("run_check")?.get("check_id")?.as_str())
+        .collect();
+    assert_eq!(
+        check_ids.len(),
+        5,
+        "the pinned-real fixture's pre-build suite is five checks (§13): {allowed:?}"
+    );
+
+    // 5. Run each of the five pre-build checks. The
+    //    pinned-real fixture's source tree is
+    //    real-format Debian, so all five checks
+    //    must return `Pass` (the §22 gate's
+    //    `AtBaseline` arm; the §24 BTS hermetic
+    //    `pass` verdict).
+    for (idx, check_id) in check_ids.iter().enumerate() {
+        let run_response = d
+            .post(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "check.run",
+                        "arguments": {
+                            "job_id": job_id,
+                            "check_id": check_id,
+                        },
+                    },
+                }),
+                Some(TOKEN),
+            )
+            .await;
+        assert_eq!(
+            run_response.status(),
+            200,
+            "check.run for check #{idx} ({check_id}) was not served"
+        );
+        let run_body: Value = run_response.json().await.expect("json body");
+        assert_eq!(
+            run_body["error"],
+            Value::Null,
+            "check.run for check #{idx} ({check_id}) returned a protocol error: {run_body}"
+        );
+        let evidence_status = run_body["result"]["structuredContent"]["evidence_status"]
+            .as_str()
+            .expect("evidence_status string");
+        assert_eq!(
+            evidence_status, "pass",
+            "the pinned-real fixture's check #{idx} ({check_id}) must return \
+             `pass` (the §13 inspection suite's contract on a real-format \
+             Debian source tree is `pass` for all five pre-build checks): \
+             {run_body}"
+        );
+    }
+
+    d.shutdown().await;
 }
