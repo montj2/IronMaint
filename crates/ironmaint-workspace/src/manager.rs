@@ -288,17 +288,24 @@ impl<S: WorkspaceMetadataStore> WorkspaceManager<S> {
         Ok(id)
     }
 
-    /// Materialise a frozen view of `id` at the captured tree
-    /// `tree_sha`, returning a `FrozenWorktree` whose `path()`
-    /// the runtime hands to the check tool. PHASE-1.1 PR 1.1.B
-    /// (evidence integrity): the previous `check.run` path
-    /// passed the live workspace to the tool, so a concurrent
-    /// `apply_patch` would change the evidence's tree hash
-    /// between capture and check. The worktree is created at
+    /// Materialise a frozen view of `id` at the captured
+    /// tree `tree_sha`, returning a `FrozenWorktree` whose
+    /// `path()` the runtime hands to the check tool. PHASE-1.1
+    /// PR 1.1.B (evidence integrity): the previous `check.run`
+    /// path passed the live workspace to the tool, so a
+    /// concurrent `apply_patch` would change the evidence's
+    /// tree hash between capture and check. The worktree is
+    /// created at
     /// `<root>/<handle>/.ironmaint-checks/<worktree_id>` via
     /// `git worktree add --detach`; the directory is owned by
     /// the runtime and never overlaps with a patch the agent
     /// might apply.
+    ///
+    /// `tree_sha` is the candidate's tree OID. The
+    /// `frozen.tree_sha()` method (a `git rev-parse
+    /// HEAD^{tree}` on the worktree) returns the same value
+    /// after the worktree is created, which is the
+    /// post-check drift check the runtime runs.
     ///
     /// `worktree_id` is a caller-supplied label (typically the
     /// evidence id) that namespaces the worktree within the

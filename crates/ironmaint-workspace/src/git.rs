@@ -451,29 +451,72 @@ impl GitInvocation {
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
     }
 
-    /// `git worktree add --detach <frozen_path> <tree>` —
+    /// `git commit-tree <tree> -m _frozen_worktree` followed by
+    /// `git worktree add --detach <frozen_path> <commit>` —
     /// materialise a read-only checkout of the workspace at the
     /// given tree OID. PHASE-1.1 PR 1.1.B (evidence integrity):
     /// the `check.run` path needs a frozen view of the captured
     /// tree, so a concurrent `apply_patch` to the live workspace
-    /// cannot change the evidence's binding to that tree. The
-    /// resulting directory is a full working tree, but the
-    /// architectural property the runtime relies on is that
-    /// the check tool *only reads* from it — the drift check
-    /// after the check completes (`tree_sha` on the worktree)
-    /// catches a tool that writes.
+    /// cannot change the evidence's binding to that tree.
+    ///
+    /// `git worktree add` requires a commit-ish, not a tree
+    /// OID, and the candidate's `commit` and `tree` are
+    /// decoupled — the working tree may have uncommitted
+    /// changes that are not yet in any commit. The
+    /// `git commit-tree` plumbing creates a new commit object
+    /// that wraps the tree (the tree's blob content is
+    /// unchanged; the commit is a fresh OID the repo does not
+    /// have yet); the `worktree add --detach` then checks
+    /// that commit out as a working directory, and
+    /// `git rev-parse HEAD^{tree}` on the worktree returns
+    /// the requested tree. The architectural property the
+    /// runtime relies on is that the check tool *only reads*
+    /// from the worktree — a tool that writes is caught by
+    /// the post-check tree-sha check.
     pub async fn worktree_add_detached(
         &self,
         frozen_path: &Path,
         tree: &str,
     ) -> Result<(), WorkspaceError> {
-        let _ = (frozen_path, tree);
-        // PHASE-1.1 PR 1.1.B GREEN: this body becomes
-        // `git worktree add --detach <frozen_path> <tree>` with
-        // a non-zero exit mapped to a typed `WorkspaceError`.
-        // The 1.1.B RED commit leaves it as a deliberate
-        // `unimplemented!()` so the new test fails, and the
-        // existing workspace tests are untouched.
-        unimplemented!("worktree_add_detached lands in 1.1.B GREEN")
+        // Step 1: create a fresh commit wrapping the tree.
+        // The commit's parent is irrelevant — the worktree
+        // is detached, and the post-check drift check
+        // compares `HEAD^{tree}` to the requested tree, not
+        // the commit's history.
+        let commit_out = self
+            .cmd()
+            .args(["commit-tree", tree, "-m", "IronMaint frozen worktree"])
+            .output()
+            .await
+            .map_err(|e| WorkspaceError::new(WorkspaceErrorKind::Command(format!("wait: {e}"))))?;
+        if !commit_out.status.success() {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git commit-tree {} failed: {}",
+                tree,
+                String::from_utf8_lossy(&commit_out.stderr)
+            ))));
+        }
+        let commit = String::from_utf8_lossy(&commit_out.stdout)
+            .trim()
+            .to_string();
+
+        // Step 2: add the worktree at the new commit.
+        let out = self
+            .cmd()
+            .args(["worktree", "add", "--detach"])
+            .arg(frozen_path)
+            .arg(&commit)
+            .output()
+            .await
+            .map_err(|e| WorkspaceError::new(WorkspaceErrorKind::Command(format!("wait: {e}"))))?;
+        if !out.status.success() {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git worktree add --detach {} {} failed: {}",
+                frozen_path.display(),
+                commit,
+                String::from_utf8_lossy(&out.stderr)
+            ))));
+        }
+        Ok(())
     }
 }

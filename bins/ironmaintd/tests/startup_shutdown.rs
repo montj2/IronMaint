@@ -1483,6 +1483,203 @@ async fn candidate_capture_uses_supplied_expected_version() {
     d.shutdown().await;
 }
 
+/// The check's evidence is bound to the captured tree, not
+/// the live workspace. PHASE-1.1 PR 1.1.B (evidence
+/// integrity): after `candidate.capture`, a concurrent
+/// `workspace.apply_patch` would change the live workspace's
+/// tree, but the check must still see the captured tree —
+/// the runtime materialises a `git worktree add --detach`
+/// snapshot at the candidate's tree OID and passes that
+/// frozen path to the tool. The test stages the good
+/// fixture, captures, then deletes the live workspace's
+/// `debian/changelog`. With the GREEN code, the
+/// `debian.inspect.source_preparation` check still passes
+/// because it reads from the frozen worktree (which has
+/// the original changelog). With the pre-1.1.B code, the
+/// check would fail because the live workspace has no
+/// changelog for the cross-check to read.
+#[tokio::test]
+async fn check_evidence_is_bound_to_the_captured_tree_not_the_live_workspace() {
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+
+    // First capture: provision the workspace.
+    let _ = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    // Stage the good fixture.
+    let workspaces_root = d.workspaces_root();
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+
+    // Second capture: bind the candidate to the staged
+    // fixture's tree.
+    let _ = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    // Now mutate the live workspace *after* capture, so
+    // any check that reads the live workspace would see
+    // the broken state. With the GREEN code, the check
+    // materialises a frozen worktree from the candidate's
+    // tree OID (which is the pre-mutation tree) and reads
+    // from there, so the mutation is invisible to the
+    // check.
+    let live_changelog = workspace_path.join("debian").join("changelog");
+    assert!(
+        live_changelog.is_file(),
+        "the staged fixture has a debian/changelog"
+    );
+    std::fs::remove_file(&live_changelog).expect("delete live changelog");
+    assert!(
+        !live_changelog.is_file(),
+        "the live workspace's changelog is gone"
+    );
+
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let source_preparation_check_id = next["actions"]["allowed"]
+        .as_array()
+        .and_then(|a| {
+            a.iter().find_map(|a| {
+                a.get("run_check")?
+                    .get("check_id")?
+                    .as_str()
+                    .map(String::from)
+            })
+        })
+        .expect("job.next_actions should list a run_check action for the active candidate");
+
+    let response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {
+                        "job_id": job_id,
+                        "check_id": source_preparation_check_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(response.status(), 200, "check.run was not served");
+    let body: Value = response.json().await.expect("json body");
+    assert_eq!(
+        body["error"],
+        Value::Null,
+        "check.run returned a protocol error: {body}"
+    );
+    let result = &body["result"]["structuredContent"];
+    let evidence_id = result["evidence_id"]
+        .as_str()
+        .expect("evidence_id string")
+        .to_string();
+    let evidence_status = result["evidence_status"]
+        .as_str()
+        .expect("evidence_status string");
+    assert_eq!(
+        evidence_status, "pass",
+        "the check sees the captured tree, not the live workspace: \
+         the source_preparation check passes because the frozen worktree \
+         has the original changelog. With the pre-1.1.B code the check \
+         would read the live workspace (no changelog) and fail: {result}"
+    );
+
+    // The bound report carries the changelog version from
+    // the captured tree, not from the live (now empty)
+    // workspace. The cross-check passes because the
+    // candidate's `package.version` (resolved from the
+    // captured changelog by 1.1.A) matches the frozen
+    // worktree's changelog version.
+    let get_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.get",
+                    "arguments": {"evidence_id": evidence_id.clone()},
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    let get_body: Value = get_response.json().await.expect("json body");
+    let artifacts = get_body["result"]["structuredContent"]["evidence"]["artifacts"]
+        .as_array()
+        .expect("artifacts array");
+    assert!(!artifacts.is_empty(), "evidence has at least one artifact");
+    let artifact_id = artifacts[0]["id"]
+        .as_str()
+        .expect("artifact id string")
+        .to_string();
+    let artifact_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.artifact.read",
+                    "arguments": {
+                        "evidence_id": evidence_id,
+                        "artifact_id": artifact_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    let artifact_body: Value = artifact_response.json().await.expect("json body");
+    let bytes_base64 = artifact_body["result"]["structuredContent"]["bytes_base64"]
+        .as_str()
+        .expect("bytes_base64 string");
+    use base64::Engine as _;
+    let artifact_bytes = base64::engine::general_purpose::STANDARD
+        .decode(bytes_base64)
+        .expect("base64-decode artifact bytes");
+    let report: Value = serde_json::from_slice(&artifact_bytes).expect("report JSON");
+    assert_eq!(
+        report["findings"]["changelog_version"].as_str(),
+        Some("1.0.0-1"),
+        "the changelog parser reads from the frozen worktree (the \
+         captured tree), not from the live (now empty) workspace: {report}"
+    );
+    assert_eq!(
+        report["findings"]["changelog_version_matches_candidate"], true,
+        "the cross-check passes because the candidate's `package.version` \
+         (resolved from the captured changelog) matches the frozen \
+         worktree's changelog version: {report}"
+    );
+
+    d.shutdown().await;
+}
+
 /// The check fails when the candidate's identity
 /// disagrees with the source tree's `debian/changelog`
 /// first-entry source name. The §17 fail path is

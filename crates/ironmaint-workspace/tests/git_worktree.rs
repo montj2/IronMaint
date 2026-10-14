@@ -74,7 +74,11 @@ async fn frozen_for_check_creates_a_readonly_checkout_at_the_captured_tree() {
 
     // The worktree is at <handle>/.ironmaint-checks/<worktree_id>.
     let expected = handle_dir.join(".ironmaint-checks").join(worktree_id);
-    assert_eq!(frozen.path(), expected, "worktree path matches the runtime contract");
+    assert_eq!(
+        frozen.path(),
+        expected,
+        "worktree path matches the runtime contract"
+    );
 
     // The worktree's tree OID matches the captured tree.
     let actual_tree = frozen
