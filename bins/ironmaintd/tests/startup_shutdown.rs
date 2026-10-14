@@ -1098,6 +1098,170 @@ async fn debian_inspect_source_preparation_passes_against_the_hermetic_fixture()
     d.shutdown().await;
 }
 
+/// The candidate's `source_version` is bound to the
+/// `debian/changelog` first entry, not the historical
+/// `0+ironmaint` placeholder (PHASE-1.1 PR 1.1.A —
+/// P1 finding #1 from `doc/PHASE-1-FEEDBACK.md`).
+///
+/// The test stages the good hermetic fixture (whose
+/// `debian/changelog` declares version `1.0.0-1`),
+/// captures a candidate with no `expected_version`,
+/// runs the `source_preparation` check, and asserts
+/// the report's `changelog_version_matches_candidate`
+/// is `true` — which only holds if the runtime read the
+/// version from the changelog. With the historical
+/// hard-coded `0+ironmaint` body the cross-check fails
+/// and this test fails (RED).
+#[tokio::test]
+async fn candidate_capture_uses_real_changelog_version() {
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+    let _captured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let check_id = next["actions"]["allowed"]
+        .as_array()
+        .and_then(|a| {
+            a.iter().find_map(|a| {
+                a.get("run_check")?.get("check_id")?.as_str().map(String::from)
+            })
+        })
+        .expect("job.next_actions should list a run_check action for the planned source_preparation check");
+
+    let workspaces_root = tmp.path().join("workspaces");
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        handles.len(),
+        1,
+        "expected exactly one workspace handle; got {handles:?}"
+    );
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+
+    let response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {
+                        "job_id": job_id,
+                        "check_id": check_id.clone(),
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(response.status(), 200, "check.run was not served");
+    let body: Value = response.json().await.expect("json body");
+    assert_eq!(
+        body["error"],
+        Value::Null,
+        "check.run returned a protocol error: {body}"
+    );
+    let result = &body["result"]["structuredContent"];
+    let evidence_id = result["evidence_id"]
+        .as_str()
+        .expect("evidence_id string")
+        .to_string();
+
+    // Read the bound report so we can assert the
+    // version cross-check held. The report's
+    // `changelog_version` is what the parser read from
+    // the fixture; `changelog_version_matches_candidate`
+    // is the cross-check between that and the candidate's
+    // `package.version` (what `capture_candidate` set).
+    let get_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.get",
+                    "arguments": {"evidence_id": evidence_id.clone()},
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(get_response.status(), 200, "evidence.get was not served");
+    let get_body: Value = get_response.json().await.expect("json body");
+    let artifacts = get_body["result"]["structuredContent"]["evidence"]["artifacts"]
+        .as_array()
+        .expect("artifacts array on the Evidence row");
+    assert!(!artifacts.is_empty(), "executor binds one report artifact");
+    let artifact_id = artifacts[0]["id"]
+        .as_str()
+        .expect("artifact id string")
+        .to_string();
+
+    let artifact_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.artifact.read",
+                    "arguments": {
+                        "evidence_id": evidence_id,
+                        "artifact_id": artifact_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(artifact_response.status(), 200, "read was not served");
+    let artifact_body: Value = artifact_response.json().await.expect("json body");
+    let bytes_base64 = artifact_body["result"]["structuredContent"]["bytes_base64"]
+        .as_str()
+        .expect("bytes_base64 string");
+    use base64::Engine as _;
+    let artifact_bytes = base64::engine::general_purpose::STANDARD
+        .decode(bytes_base64)
+        .expect("base64-decode artifact bytes");
+    let report: Value = serde_json::from_slice(&artifact_bytes).expect("report JSON");
+
+    assert_eq!(
+        report["findings"]["changelog_version"].as_str(),
+        Some("1.0.0-1"),
+        "the fixture's debian/changelog declares 1.0.0-1; the parser must surface that"
+    );
+    assert_eq!(
+        report["findings"]["changelog_version_matches_candidate"], true,
+        "candidate's package.version must match the changelog's first entry; \
+         with the historical hard-coded `0+ironmaint` this is false (RED): {report}"
+    );
+    assert_eq!(
+        result["evidence_status"], "pass",
+        "the version cross-check holds only when capture_candidate read the \
+         changelog, so the source_preparation tool's verdict is `pass`: {result}"
+    );
+
+    d.shutdown().await;
+}
+
 /// The check fails when the candidate's identity
 /// disagrees with the source tree's `debian/changelog`
 /// first-entry source name. The §17 fail path is

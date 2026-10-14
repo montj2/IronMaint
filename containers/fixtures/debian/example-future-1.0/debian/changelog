@@ -1,8 +1,10 @@
-example (0+ironmaint) unstable; urgency=medium
+example (1.0.0-1) unstable; urgency=medium
 
   * 1D.2 hermetic fixture: declares Standards-Version 4.9.0
     (above the §19 manifest's `baseline_policy_version: 4.7.4.1`).
     The §22 gate must block this candidate with
-    `E_POLICY_BASELINE_STALE`.
+    `E_POLICY_BASELINE_STALE`. The package version `1.0.0-1`
+    matches what the workspace's `capture_candidate` now
+    resolves from this header (PHASE-1.1 PR 1.1.A).
 
  -- IronMaint Test <test@example.invalid>  Thu, 09 Oct 2026 00:00:00 +0000
