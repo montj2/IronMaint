@@ -40,7 +40,7 @@ mod package_model;
 mod policy_cap;
 mod versioning;
 
-pub use authority_manifest::{baseline_policy_version, load_authorities};
+pub use authority_manifest::{load_authorities, standards_version_target};
 
 use ironmaint_adapter_api::DistributionAdapter;
 

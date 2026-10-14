@@ -35,11 +35,9 @@
 
 use std::path::PathBuf;
 
-use ironmaint_debian_tool::policy_delta::run;
-use ironmaint_debian_tool::report::{
-    StandardsVersionComparison, Verdict,
-};
 use ironmaint_debian_tool::policy_delta::CandidateInput;
+use ironmaint_debian_tool::policy_delta::run;
+use ironmaint_debian_tool::report::{StandardsVersionComparison, Verdict};
 
 /// Build a `CandidateInput` whose `workspace_path` is
 /// `workspace`. The `commit` / `tree` / `fingerprint`
@@ -106,15 +104,14 @@ fn control_with_body(body: &str) -> (tempfile::TempDir, PathBuf) {
 fn at_baseline_is_pass() {
     let (_tmp, workspace) = control_with_body(
         "Source: example\n\
-         Maintainer: IronMaint Test <test@example.invalid>\n\
-         Section: utils\n\
-         Priority: optional\n\
-         Standards-Version: 4.7.4\n\
-         \n\
-         Package: example\n\
-         Architecture: any\n\
-         Description: at-baseline fixture\n\
-          at-baseline fixture for PR 1.1.D.\n",
+Maintainer: IronMaint Test <test@example.invalid>\n\
+Section: utils\n\
+Priority: optional\n\
+Standards-Version: 4.7.4\n\
+\n\
+Package: example\n\
+Architecture: any\n\
+Description: at-baseline fixture for PR 1.1.D\n",
     );
     let report = run(&input_with_workspace(workspace));
     assert_eq!(report.verdict, Verdict::Pass, "report: {report:?}");
@@ -147,26 +144,19 @@ fn at_baseline_is_pass() {
 fn below_baseline_is_pass_with_checklist_entries() {
     let (_tmp, workspace) = control_with_body(
         "Source: example\n\
-         Maintainer: IronMaint Test <test@example.invalid>\n\
-         Section: utils\n\
-         Priority: optional\n\
-         Standards-Version: 4.6.2\n\
-         \n\
-         Package: example\n\
-         Architecture: any\n\
-         Description: below-baseline fixture\n\
-          below-baseline fixture for PR 1.1.D.\n",
+Maintainer: IronMaint Test <test@example.invalid>\n\
+Section: utils\n\
+Priority: optional\n\
+Standards-Version: 4.6.2\n\
+\n\
+Package: example\n\
+Architecture: any\n\
+Description: below-baseline fixture for PR 1.1.D\n",
     );
     let report = run(&input_with_workspace(workspace));
     assert_eq!(report.verdict, Verdict::Pass, "report: {report:?}");
-    assert_eq!(
-        report.candidate_standards_version.as_deref(),
-        Some("4.6.2")
-    );
-    assert_eq!(
-        report.baseline_standards_version.as_deref(),
-        Some("4.7.4")
-    );
+    assert_eq!(report.candidate_standards_version.as_deref(), Some("4.6.2"));
+    assert_eq!(report.baseline_standards_version.as_deref(), Some("4.7.4"));
     assert_eq!(
         report.comparison_outcome,
         Some(StandardsVersionComparison::BelowBaseline)
@@ -193,7 +183,7 @@ fn below_baseline_is_pass_with_checklist_entries() {
     assert!(
         entries
             .iter()
-            .any(|e| e.from_version <= "4.7.4" && e.to_version >= "4.7.4"),
+            .any(|e| e.from_version.as_str() <= "4.7.4" && e.to_version.as_str() >= "4.7.4"),
         "an entry covering the 4.7.4 baseline must be present: {entries:?}"
     );
 }
@@ -224,10 +214,7 @@ fn above_baseline_is_infrastructure_error_not_fail() {
          report: {report:?}"
     );
     assert_eq!(report.candidate_standards_version.as_deref(), Some("4.9.0"));
-    assert_eq!(
-        report.baseline_standards_version.as_deref(),
-        Some("4.7.4")
-    );
+    assert_eq!(report.baseline_standards_version.as_deref(), Some("4.7.4"));
     assert_eq!(
         report.comparison_outcome,
         Some(StandardsVersionComparison::AboveBaseline)
@@ -257,14 +244,13 @@ fn above_baseline_is_infrastructure_error_not_fail() {
 fn missing_standards_version_is_fail() {
     let (_tmp, workspace) = control_with_body(
         "Source: example\n\
-         Maintainer: IronMaint Test <test@example.invalid>\n\
-         Section: utils\n\
-         Priority: optional\n\
-         \n\
-         Package: example\n\
-         Architecture: any\n\
-         Description: missing-Standards-Version fixture\n\
-          no Standards-Version field, for PR 1.1.D regression pin.\n",
+Maintainer: IronMaint Test <test@example.invalid>\n\
+Section: utils\n\
+Priority: optional\n\
+\n\
+Package: example\n\
+Architecture: any\n\
+Description: missing Standards-Version field for PR 1.1.D regression pin\n",
     );
     let report = run(&input_with_workspace(workspace));
     assert_eq!(

@@ -2,7 +2,8 @@
   "schema_version": 1,
   "manifest_version": "1",
   "distribution": "debian",
-  "baseline_policy_version": "4.7.4.1",
+  "policy_document_version": "4.7.4.1",
+  "standards_version_target": "4.7.4",
   "authorities": [
     {
       "name": "Debian Policy",

@@ -2,14 +2,29 @@
 //!
 //! PHASE-1.md §13 / §19 / §22. The 1D.2 check evaluates
 //! the candidate's `debian/control` `Standards-Version`
-//! against the §19 manifest's `baseline_policy_version`
-//! (currently `"4.7.4.1"`). A candidate whose
-//! `Standards-Version` is *newer* than the baseline
-//! triggers the §22 gate:
+//! against the §19 manifest's
+//! `standards_version_target` (currently `"4.7.4"`).
+//! A candidate whose `Standards-Version` is *newer*
+//! than the baseline triggers the §22 gate:
 //!
 //! > "IronMaint's Debian Policy knowledge is stale;
 //! >  refresh the authority snapshot before evaluating
 //! >  this candidate."
+//!
+//! The spec is explicit (PHASE-1.md line 978) that
+//! a candidate above baseline "must not be marked
+//! bad": the manifest is stale, not the package. The
+//! verdict is therefore `Verdict::InfrastructureError`
+//! (which the normalizer routes to
+//! `ExecutorError::InfrastructureFailed` and the
+//! runtime surfaces as `GateStatus::Blocked`),
+//! not `Verdict::Fail`.
+//!
+//! A candidate below baseline yields
+//! `Verdict::Pass` *with* the §20
+//! `intervening_checklist_entries` field populated:
+//! the operator's remediation is the named entries
+//! from `policy/debian/upgrading-checklist.v1.json`.
 //!
 //! The wire format follows the 1C.1 / 1C.2 / 1C.3
 //! precedent:
@@ -22,29 +37,29 @@
 //!   (`DebianPolicyDeltaReviewV1`) to stdout (one
 //!   document, EOF-terminated).
 //!
-//! The 1D.2 RED commit's `run()` returns
-//! `Verdict::Pass` for *every* valid input (the §22
-//! gate is not yet wired). The 1D.2 GREEN commit's
-//! `run()` compares the candidate's `Standards-Version`
-//! to the manifest baseline using `debversion::Version`
-//! ordering and emits `Verdict::Fail` with the
-//! `E_POLICY_BASELINE_STALE` diagnostic when the
-//! candidate is above the baseline. The §97
-//! schema-snapshot tool (`xtask verify-schemas`)
-//! catches GREEN-side drift: `cargo run -p xtask --
-//! verify-schemas --write` regenerates
-//! `schemas/DebianPolicyDeltaReviewV1.json` against
-//! the comprehensive struct.
+//! PHASE-1.1 PR 1.1.D (policy baseline correctness):
+//! the pre-1.1.D comparator was the manifest's
+//! `baseline_policy_version` (= `"4.7.4.1"`, the
+//! *Policy Manual document* version). The new
+//! comparator is the manifest's
+//! `standards_version_target` (= `"4.7.4"`, the
+//! `Standards-Version` target). The
+//! `AboveBaseline` verdict is flipped from `Fail`
+//! to `InfrastructureError`, and the
+//! `intervening_checklist_entries` field on the
+//! report is populated from
+//! `policy/debian/upgrading-checklist.v1.json`.
 
 use std::path::PathBuf;
 use std::str::FromStr;
 
 use deb822_lossless::Deb822;
+use schemars::JsonSchema;
 use serde::Deserialize;
 
 use crate::report::{
-    DebianPolicyDeltaReviewV1, Diagnostic, POLICY_DELTA_REPORT_KIND, POLICY_DELTA_SCHEMA_VERSION,
-    Provenance, StandardsVersionComparison, Verdict,
+    ChecklistEntry, DebianPolicyDeltaReviewV1, Diagnostic, POLICY_DELTA_REPORT_KIND,
+    POLICY_DELTA_SCHEMA_VERSION, Provenance, StandardsVersionComparison, Verdict,
 };
 
 /// The runtime's `ironmaint.candidate_input.v3` payload
@@ -76,14 +91,63 @@ pub struct Package {
     pub version: String,
 }
 
+/// The on-disk shape of
+/// `policy/debian/upgrading-checklist.v1.json`.
+///
+/// PHASE-1.1 PR 1.1.D (policy baseline correctness):
+/// the JSON is a parallel data file to
+/// `authorities.v1.json`, carrying the §20
+/// narrative of each `Standards-Version`
+/// interval. The 1.1.D-bundled file carries
+/// only the 4.7.4 → 4.7.4.1 interval; future
+/// PRs can extend the JSON to cover more
+/// intervals.
+///
+/// `pub` so the `xtask verify-schemas` tool
+/// can call `schemars::schema_for!` for the
+/// §97 schema-snapshot pin. The re-exports in
+/// `lib.rs` expose the loader functions, not
+/// the struct.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+pub struct UpgradingChecklistManifestV1 {
+    pub schema_version: u32,
+    pub manifest_version: String,
+    pub distribution: String,
+    pub intervals: Vec<ChecklistEntry>,
+}
+
+/// Load the §20 upgrading-checklist entries
+/// bundled at compile time via `include_str!`.
+///
+/// PHASE-1.1 PR 1.1.D: this loader is the
+/// data path for the new
+/// `intervening_checklist_entries` field on
+/// `DebianPolicyDeltaReviewV1`. The bundled
+/// JSON carries only the 4.7.4 → 4.7.4.1
+/// interval today; the loader returns
+/// whatever intervals the JSON declares so
+/// future extensions are zero-cost.
+#[allow(clippy::expect_used)] // The manifest is bundled via `include_str!`
+// at compile time; a deserialiser error
+// here is a build-time defect, not a
+// runtime concern. The `expect` is the
+// right tool for a precondition violation.
+fn load_upgrading_checklist() -> Vec<ChecklistEntry> {
+    let raw = include_str!("../../../policy/debian/upgrading-checklist.v1.json");
+    let manifest: UpgradingChecklistManifestV1 = serde_json::from_str(raw)
+        .expect("policy/debian/upgrading-checklist.v1.json must be a valid manifest");
+    manifest.intervals
+}
+
 /// The §22 Standards-Version comparison result.
 ///
 /// `above_baseline` is the gate-triggering case:
 /// the candidate declares a `Standards-Version`
-/// newer than the manifest's `baseline_policy_version`,
-/// so the candidate cannot be evaluated against
-/// the adapter's known Policy. `at_or_below_baseline`
-/// is the pass-path case (the candidate's declared
+/// newer than the manifest's
+/// `standards_version_target`, so the candidate
+/// cannot be evaluated against the adapter's
+/// known Policy. `at_or_below_baseline` is the
+/// pass-path case (the candidate's declared
 /// version is at or below the manifest's known
 /// Policy). `missing_candidate_standards_version`
 /// records the absence of a `Standards-Version`
@@ -93,8 +157,10 @@ pub struct Package {
 enum StandardsDelta {
     /// The candidate's `Standards-Version` is
     /// strictly newer than the manifest's
-    /// `baseline_policy_version`. The §22 gate
-    /// is blocked.
+    /// `standards_version_target`. The §22 gate
+    /// is blocked; the verdict is
+    /// `InfrastructureError` (the manifest is
+    /// stale, not the package).
     AboveBaseline,
     /// The candidate's `Standards-Version` is
     /// at or below the manifest's baseline. The
@@ -107,13 +173,13 @@ enum StandardsDelta {
 
 /// Compare the candidate's declared
 /// `Standards-Version` against the manifest's
-/// `baseline_policy_version` using `debversion`'s
+/// `standards_version_target` using `debversion`'s
 /// dpkg §5.6.12 lex-order.
 ///
 /// `candidate_standards_version` is the value
 /// extracted from `debian/control`. `baseline` is
 /// `policy/debian/authorities.v1.json`'s
-/// `baseline_policy_version` (= `"4.7.4.1"`).
+/// `standards_version_target` (= `"4.7.4"`).
 fn compare_standards_version(
     candidate_standards_version: Option<&str>,
     baseline: &str,
@@ -144,22 +210,80 @@ fn compare_standards_version(
     }
 }
 
+/// Return the §20 upgrading-checklist entries
+/// that name the interval between
+/// `candidate` and `baseline`. An entry
+/// `(from, to)` qualifies when
+/// `from < baseline` AND `to >= candidate`
+/// (loose, narrative match — the §20 entries
+/// describe an interval, not a precise
+/// range). The entries are returned in the
+/// order they appear in the JSON file.
+///
+/// `candidate` and `baseline` are `&str`
+/// `Standards-Version` values; unparseable
+/// values yield an empty `Vec` (the report's
+/// `intervening_checklist_entries` is empty
+/// for the at-or-above cases).
+fn intervening_entries(candidate: Option<&str>, baseline: &str) -> Vec<ChecklistEntry> {
+    let Some(candidate) = candidate else {
+        return Vec::new();
+    };
+    let Ok(candidate_v) = debversion::Version::from_str(candidate) else {
+        return Vec::new();
+    };
+    let Ok(baseline_v) = debversion::Version::from_str(baseline) else {
+        return Vec::new();
+    };
+    load_upgrading_checklist()
+        .into_iter()
+        .filter(|e| {
+            // Match an entry whose interval
+            // overlaps the path from
+            // `candidate` to `baseline` (both
+            // inclusive of the entry's
+            // endpoints, since the §20
+            // narrative is the per-version
+            // change-log).
+            let Ok(from_v) = debversion::Version::from_str(&e.from_version) else {
+                return false;
+            };
+            let Ok(to_v) = debversion::Version::from_str(&e.to_version) else {
+                return false;
+            };
+            // The entry covers the
+            // candidate-to-baseline path
+            // when its `to` is at or above
+            // the candidate (so the entry
+            // names the post-candidate
+            // change) and its `from` is at
+            // or below the baseline (so the
+            // entry's interval is in the
+            // known-Policy range).
+            to_v >= candidate_v && from_v <= baseline_v
+        })
+        .collect()
+}
+
 /// Run the 1D.2 policy-delta check.
 ///
 ///   1. Reads `policy/debian/authorities.v1.json`
-///      `baseline_policy_version` (= `"4.7.4.1"`).
+///      `standards_version_target` (= `"4.7.4"`).
 ///   2. Parses `debian/control` source paragraph
 ///      for the `Standards-Version` field.
 ///   3. Calls `compare_standards_version` and
-///      emits `Verdict::Fail` with the
-///      `E_POLICY_BASELINE_STALE` diagnostic
+///      emits `Verdict::InfrastructureError` with
+///      the `E_POLICY_BASELINE_STALE` diagnostic
 ///      when the candidate is above baseline.
 ///   4. Emits `Verdict::Fail` with
 ///      `E_STANDARDS_VERSION_MISSING` when the
 ///      candidate's `debian/control` is missing
 ///      the field.
+///   5. Populates `intervening_checklist_entries`
+///      with the §20 narrative entries that
+///      cover the candidate-to-baseline path.
 pub fn run(input: &CandidateInput) -> DebianPolicyDeltaReviewV1 {
-    let baseline = debian::authority_manifest::baseline_policy_version();
+    let baseline = debian::authority_manifest::standards_version_target();
 
     let mut diagnostics: Vec<Diagnostic> = Vec::new();
     let mut verdict = Verdict::Pass;
@@ -197,6 +321,13 @@ pub fn run(input: &CandidateInput) -> DebianPolicyDeltaReviewV1 {
     // AboveBaseline / AtOrBelowBaseline /
     // MissingCandidate is wired into the
     // verdict + diagnostics.
+    //
+    // PHASE-1.1 PR 1.1.D: the `AboveBaseline`
+    // arm emits `Verdict::InfrastructureError`
+    // (manifest is stale), not `Verdict::Fail`
+    // (package is bad). The spec is explicit
+    // (line 978) that a candidate above
+    // baseline "must not be marked bad".
     let comparison_outcome: Option<StandardsVersionComparison> =
         match compare_standards_version(candidate_standards_version.as_deref(), baseline) {
             StandardsDelta::AboveBaseline => {
@@ -204,7 +335,7 @@ pub fn run(input: &CandidateInput) -> DebianPolicyDeltaReviewV1 {
                     code: "E_POLICY_BASELINE_STALE".to_string(),
                     message: format!(
                         "candidate declares Standards-Version \
-                         {} but the manifest's baseline is {}; \
+                         {} but the manifest's standards_version_target is {}; \
                          the §22 gate is blocked until the \
                          authority snapshot is refreshed",
                         candidate_standards_version.as_deref().unwrap_or(""),
@@ -212,7 +343,7 @@ pub fn run(input: &CandidateInput) -> DebianPolicyDeltaReviewV1 {
                     ),
                     path: None,
                 });
-                verdict = Verdict::Fail;
+                verdict = Verdict::InfrastructureError;
                 Some(StandardsVersionComparison::AboveBaseline)
             }
             StandardsDelta::AtOrBelowBaseline => Some(
@@ -238,6 +369,18 @@ pub fn run(input: &CandidateInput) -> DebianPolicyDeltaReviewV1 {
             }
         };
 
+    // The §20 upgrading-checklist entries. The
+    // pre-1.1.D report did not carry the §20
+    // promise; the 1.1.D-corrected report
+    // populates this field for `BelowBaseline`
+    // cases. Other cases get an empty list.
+    let intervening_checklist_entries: Vec<ChecklistEntry> = match comparison_outcome {
+        Some(StandardsVersionComparison::BelowBaseline) => {
+            intervening_entries(candidate_standards_version.as_deref(), baseline)
+        }
+        _ => Vec::new(),
+    };
+
     DebianPolicyDeltaReviewV1 {
         schema_version: POLICY_DELTA_SCHEMA_VERSION,
         report_kind: POLICY_DELTA_REPORT_KIND.to_string(),
@@ -252,6 +395,7 @@ pub fn run(input: &CandidateInput) -> DebianPolicyDeltaReviewV1 {
         candidate_standards_version,
         baseline_standards_version: Some(baseline.to_string()),
         comparison_outcome,
+        intervening_checklist_entries,
     }
 }
 
@@ -307,9 +451,11 @@ mod tests {
     /// manifest baseline yields
     /// `Verdict::Pass`. The example-1.0
     /// fixture's `Standards-Version: 4.6.2`
-    /// is below the manifest's `4.7.4.1`
+    /// is below the manifest's `4.7.4`
     /// baseline; the comparison outcome is
-    /// `BelowBaseline`.
+    /// `BelowBaseline` and the §20
+    /// `intervening_checklist_entries` is
+    /// populated.
     #[test]
     fn good_fixture_below_baseline_yields_pass() {
         let report = run(&good_input());
@@ -319,10 +465,7 @@ mod tests {
             "the well-formed hermetic fixture's verdict: {report:?}"
         );
         assert_eq!(report.candidate_standards_version.as_deref(), Some("4.6.2"));
-        assert_eq!(
-            report.baseline_standards_version.as_deref(),
-            Some("4.7.4.1")
-        );
+        assert_eq!(report.baseline_standards_version.as_deref(), Some("4.7.4"));
         assert_eq!(
             report.comparison_outcome,
             Some(StandardsVersionComparison::BelowBaseline)
@@ -332,15 +475,19 @@ mod tests {
     /// The §22 gate path: a candidate whose
     /// `Standards-Version` is strictly above
     /// the manifest baseline yields
-    /// `Verdict::Fail` with the
+    /// `Verdict::InfrastructureError` with the
     /// `E_POLICY_BASELINE_STALE` diagnostic.
     /// The example-future-1.0 fixture's
     /// `Standards-Version: 4.9.0` is above
-    /// the manifest's `4.7.4.1` baseline; the
-    /// comparison outcome is
-    /// `AboveBaseline`.
+    /// the manifest's `4.7.4` baseline; the
+    /// comparison outcome is `AboveBaseline`.
+    ///
+    /// PHASE-1.1 PR 1.1.D: the pre-1.1.D
+    /// verdict was `Fail`; the post-1.1.D
+    /// verdict is `InfrastructureError` (the
+    /// manifest is stale, not the package).
     #[test]
-    fn future_fixture_above_baseline_yields_fail() {
+    fn future_fixture_above_baseline_yields_infrastructure_error() {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let workspace_root = manifest
             .parent()
@@ -353,14 +500,11 @@ mod tests {
         let report = run(&input);
         assert_eq!(
             report.verdict,
-            Verdict::Fail,
-            "the future fixture's verdict: {report:?}"
+            Verdict::InfrastructureError,
+            "the future fixture's verdict (post-1.1.D): {report:?}"
         );
         assert_eq!(report.candidate_standards_version.as_deref(), Some("4.9.0"));
-        assert_eq!(
-            report.baseline_standards_version.as_deref(),
-            Some("4.7.4.1")
-        );
+        assert_eq!(report.baseline_standards_version.as_deref(), Some("4.7.4"));
         assert_eq!(
             report.comparison_outcome,
             Some(StandardsVersionComparison::AboveBaseline)
@@ -453,7 +597,7 @@ mod tests {
         std::fs::create_dir_all(&debian_dir).expect("mkdir debian");
         std::fs::write(
             debian_dir.join("control"),
-            "Source: example\nStandards-Version: 4.7.4.1\n",
+            "Source: example\nStandards-Version: 4.7.4\n",
         )
         .expect("write control");
 
@@ -461,10 +605,7 @@ mod tests {
         input.workspace_path = Some(tmp.path().to_path_buf());
         let report = run(&input);
         assert_eq!(report.verdict, Verdict::Pass);
-        assert_eq!(
-            report.candidate_standards_version.as_deref(),
-            Some("4.7.4.1")
-        );
+        assert_eq!(report.candidate_standards_version.as_deref(), Some("4.7.4"));
         assert_eq!(
             report.comparison_outcome,
             Some(StandardsVersionComparison::AtBaseline)
@@ -482,7 +623,7 @@ mod tests {
     /// permissive — an all-letters string like
     /// `"not-a-version"` parses as a valid
     /// dpkg-ordered version (it sorts above
-    /// `"4.7.4.1"` per the dpkg §5.6.12
+    /// `"4.7.4"` per the dpkg §5.6.12
     /// lex-order because `'n' > '4'`). The
     /// `MissingCandidate` arm only fires when
     /// the candidate field is absent or
@@ -490,23 +631,23 @@ mod tests {
     #[test]
     fn compare_standards_version_classifies_all_three_outcomes() {
         assert_eq!(
-            compare_standards_version(Some("4.6.2"), "4.7.4.1"),
+            compare_standards_version(Some("4.6.2"), "4.7.4"),
             StandardsDelta::AtOrBelowBaseline
         );
         assert_eq!(
-            compare_standards_version(Some("4.7.4.1"), "4.7.4.1"),
+            compare_standards_version(Some("4.7.4"), "4.7.4"),
             StandardsDelta::AtOrBelowBaseline
         );
         assert_eq!(
-            compare_standards_version(Some("4.9.0"), "4.7.4.1"),
+            compare_standards_version(Some("4.9.0"), "4.7.4"),
             StandardsDelta::AboveBaseline
         );
         assert_eq!(
-            compare_standards_version(None, "4.7.4.1"),
+            compare_standards_version(None, "4.7.4"),
             StandardsDelta::MissingCandidate
         );
         assert_eq!(
-            compare_standards_version(Some(""), "4.7.4.1"),
+            compare_standards_version(Some(""), "4.7.4"),
             StandardsDelta::MissingCandidate
         );
     }

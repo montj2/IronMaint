@@ -2817,9 +2817,26 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                         // the Evidence row to see the nuance, and
                         // the state machine's `Fail` arm is the
                         // right hook for a human review.
+                        //
+                        // PHASE-1.1 PR 1.1.D (policy baseline
+                        // correctness): the §17 tri-state's
+                        // `InfrastructureError` evidence status
+                        // is mapped to
+                        // `Outcome::InfrastructureFailed`, which
+                        // the state machine surfaces as
+                        // `GateStatus::Blocked` (not `Fail`).
+                        // The pre-1.1.D code collapsed all
+                        // non-`Pass` statuses to `Outcome::Fail`,
+                        // which lost the "manifest is stale, not
+                        // the package" signal the spec at line
+                        // 978 requires for the §22
+                        // `AboveBaseline` case.
                         let o = match r.evidence_status {
                             ironmaint_evidence::EvidenceStatus::Pass => {
                                 ironmaint_executor::Outcome::Pass
+                            }
+                            ironmaint_evidence::EvidenceStatus::InfrastructureError => {
+                                ironmaint_executor::Outcome::InfrastructureFailed
                             }
                             _ => ironmaint_executor::Outcome::Fail,
                         };
