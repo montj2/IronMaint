@@ -37,13 +37,22 @@ impl<S: WorkspaceMetadataStore + CandidateStore> WorkspaceManager<S> {
     ///
     /// `job_id` is the owning job (the runtime supplies this);
     /// `repository_url` is the canonical upstream URL the
-    /// candidate is bound to.
+    /// candidate is bound to; `expected_version` is the caller's
+    /// claim about the candidate's package version, when the
+    /// caller has one. When `expected_version` is `None` the
+    /// runtime should derive the version from the workspace's
+    /// `debian/changelog` (PHASE-1.1 PR 1.1.A) so the candidate's
+    /// identity is bound to the real source tree and not the
+    /// historical `0+ironmaint` placeholder. This primitive
+    /// accepts the value as-is; the GREEN step in PR 1.1.A
+    /// is the one that actually reads the changelog.
     pub async fn capture_candidate(
         &self,
         id: WorkspaceId,
         job_id: JobId,
         package: PackageIdentity,
         repository_url: &str,
+        expected_version: Option<&str>,
     ) -> Result<SourceCandidate, WorkspaceError> {
         let handle = format!("{id}");
         let ws_root = self.root().join(&handle);
@@ -85,12 +94,28 @@ impl<S: WorkspaceMetadataStore + CandidateStore> WorkspaceManager<S> {
         })?;
 
         // The 0A invariant requires the package version on the
-        // candidate. The capture primitive uses
-        // `PackageVersion::new` with the special
-        // "0+ironmaint" sentinel — the real version is set by
-        // the runtime after the package policy baseline is
-        // resolved (see 0B.5).
-        let version = ironmaint_core::PackageVersion::new("0+ironmaint").map_err(|e| {
+        // candidate. The capture primitive previously hard-coded
+        // the `"0+ironmaint"` sentinel — the real version is set
+        // by the runtime after the package policy baseline is
+        // resolved (see 0B.5). P1 finding #1 of
+        // `doc/PHASE-1-FEEDBACK.md` calls this out: a real Debian
+        // package with a changelog version such as `1.0.0-1` would
+        // have failed the identity check. PHASE-1.1 PR 1.1.A
+        // introduces an `expected_version` parameter: when the
+        // caller supplies one the runtime uses it directly, and
+        // when it does not the runtime resolves the version from
+        // the workspace's `debian/changelog`. A non-Debian
+        // workspace (no `debian/changelog`) still falls back to
+        // the historical sentinel so the workspace-level
+        // integration tests behave exactly as before.
+        let version_str = match expected_version {
+            Some(v) => v.to_string(),
+            None => match crate::changelog::read_changelog_first_entry(&ws_root)? {
+                Some(v) => v.into_string(),
+                None => "0+ironmaint".to_string(),
+            },
+        };
+        let version = ironmaint_core::PackageVersion::new(version_str).map_err(|e| {
             WorkspaceError::new(WorkspaceErrorKind::Other(format!("bad version: {e}")))
         })?;
         let package_revision = PackageRevision::new(package, version);

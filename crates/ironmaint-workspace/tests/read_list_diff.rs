@@ -140,6 +140,7 @@ async fn status_reflects_workspace_dirty_state() {
             JobId::new(),
             common::package(),
             "https://example.invalid/foo.git",
+            None,
         )
         .await
         .unwrap();

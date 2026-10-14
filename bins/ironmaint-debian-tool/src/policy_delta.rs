@@ -284,7 +284,7 @@ mod tests {
             check_id: "0192a000-0000-0000-0000-000000000002".to_string(),
             package: Package {
                 name: "example".to_string(),
-                version: "0+ironmaint".to_string(),
+                version: "1.0.0-1".to_string(),
             },
             workspace_path: Some(fixture_workspace()),
             fingerprint: Some("blake3:test".to_string()),

@@ -9,6 +9,17 @@ pub struct CaptureInput {
     pub job_id: JobId,
     pub package: PackageIdentity,
     pub repository_url: String,
+    /// Optional version override. When `Some`, the runtime uses
+    /// this value as the candidate's `source_version`. When
+    /// `None`, the runtime resolves the version from the
+    /// workspace's `debian/changelog` (PHASE-1.1 PR 1.1.A);
+    /// non-Debian workspaces fall back to the historical
+    /// `0+ironmaint` placeholder. If a supplied version
+    /// disagrees with what the changelog declares, the
+    /// `debian.inspect.source_preparation` check records an
+    /// `E_VERSION_MISMATCH` diagnostic.
+    #[serde(default)]
+    pub expected_version: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

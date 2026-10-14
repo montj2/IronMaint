@@ -1,14 +1,14 @@
-example (0+ironmaint) unstable; urgency=medium
+example (1.0.0-1) unstable; urgency=medium
 
   * Initial release. (Closes: #1)
   * Trivial 1C.1 fixture; see README.
   *
-  * The version `0+ironmaint` matches the placeholder the
-  * workspace's `capture_candidate` sets (PHASE-0B §6.7, the
-  * "real version is set by the runtime after the package
-  * policy baseline is resolved" invariant). 1F.1 will
-  * introduce the real version once the runtime resolves
-  * the policy baseline; 1C.1 only checks that the
-  * candidate's recorded version agrees with the changelog.
+  * The version `1.0.0-1` is the real Debian-style version
+  * this fixture represents. The workspace's
+  * `capture_candidate` reads this header at capture time
+  * (PHASE-1.1 PR 1.1.A) and uses the parsed value as the
+  * candidate's `source_version` — replacing the historical
+  * `0+ironmaint` placeholder that masked the production
+  * code path (see `doc/PHASE-1-FEEDBACK.md` P1 #1).
 
  -- IronMaint Test <test@example.invalid>  Thu, 09 Oct 2026 00:00:00 +0000

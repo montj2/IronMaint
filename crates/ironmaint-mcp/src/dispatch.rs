@@ -283,7 +283,13 @@ async fn dispatch_capture<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
     // fingerprint, a genuine source update would have been silently
     // dropped as a duplicate.
     let candidate = workspace
-        .capture_candidate(id, input.job_id, input.package, &input.repository_url)
+        .capture_candidate(
+            id,
+            input.job_id,
+            input.package,
+            &input.repository_url,
+            input.expected_version.as_deref(),
+        )
         .await
         .map_err(workspace_error)?;
     let fingerprint = candidate.fingerprint().clone();
