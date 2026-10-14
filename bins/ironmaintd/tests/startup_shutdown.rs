@@ -2535,15 +2535,27 @@ async fn debian_issue_bts_snapshot_passes_against_the_hermetic_fixture() {
 
 /// 1D.2 integration test: a candidate whose
 /// `debian/control` declares a `Standards-Version`
-/// above the §19 manifest's `baseline_policy_version`
-/// (= `"4.7.4.1"`) yields a `Verdict::Fail` evidence
-/// with the `E_POLICY_BASELINE_STALE` diagnostic and
-/// the `AboveBaseline` comparison outcome. The test
+/// above the §19 manifest's `standards_version_target`
+/// (= `"4.7.4"`) yields a `Verdict::InfrastructureError`
+/// evidence with the `E_POLICY_BASELINE_STALE` diagnostic
+/// and the `AboveBaseline` comparison outcome. The test
 /// stages the `example-future-1.0` hermetic fixture
 /// (its `Standards-Version: 4.9.0` is above the
 /// manifest baseline) and exercises the full MCP
 /// capture → plan → check.run → evidence.get →
 /// evidence.artifact.read → decode path.
+///
+/// PHASE-1.1 PR 1.1.D (policy baseline correctness):
+/// the pre-1.1.D test expected `Verdict::Fail`
+/// (the candidate is bad) and `baseline_policy_version`
+/// (the *Policy Manual document* version, 4.7.4.1).
+/// The 1.1.D-corrected test expects
+/// `Verdict::InfrastructureError` (the manifest is
+/// stale, not the package — the spec at line 978
+/// is explicit that an above-baseline candidate
+/// "must not be marked bad") and
+/// `standards_version_target` (= `"4.7.4"`, the
+/// `Standards-Version` target).
 #[tokio::test]
 async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
     let tmp = Arc::new(tempfile::tempdir().expect("tmpdir"));
@@ -2634,8 +2646,8 @@ async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
     assert_eq!(run_body["error"], Value::Null, "{run_body}");
     let run_result = &run_body["result"]["structuredContent"];
     assert_eq!(
-        run_result["evidence_status"], "fail",
-        "the §22 gate must fire on Standards-Version 4.9.0 (above baseline 4.7.4.1): {run_result}"
+        run_result["evidence_status"], "infrastructure_error",
+        "the §22 gate must fire on Standards-Version 4.9.0 (above baseline 4.7.4): {run_result}"
     );
     let evidence_id = run_result["evidence_id"]
         .as_str()
@@ -2695,8 +2707,8 @@ async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
 
     assert_eq!(
         report["verdict"].as_str(),
-        Some("fail"),
-        "the future-fixture verdict is fail: {report}"
+        Some("infrastructure_error"),
+        "the future-fixture verdict is infrastructure_error (post-1.1.D): {report}"
     );
     assert_eq!(
         report["candidate_standards_version"].as_str(),
@@ -2705,8 +2717,8 @@ async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
     );
     assert_eq!(
         report["baseline_standards_version"].as_str(),
-        Some("4.7.4.1"),
-        "the manifest's baseline is 4.7.4.1: {report}"
+        Some("4.7.4"),
+        "the manifest's standards_version_target is 4.7.4 (post-1.1.D): {report}"
     );
     assert_eq!(
         report["comparison_outcome"].as_str(),
@@ -2726,7 +2738,7 @@ async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
 
 /// 1D.2 integration test: the good fixture's
 /// `Standards-Version: 4.6.2` is below the
-/// manifest's `4.7.4.1` baseline, so the check
+/// manifest's `4.7.4` baseline, so the check
 /// yields `Verdict::Pass` with the
 /// `BelowBaseline` comparison outcome. This
 /// is the §22 pass-path proof: the gate does
@@ -2811,7 +2823,7 @@ async fn debian_policy_delta_review_passes_a_candidate_below_the_baseline() {
     let run_result = &run_body["result"]["structuredContent"];
     assert_eq!(
         run_result["evidence_status"], "pass",
-        "the §22 gate does not fire on Standards-Version 4.6.2 (below baseline 4.7.4.1): {run_result}"
+        "the §22 gate does not fire on Standards-Version 4.6.2 (below baseline 4.7.4): {run_result}"
     );
     let evidence_id = run_result["evidence_id"]
         .as_str()

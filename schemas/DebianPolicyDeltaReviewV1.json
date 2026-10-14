@@ -10,7 +10,7 @@
   ],
   "properties": {
     "baseline_standards_version": {
-      "description": "The manifest's `baseline_policy_version` (currently `\"4.7.4.1\"`). Always present when the manifest loaded successfully.",
+      "description": "The manifest's `standards_version_target` (currently `\"4.7.4\"`). Always present when the manifest loaded successfully.\n\nPHASE-1.1 PR 1.1.D (policy baseline correctness): renamed from `baseline_policy_version` to match the manifest field name. The pre-1.1.D value was the *Policy Manual document* version (4.7.4.1); the post-1.1.D value is the `Standards-Version` target (4.7.4).",
       "type": [
         "string",
         "null"
@@ -39,6 +39,13 @@
       "type": "array",
       "items": {
         "$ref": "#/definitions/Diagnostic"
+      }
+    },
+    "intervening_checklist_entries": {
+      "description": "The §20 upgrading-checklist entries that sit between the candidate's `Standards-Version` and the manifest's `standards_version_target`. Populated only when `comparison_outcome` is `BelowBaseline` (the operator's remediation is the entries' narrative). Empty for `AtBaseline`, `AboveBaseline`, and `None`.\n\nPHASE-1.1 PR 1.1.D (policy baseline correctness) added this field. The pre-1.1.D report did not carry the §20 promise; the 1.1.D-corrected report does.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ChecklistEntry"
       }
     },
     "provenance": {
@@ -75,6 +82,34 @@
     }
   },
   "definitions": {
+    "ChecklistEntry": {
+      "description": "One entry in `policy/debian/upgrading-checklist.v1.json` — the §20 narrative of a single Standards-Version interval.\n\nPHASE-1.1 PR 1.1.D (policy baseline correctness): the `ChecklistEntry` struct is the data the `BelowBaseline` reports name. The 4.7.4 → 4.7.4.1 interval is the only entry the bundled `upgrading-checklist.v1.json` carries today; a future PR can extend the JSON to cover more intervals.",
+      "type": "object",
+      "required": [
+        "from_version",
+        "source",
+        "summary",
+        "to_version"
+      ],
+      "properties": {
+        "from_version": {
+          "description": "The older end of the interval. The operator's `Standards-Version` is at or above this value.",
+          "type": "string"
+        },
+        "source": {
+          "description": "Where the §20 narrative came from (e.g. a Debian Policy release-notes URL or a manual note).",
+          "type": "string"
+        },
+        "summary": {
+          "description": "The §20 narrative — a one-paragraph summary of the changes in the interval.",
+          "type": "string"
+        },
+        "to_version": {
+          "description": "The newer end of the interval. The operator's `Standards-Version` is at or below this value.",
+          "type": "string"
+        }
+      }
+    },
     "Diagnostic": {
       "description": "A single failure or informational line from the tool.",
       "type": "object",

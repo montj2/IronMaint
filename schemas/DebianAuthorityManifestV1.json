@@ -1,14 +1,15 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "DebianAuthorityManifestV1",
-  "description": "The on-disk shape of `policy/debian/authorities.v1.json`.\n\n`pub` so `xtask/src/schemas.rs` can call `schemars::schema_for!(DebianAuthorityManifestV1)` for the §97 schema-snapshot tool. The re-exports in `lib.rs` expose the loader functions, not the struct itself.",
+  "description": "The on-disk shape of `policy/debian/authorities.v1.json`.\n\n`pub` so `xtask/src/schemas.rs` can call `schemars::schema_for!(DebianAuthorityManifestV1)` for the §97 schema-snapshot tool. The re-exports in `lib.rs` expose the loader functions, not the struct itself.\n\nPHASE-1.1 PR 1.1.D (policy baseline correctness): the pre-1.1.D struct had a single `baseline_policy_version` field. The spec is explicit (PHASE-1.md line 978) that the `Standards-Version` comparator is the `Standards-Version target` (= `\"4.7.4\"`), *not* the Policy Manual document version (= `\"4.7.4.1\"`). The new struct carries both: `policy_document_version` is the document version (for human readers / display), and `standards_version_target` is the comparator the runtime uses. The `Policy`'s `version` in `authorities` is still `4.7.4.1` (the document version the authority *is*).",
   "type": "object",
   "required": [
     "authorities",
-    "baseline_policy_version",
     "distribution",
     "manifest_version",
-    "schema_version"
+    "policy_document_version",
+    "schema_version",
+    "standards_version_target"
   ],
   "properties": {
     "authorities": {
@@ -17,19 +18,24 @@
         "$ref": "#/definitions/Authority"
       }
     },
-    "baseline_policy_version": {
-      "type": "string"
-    },
     "distribution": {
       "type": "string"
     },
     "manifest_version": {
       "type": "string"
     },
+    "policy_document_version": {
+      "description": "The version of the Debian Policy *Manual document* (e.g. `\"4.7.4.1\"`). Display-only — the `Standards-Version` comparator is `standards_version_target`, not this.",
+      "type": "string"
+    },
     "schema_version": {
       "type": "integer",
       "format": "uint32",
       "minimum": 0.0
+    },
+    "standards_version_target": {
+      "description": "The `Standards-Version` target the adapter treats as known good (e.g. `\"4.7.4\"`). The §22 `delta_review` evaluator compares the candidate's `debian/control` `Standards-Version` against this value.",
+      "type": "string"
     }
   },
   "definitions": {

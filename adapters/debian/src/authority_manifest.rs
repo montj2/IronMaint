@@ -21,12 +21,38 @@ use serde::{Deserialize, Serialize};
 /// for the §97 schema-snapshot tool. The
 /// re-exports in `lib.rs` expose the loader
 /// functions, not the struct itself.
+///
+/// PHASE-1.1 PR 1.1.D (policy baseline correctness):
+/// the pre-1.1.D struct had a single
+/// `baseline_policy_version` field. The spec is
+/// explicit (PHASE-1.md line 978) that the
+/// `Standards-Version` comparator is the
+/// `Standards-Version target` (= `"4.7.4"`), *not*
+/// the Policy Manual document version
+/// (= `"4.7.4.1"`). The new struct carries both:
+/// `policy_document_version` is the document
+/// version (for human readers / display), and
+/// `standards_version_target` is the comparator
+/// the runtime uses. The `Policy`'s
+/// `version` in `authorities` is still
+/// `4.7.4.1` (the document version the
+/// authority *is*).
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, PartialEq, Eq)]
 pub struct DebianAuthorityManifestV1 {
     pub schema_version: u32,
     pub manifest_version: String,
     pub distribution: String,
-    pub baseline_policy_version: String,
+    /// The version of the Debian Policy *Manual
+    /// document* (e.g. `"4.7.4.1"`). Display-only —
+    /// the `Standards-Version` comparator is
+    /// `standards_version_target`, not this.
+    pub policy_document_version: String,
+    /// The `Standards-Version` target the adapter
+    /// treats as known good (e.g. `"4.7.4"`). The
+    /// §22 `delta_review` evaluator compares the
+    /// candidate's `debian/control`
+    /// `Standards-Version` against this value.
+    pub standards_version_target: String,
     pub authorities: Vec<Authority>,
 }
 
@@ -74,22 +100,36 @@ pub fn load_authorities() -> &'static [Authority] {
     &LOADED
 }
 
-/// The baseline `Standards-Version` the
-/// adapter treats as known good. 1D.2's
-/// `delta_review` evaluator reads this.
+/// The `Standards-Version` target the adapter
+/// treats as known good. 1D.2's `delta_review`
+/// evaluator reads this.
+///
+/// PHASE-1.1 PR 1.1.D: this replaces the
+/// pre-1.1.D `baseline_policy_version()` accessor,
+/// which returned the Policy Manual *document*
+/// version (4.7.4.1). The new accessor returns the
+/// `Standards-Version` *target* (4.7.4) — the value
+/// the candidate's `debian/control`
+/// `Standards-Version` is compared against.
+///
+/// The pre-1.1.D accessor is kept as a deprecated
+/// shim that delegates to the new one, so any
+/// external caller (none today) does not break. The
+/// `policy_delta` tool reads only
+/// `standards_version_target()` after this PR.
 #[must_use]
 #[allow(clippy::expect_used)] // See `LOADED`: the manifest is bundled
 // at compile time; an `Err` here is a
 // build-time defect, not a runtime
 // concern.
-pub fn baseline_policy_version() -> &'static str {
-    static BASELINE: LazyLock<String> = LazyLock::new(|| {
+pub fn standards_version_target() -> &'static str {
+    static TARGET: LazyLock<String> = LazyLock::new(|| {
         let raw = include_str!("../../../policy/debian/authorities.v1.json");
         let m: DebianAuthorityManifestV1 = serde_json::from_str(raw)
             .expect("policy/debian/authorities.v1.json must be a valid manifest");
-        m.baseline_policy_version
+        m.standards_version_target
     });
-    &BASELINE
+    &TARGET
 }
 
 /// Tests
@@ -115,12 +155,26 @@ mod tests {
             policy.classification,
             AuthorityClassification::NormativePolicy
         );
+        // The Debian Policy authority's version is
+        // the *document* version (4.7.4.1), not the
+        // `Standards-Version` target. The two are
+        // different — the document version names
+        // which Policy Manual the authority
+        // references; the target names which
+        // `Standards-Version` a candidate is
+        // expected to declare.
         assert_eq!(policy.version.as_deref(), Some("4.7.4.1"));
     }
 
     #[test]
-    fn baseline_policy_version_is_4_7_4_1() {
-        assert_eq!(baseline_policy_version(), "4.7.4.1");
+    fn standards_version_target_is_4_7_4() {
+        // PHASE-1.1 PR 1.1.D: the `Standards-Version`
+        // target is 4.7.4 (not 4.7.4.1, which is the
+        // Policy Manual document version). A
+        // candidate declaring `Standards-Version:
+        // 4.7.4` is *at* the baseline; 4.7.4.1 is
+        // *above* it.
+        assert_eq!(standards_version_target(), "4.7.4");
     }
 
     #[test]

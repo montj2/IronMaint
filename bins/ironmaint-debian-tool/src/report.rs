@@ -937,9 +937,12 @@ pub struct DebianMaintenanceContextV1 {
 // evaluating this candidate") is the load-bearing
 // rule: a candidate whose `debian/control` declares
 // a `Standards-Version` newer than the manifest's
-// `baseline_policy_version` (currently `4.7.4.1`)
-// yields `Verdict::Fail` with the
-// `E_POLICY_BASELINE_STALE` diagnostic.
+// `standards_version_target` (currently `4.7.4`)
+// yields `Verdict::InfrastructureError` with the
+// `E_POLICY_BASELINE_STALE` diagnostic — the §20
+// spec is explicit that a candidate above baseline
+// "must not be marked bad" (the manifest is stale,
+// not the package).
 //
 // The 1D.2 RED commit's struct is the *minimal*
 // shape (verdict + diagnostics + the new
@@ -947,12 +950,31 @@ pub struct DebianMaintenanceContextV1 {
 // and `comparison_outcome` fields); the
 // 1D.2 GREEN commit's struct is the comprehensive
 // shape (the same fields, fully populated, plus
-// the candidate-vs-baseline delta rationale). The
-// §97 schema-snapshot tool (`xtask verify-schemas`)
-// catches GREEN-side drift: `cargo run -p xtask --
-// verify-schemas --write` regenerates
+// the candidate-vs-baseline delta rationale + the
+// §20 upgrading-checklist entries that name the
+// §22 narrative). The §97 schema-snapshot tool
+// (`xtask verify-schemas`) catches GREEN-side
+// drift: `cargo run -p xtask -- verify-schemas
+// --write` regenerates
 // `schemas/DebianPolicyDeltaReviewV1.json` against
 // the new struct.
+//
+// PHASE-1.1 PR 1.1.D (policy baseline correctness):
+// the pre-1.1.D comparator was the manifest's
+// `baseline_policy_version` (= `"4.7.4.1"`, the
+// *Policy Manual document* version). The spec
+// is explicit (PHASE-1.md line 978) that the
+// baseline is the `Standards-Version target`
+// (= `"4.7.4"`, not the document version) and
+// that a candidate above baseline must be
+// `Verdict::InfrastructureError` (not `Fail`).
+// 1.1.D splits the manifest into
+// `policy_document_version` and
+// `standards_version_target`, routes the
+// comparator through the latter, flips the
+// `AboveBaseline` verdict, and adds the
+// `intervening_checklist_entries` field that
+// §20 promised for `BelowBaseline` reports.
 // =============================================================================
 
 /// Discriminator for the 1D.2 report. Always
@@ -1044,9 +1066,17 @@ pub struct DebianPolicyDeltaReviewV1 {
     /// `E_STANDARDS_VERSION_MISSING`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub candidate_standards_version: Option<String>,
-    /// The manifest's `baseline_policy_version`
-    /// (currently `"4.7.4.1"`). Always present
+    /// The manifest's `standards_version_target`
+    /// (currently `"4.7.4"`). Always present
     /// when the manifest loaded successfully.
+    ///
+    /// PHASE-1.1 PR 1.1.D (policy baseline
+    /// correctness): renamed from
+    /// `baseline_policy_version` to match the
+    /// manifest field name. The pre-1.1.D
+    /// value was the *Policy Manual document*
+    /// version (4.7.4.1); the post-1.1.D value
+    /// is the `Standards-Version` target (4.7.4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub baseline_standards_version: Option<String>,
     /// The §22 comparison outcome.
@@ -1054,6 +1084,53 @@ pub struct DebianPolicyDeltaReviewV1 {
     /// values are missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comparison_outcome: Option<StandardsVersionComparison>,
+    /// The §20 upgrading-checklist entries that
+    /// sit between the candidate's
+    /// `Standards-Version` and the manifest's
+    /// `standards_version_target`. Populated
+    /// only when `comparison_outcome` is
+    /// `BelowBaseline` (the operator's
+    /// remediation is the entries' narrative).
+    /// Empty for `AtBaseline`, `AboveBaseline`,
+    /// and `None`.
+    ///
+    /// PHASE-1.1 PR 1.1.D (policy baseline
+    /// correctness) added this field. The pre-1.1.D
+    /// report did not carry the §20 promise; the
+    /// 1.1.D-corrected report does.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub intervening_checklist_entries: Vec<ChecklistEntry>,
+}
+
+/// One entry in
+/// `policy/debian/upgrading-checklist.v1.json` —
+/// the §20 narrative of a single Standards-Version
+/// interval.
+///
+/// PHASE-1.1 PR 1.1.D (policy baseline correctness):
+/// the `ChecklistEntry` struct is the data the
+/// `BelowBaseline` reports name. The 4.7.4 → 4.7.4.1
+/// interval is the only entry the bundled
+/// `upgrading-checklist.v1.json` carries today; a
+/// future PR can extend the JSON to cover more
+/// intervals.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ChecklistEntry {
+    /// The older end of the interval. The
+    /// operator's `Standards-Version` is at or
+    /// above this value.
+    pub from_version: String,
+    /// The newer end of the interval. The
+    /// operator's `Standards-Version` is at or
+    /// below this value.
+    pub to_version: String,
+    /// The §20 narrative — a one-paragraph
+    /// summary of the changes in the interval.
+    pub summary: String,
+    /// Where the §20 narrative came from (e.g.
+    /// a Debian Policy release-notes URL or a
+    /// manual note).
+    pub source: String,
 }
 
 // ============================================================================
