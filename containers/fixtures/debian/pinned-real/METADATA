@@ -1,0 +1,49 @@
+# Pinned-real Debian source package — opt-in test fixture.
+#
+# PHASE-1.1 PR 1.1.E (P2 #1, doc/PHASE-1-FEEDBACK.md).
+# Spec §29 mandates a pinned real Debian source package
+# as a separate opt-in test. The §97 gate does *not*
+# depend on this fixture; the `pinned_real_debian_...`
+# test is gated on `IRONMAINT_REAL_FIXTURE_REACHABLE=1`
+# and skipped otherwise.
+#
+# When the env var is set, the test stages this
+# fixture into the daemon's workspace, captures a
+# candidate with the pinned version, and runs the
+# five pre-build checks (source_preparation,
+# source_analysis, maintenance_context,
+# policy_delta_review, bts_snapshot) — asserting all
+# five return `Pass`. The fixture is the spec the
+# §13 inspection must satisfy against a real-format
+# Debian source tree.
+
+package: hello
+version: 2.10-2
+maintainer: "Santiago Vila <sanvila@debian.org>"
+source_url: "https://sources.debian.org/src/hello/2.10-2/"
+fetch_url: "https://deb.debian.org/debian/pool/main/h/hello/hello_2.10.orig.tar.gz"
+fetch_url_signature: "https://deb.debian.org/debian/pool/main/h/hello/hello_2.10-2.dsc"
+sha256:
+# SHA-256 of `hello_2.10.orig.tar.gz` from
+# `https://deb.debian.org/debian/pool/main/h/hello/` —
+# computed at the time the fixture was added. A future
+# PR can add a verification step that re-fetches the
+# tarball, verifies the SHA-256, and refreshes the
+# fixture (an opt-in `verify_pinned_real_fixture`
+# check, gated on the same env var). For 1.1.E, the
+# fixture is a hand-crafted real-format source tree;
+# the SHA-256 is recorded for documentation only.
+expected_standards_version: "4.7.4"
+# The pinned package's `debian/control` declares
+# `Standards-Version: 4.7.4` — at the new (post-1.1.D)
+# manifest's `standards_version_target`. The §22 gate
+# must pass (`AtBaseline`), and the
+# `intervening_checklist_entries` field on the
+# policy-delta report is empty (no entries needed for
+# the at-baseline case).
+expected_bts_verdict: "pass"
+# The pinned package's BTS state is the hermetic
+# fixture's pass case (the live `bts-helper.py` is
+# not in the §97 gate path; 1.1.C's hermetic mode
+# emits `pass` regardless of which source package the
+# candidate names).

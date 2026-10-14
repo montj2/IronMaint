@@ -3456,3 +3456,67 @@ async fn maintainer_intake_scenario_assembles_a_43_shaped_exit_artifact_from_tru
 
     d.shutdown().await;
 }
+
+/// PHASE-1.1 PR 1.1.E (P2 #1 from
+/// `doc/PHASE-1-FEEDBACK.md`) — opt-in test against
+/// the pinned real Debian source package
+/// `containers/fixtures/debian/pinned-real/`.
+///
+/// Spec §29 mandates a pinned real Debian source
+/// package as a separate opt-in test, separate from
+/// the hand-crafted hermetic fixtures. The test is
+/// **skipped** in the §97 gate (the env var is not
+/// set in CI); running it locally with
+/// `IRONMAINT_REAL_FIXTURE_REACHABLE=1` exercises the
+/// full §13 inspection suite against a real-format
+/// Debian source tree.
+///
+/// ## RED state (this commit)
+///
+/// The test exists and the env-var skip is wired,
+/// but the body is the broken half of the broken-
+/// then-fixed pattern: it is a no-op after the
+/// env-var check. The fixture's METADATA is the
+/// only thing checked in — the source tree itself
+/// is not yet populated. The GREEN commit adds the
+/// real-format source tree and the assertions the
+/// test makes against it. The test passes vacuously
+/// today (the env-var check returns early); when
+/// the GREEN state is in place and the env var is
+/// set, the test runs the full §13 inspection
+/// suite.
+#[tokio::test]
+async fn pinned_real_debian_source_package_inspection() {
+    if std::env::var("IRONMAINT_REAL_FIXTURE_REACHABLE").is_err() {
+        // Opt-in skip. The §97 gate does not set this
+        // env var; local developers can opt in by
+        // running:
+        //
+        //   IRONMAINT_REAL_FIXTURE_REACHABLE=1 \
+        //     cargo test -p ironmaintd --test \
+        //     startup_shutdown -- --exact \
+        //     pinned_real_debian_source_package_inspection
+        //
+        // See `doc/CONTAINER-IMAGES.md` for the
+        // opt-in pattern.
+        return;
+    }
+
+    // RED body. The GREEN state replaces this
+    // with: stage the pinned-real fixture into a
+    // temp workspace, capture a candidate with
+    // `expected_version: Some("2.10-2")`, run the
+    // five pre-build checks (source_preparation,
+    // source_analysis, maintenance_context,
+    // policy_delta_review, bts_snapshot), and
+    // assert all five return `Pass` with the
+    // expected record shapes (§13 / §19 / §22).
+    //
+    // Without the GREEN body, the test passes
+    // vacuously — the env-var check returns early
+    // in the §97 gate (the env var is not set),
+    // and the broken body returns if the env var
+    // is set without asserting anything. The GREEN
+    // commit makes the assertions real and the
+    // fixture a real Debian source tree.
+}
