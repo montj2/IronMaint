@@ -59,9 +59,7 @@ use std::process::Stdio;
 use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_debian_tool::DebianBtsSnapshotNormalizer;
 use ironmaint_debian_tool::binary_path;
-use ironmaint_executor::{
-    ExecutionRecord, NormalizationError, ResultNormalizer, RetryClass,
-};
+use ironmaint_executor::{ExecutionRecord, NormalizationError, ResultNormalizer, RetryClass};
 use time::macros::datetime;
 
 /// Build a `CandidateInput` whose `package` is `example`
@@ -109,7 +107,9 @@ fn write_fake_bts(dir: &Path, name: &str, body: &str) -> PathBuf {
     f.write_all(b"#!/bin/sh\n").expect("write shebang");
     f.write_all(body.as_bytes()).expect("write body");
     drop(f);
-    let mut perms = std::fs::metadata(&path).expect("stat fake-bts").permissions();
+    let mut perms = std::fs::metadata(&path)
+        .expect("stat fake-bts")
+        .permissions();
     perms.set_mode(0o755);
     std::fs::set_permissions(&path, perms).expect("chmod fake-bts");
     path
@@ -118,10 +118,7 @@ fn write_fake_bts(dir: &Path, name: &str, body: &str) -> PathBuf {
 /// Run the bts-snapshot subcommand with `BTS_HELPER` set
 /// to `helper_path` and the given JSON `input_json` on
 /// stdin. Returns `(exit_code, stdout, stderr)`.
-fn run_bts_snapshot_subprocess(
-    helper_path: &str,
-    input_json: &str,
-) -> (i32, String, String) {
+fn run_bts_snapshot_subprocess(helper_path: &str, input_json: &str) -> (i32, String, String) {
     let bin = binary_path();
     let mut child = std::process::Command::new(&bin)
         .arg("bts-snapshot")

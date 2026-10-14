@@ -33,6 +33,7 @@ url = { workspace = true }
 debversion = { workspace = true }
 deb822-lossless = { workspace = true }
 anyhow = { workspace = true }
+thiserror = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

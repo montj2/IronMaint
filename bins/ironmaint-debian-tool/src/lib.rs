@@ -26,6 +26,7 @@ pub mod report;
 pub mod source_analysis;
 pub mod source_preparation;
 
+pub use bts_snapshot::BtsError;
 pub use bts_snapshot::run as run_bts_snapshot;
 pub use maintenance_context::run as run_maintenance_context;
 pub use normalizer::{
