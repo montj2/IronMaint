@@ -104,12 +104,17 @@ impl<S: WorkspaceMetadataStore + CandidateStore> WorkspaceManager<S> {
         // introduces an `expected_version` parameter: when the
         // caller supplies one the runtime uses it directly, and
         // when it does not the runtime resolves the version from
-        // the workspace's `debian/changelog` (the GREEN step
-        // wires the changelog read; this RED step honours a
-        // supplied value but still falls back to the sentinel
-        // when `None`, so the new test fails on a fixture that
-        // declares a real version).
-        let version_str = expected_version.unwrap_or("0+ironmaint");
+        // the workspace's `debian/changelog`. A non-Debian
+        // workspace (no `debian/changelog`) still falls back to
+        // the historical sentinel so the workspace-level
+        // integration tests behave exactly as before.
+        let version_str = match expected_version {
+            Some(v) => v.to_string(),
+            None => match crate::changelog::read_changelog_first_entry(&ws_root)? {
+                Some(v) => v.into_string(),
+                None => "0+ironmaint".to_string(),
+            },
+        };
         let version = ironmaint_core::PackageVersion::new(version_str).map_err(|e| {
             WorkspaceError::new(WorkspaceErrorKind::Other(format!("bad version: {e}")))
         })?;
