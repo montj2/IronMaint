@@ -114,6 +114,18 @@ pub struct RuntimeConfig {
     /// `UrlPattern` type without changing the dispatcher
     /// signature.
     pub source_import_allowlist: Vec<String>,
+    /// PHASE-1.1 PR 1.1.I (executor env boundary): path to
+    /// the `bts-helper.py` subprocess. When set, the
+    /// `debian.issue.bts_snapshot` `ToolDefinition` carries
+    /// `BTS_HELPER=<this path>` as its per-tool env (see
+    /// `ToolDefinition::env`); the helper script's path is
+    /// therefore config-supplied, not picked up from the
+    /// daemon's ambient env. When unset, the bts-snapshot
+    /// tool's env is empty and the `bts-snapshot` subcommand
+    /// falls back to its existing hermetic path (no
+    /// `BTS_HELPER` in its now-closed env, so the subcommand
+    /// returns the hard-coded fixture). Default: `None`.
+    pub bts_helper: Option<PathBuf>,
 }
 
 impl RuntimeConfig {
@@ -146,6 +158,15 @@ impl RuntimeConfig {
         // so an operator with several prefixes does not have to
         // set the flag N times in a unit file.
         let mut source_import_allowlist: Vec<String> = Vec::new();
+        // PHASE-1.1 PR 1.1.I: the bts-helper path is
+        // config-supplied; the daemon passes it to the
+        // bts-snapshot tool's per-tool env so the helper
+        // script's path is no longer picked up from
+        // ambient env. CLI flag takes precedence; the
+        // `IRONMAINT_BTS_HELPER` env var is the fallback
+        // (the same precedence as `--source-import-allowlist`
+        // vs `IRONMAINT_SOURCE_IMPORT_ALLOWLIST`).
+        let mut bts_helper: Option<PathBuf> = None;
 
         // Flags whose value may be given as `--flag=value` or
         // `--flag value`. Hand-rolled because §86 does not
@@ -210,6 +231,9 @@ impl RuntimeConfig {
                 // argument and advances `index`.
                 "--source-import-allowlist" => {
                     source_import_allowlist.push(take("--source-import-allowlist")?);
+                }
+                "--bts-helper" => {
+                    bts_helper = Some(PathBuf::from(take("--bts-helper")?));
                 }
                 other => {
                     return Err(ConfigError::Argument(format!("unknown flag `{other}`")));
@@ -286,6 +310,15 @@ impl RuntimeConfig {
                 .filter(|s| !s.is_empty())
                 .collect();
         }
+        // PHASE-1.1 PR 1.1.I: the bts-helper path can also
+        // come from the `IRONMAINT_BTS_HELPER` env var. The
+        // flag, if given, takes precedence (same shape as
+        // `--source-import-allowlist`).
+        if bts_helper.is_none()
+            && let Some(raw) = get_env("IRONMAINT_BTS_HELPER")
+        {
+            bts_helper = Some(PathBuf::from(raw));
+        }
 
         // Existence is checked here rather than at the point of
         // use, so the operator gets every missing path in one
@@ -314,6 +347,7 @@ impl RuntimeConfig {
             debian_tool_bin,
             log_filter,
             source_import_allowlist,
+            bts_helper,
         })))
     }
 }
@@ -409,6 +443,17 @@ OPTIONS:
                            this path; a missing binary reports
                            `InfrastructureFailed`.
                            [IRONMAINT_DEBIAN_TOOL_BIN, /nonexistent/ironmaint-debian-tool]
+    --source-import-allowlist PREFIX
+                           URL prefix the `source.import` MCP
+                           tool will accept (1.1.G). Repeatable.
+                           [IRONMAINT_SOURCE_IMPORT_ALLOWLIST, none]
+    --bts-helper PATH      Path to the `bts-helper.py`
+                           subprocess (1.1.I). When set, the
+                           bts-snapshot tool's env carries
+                           `BTS_HELPER=<this path>`; the helper
+                           path is config-supplied, not picked
+                           up from the daemon's ambient env.
+                           [IRONMAINT_BTS_HELPER, unset]
     --log FILTER           tracing filter directive.
                            [IRONMAINT_LOG, info]
     -h, --help             Print this help.

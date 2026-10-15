@@ -2,6 +2,7 @@
 //! [`ToolDefinition`]. Most callers should use this rather than
 //! implementing the trait by hand. (PHASE-0B.md §27.)
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -16,9 +17,10 @@ use crate::registry::ToolDefinition;
 /// Concrete [`ToolDefinition`] built from spec §27 fields. Construct
 /// via [`ToolDefinitionRecord::new`], then optionally call
 /// [`ToolDefinitionRecord::with_normalizer`] to attach a result
-/// normalizer, or [`ToolDefinitionRecord::with_input_mode`] to
+/// normalizer, [`ToolDefinitionRecord::with_input_mode`] to
 /// declare that the tool wants `ExecutionRequest::input` written to
-/// its stdin (PHASE-1.md §7).
+/// its stdin (PHASE-1.md §7), or [`ToolDefinitionRecord::with_env`]
+/// to declare the per-tool env allow-list (PHASE-1.1 PR 1.1.I).
 #[derive(Clone)]
 pub struct ToolDefinitionRecord {
     key: ToolCapabilityKey,
@@ -28,13 +30,15 @@ pub struct ToolDefinitionRecord {
     limits: ExecutionLimits,
     normalizer: Option<Arc<dyn ResultNormalizer>>,
     input_mode: ToolInputMode,
+    env: BTreeMap<String, String>,
 }
 
 impl ToolDefinitionRecord {
     /// Build a record without a normalizer. Call
-    /// [`Self::with_normalizer`] to attach one, or
+    /// [`Self::with_normalizer`] to attach one,
     /// [`Self::with_input_mode`] to declare how the child should
-    /// receive its input payload.
+    /// receive its input payload, or [`Self::with_env`] to declare
+    /// the per-tool env allow-list.
     #[must_use]
     pub fn new(
         key: ToolCapabilityKey,
@@ -51,6 +55,7 @@ impl ToolDefinitionRecord {
             limits,
             normalizer: None,
             input_mode: ToolInputMode::default(),
+            env: BTreeMap::new(),
         }
     }
 
@@ -71,6 +76,21 @@ impl ToolDefinitionRecord {
     #[must_use]
     pub fn with_input_mode(mut self, input_mode: ToolInputMode) -> Self {
         self.input_mode = input_mode;
+        self
+    }
+
+    /// Declare the per-tool environment allow-list (PHASE-1.1
+    /// PR 1.1.I). The map's entries are applied AFTER
+    /// `env_clear()` and AFTER the `ProcessEnvironment` baseline
+    /// (`PATH`/`HOME`/`LC_ALL`); the child sees only those
+    /// entries plus the request's `env_overrides`. Empty by
+    /// default — most tools need no env. The bts-snapshot tool
+    /// uses this to declare `BTS_HELPER=<configured path>`, so
+    /// the helper path is config-supplied rather than picked up
+    /// from ambient env.
+    #[must_use]
+    pub fn with_env(mut self, env: BTreeMap<String, String>) -> Self {
+        self.env = env;
         self
     }
 }
@@ -102,6 +122,10 @@ impl ToolDefinition for ToolDefinitionRecord {
 
     fn input_mode(&self) -> ToolInputMode {
         self.input_mode
+    }
+
+    fn env(&self) -> BTreeMap<String, String> {
+        self.env.clone()
     }
 }
 

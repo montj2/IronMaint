@@ -13,7 +13,7 @@
 //! env allow-list, so the child sees only
 //! `PATH`/`HOME`/`LC_ALL` (the `ProcessEnvironment` baseline)
 //! + the tool's per-tool `env()` + the request's
-//! `env_overrides`.
+//!   `env_overrides`.
 //!
 //! The RED test in this file pins the *exact* set of env vars
 //! the child must see after the fix. Before the fix the child
@@ -37,8 +37,8 @@ use std::time::Duration;
 use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_artifacts::{ArtifactRoot, ArtifactStore};
 use ironmaint_executor::{
-    ExecutionClass, ExecutionLimits, ExecutionRequest, Executor, ProcessExecutor, ToolDefinitionRecord,
-    ToolRegistry,
+    ExecutionClass, ExecutionLimits, ExecutionRequest, Executor, ProcessExecutor,
+    ToolDefinitionRecord, ToolRegistry,
 };
 
 fn job_id() -> ironmaint_core::JobId {
@@ -116,7 +116,8 @@ async fn executor_subprocess_env_is_closed_allowlist() {
     .collect();
 
     assert_eq!(
-        keys, expected,
+        keys,
+        expected,
         "executor child must see only baseline + request overrides; \
          got {} keys (e.g. {:?}), expected {} keys ({:?})",
         keys.len(),

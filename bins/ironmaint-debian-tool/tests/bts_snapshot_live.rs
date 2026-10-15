@@ -311,3 +311,129 @@ fn fake_bts_returns_a_known_bug_shape_is_pass() {
         "the §24 `pass` verdict is `EvidenceStatus::Pass`"
     );
 }
+
+/// PHASE-1.1 PR 1.1.I teeth-check: the `bts-snapshot`
+/// subcommand's inner spawn of the `BTS_HELPER` script
+/// must seal the env boundary. The subcommand is itself a
+/// subprocess of the ironmaintd daemon, and the daemon's
+/// env (and any env the executor's `env_overrides` adds)
+/// must not flow through to the helper script.
+///
+/// The test stages a fake-BTS that writes its own
+/// `os.environ` keys to a file in a known tempdir, then
+/// exits 0. The test runs the bts-snapshot subcommand
+/// with a unique sentinel in the parent's env
+/// (`IRONMAINT_BTS_HELPER_LEAK_SENTINEL=…`). The sentinel
+/// is in the bts-snapshot subcommand's env (the parent
+/// sets it via `Command::env`); the subcommand must
+/// `env_clear()` before spawning the helper, so the
+/// helper's env file must NOT contain the sentinel.
+///
+/// Pre-1.1.I: the bts-snapshot subcommand's
+/// `Command::new(helper_path)` does not call `env_clear()`,
+/// so every env var from the subcommand's env (including
+/// the sentinel) flows to the helper. The assertion that
+/// the sentinel is absent from the helper's env fails.
+#[test]
+fn bts_helper_env_is_closed_allowlist() {
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let env_dump = tmp.path().join("env-dump.txt");
+    // The fake-BTS writes its env to a known path and
+    // emits nothing on stdout. The bts-snapshot subcommand
+    // will fail to parse the empty stdout as a
+    // `DebianIssueReportV1` and return `infrastructure_error`
+    // — that's fine; the test asserts on the env file,
+    // not the report.
+    let _fake = write_fake_bts(
+        tmp.path(),
+        "fake-bts",
+        &format!(
+            "# Print this script's argv + the script's own env to the dump file.\n\
+             # The bts-snapshot subcommand calls the helper as\n\
+             # `<helper> <package-name>`, so $1 is the package\n\
+             # name. We use it as a sanity-check that the helper\n\
+             # was actually invoked.\n\
+             printf 'INVOKED_WITH=%s\\n' \"$1\" > {}\n\
+             env >> {}\n",
+            env_dump.to_string_lossy(),
+            env_dump.to_string_lossy()
+        ),
+    );
+
+    let bin = binary_path();
+    let sentinel_value = "should-not-leak-to-helper-7c3f";
+    let helper_path_str = _fake.to_str().expect("fake-bts path is utf-8");
+    let mut child = std::process::Command::new(&bin)
+        .arg("bts-snapshot")
+        .env("BTS_HELPER", helper_path_str)
+        .env("IRONMAINT_BTS_HELPER_LEAK_SENTINEL", sentinel_value)
+        // PATH so the helper (in this test, the fake-BTS
+        // shell script) can be found; the existing
+        // `run_bts_snapshot_subprocess` does the same
+        // prefix-only PATH override.
+        .env(
+            "PATH",
+            helper_path_str
+                .rsplit_once('/')
+                .map(|(dir, _)| format!("{dir}:/usr/bin:/bin"))
+                .unwrap_or_else(|| "/usr/bin:/bin".to_string()),
+        )
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn ironmaint-debian-tool bts-snapshot");
+
+    // The bts-snapshot subcommand reads `BTS_HELPER` from
+    // its env. With 1.1.I's `env_clear()` in place on the
+    // helper spawn, the sentinel — which is in the
+    // subcommand's env, not the helper's — must NOT
+    // appear in the helper's env file.
+    child
+        .stdin
+        .as_mut()
+        .expect("stdin pipe")
+        .write_all(
+            br#"{"schema":"ironmaint.candidate_input.v3","job_id":"00000000-0000-0000-0000-000000000001","check_id":"00000000-0000-0000-0000-000000000002","package":{"name":"helper-env-leak-test","version":"1.0.0-1"}}"#,
+        )
+        .expect("write input JSON to stdin");
+    let _ = child.wait_with_output().expect("wait for bts-snapshot");
+
+    let env_text = std::fs::read_to_string(&env_dump).unwrap_or_else(|e| {
+        panic!(
+            "fake-BTS did not write its env dump to {}: {e}",
+            env_dump.display()
+        )
+    });
+
+    // Main security check: the sentinel set in the
+    // bts-snapshot subcommand's env must NOT have leaked
+    // through to the helper. This is the actual
+    // architectural property 1.1.I pins.
+    assert!(
+        !env_text.contains(sentinel_value),
+        "bts-helper script received the IRONMAINT_BTS_HELPER_LEAK_SENTINEL var; the \
+         bts-snapshot subcommand's helper spawn did not call env_clear() (PR 1.1.I). \
+         Helper env:\n{env_text}"
+    );
+
+    // The helper's env must contain the baseline keys
+    // (`PATH`, `HOME`, `LC_ALL`) so the helper can
+    // function. We assert the baseline is present rather
+    // than equality on the key set, because POSIX shells
+    // add their own auto-set keys (`SHLVL`, `PWD`, `_`,
+    // the `INVOKED_WITH=…` line the script itself
+    // writes) that are not part of the bts-snapshot
+    // subcommand's env composition — the contract is
+    // "nothing from the subcommand's env flows through",
+    // not "exactly three keys are present".
+    for required in ["PATH", "HOME", "LC_ALL"] {
+        assert!(
+            env_text
+                .lines()
+                .any(|line| line.starts_with(&format!("{required}="))),
+            "bts-helper env is missing the {required} baseline; 1.1.I env boundary \
+             regression. Helper env:\n{env_text}"
+        );
+    }
+}
