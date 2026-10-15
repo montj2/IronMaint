@@ -1,0 +1,43 @@
+[
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "job_id": {
+        "format": "uuid",
+        "type": "string"
+      },
+      "ref_name": {
+        "default": null,
+        "description": "The ref to check out (branch, tag, or commit). Defaults to the remote's default branch when `None`.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "url": {
+        "description": "The remote URL to clone. Must match an entry in the runtime's `source_import_allowlist` (prefix match — see the dispatcher's note for the semantics). 1.1.G only supports `file://` URLs in practice; HTTPS / SSH URLs are reachable through the same code path but the §97 gate does not test them (the test fixture is a local bare repo).",
+        "type": "string"
+      }
+    },
+    "required": [
+      "job_id",
+      "url"
+    ],
+    "title": "SourceImportInput",
+    "type": "object"
+  },
+  {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "properties": {
+      "workspace_handle": {
+        "description": "The handle directory the runtime created or reused for `job_id`. The caller uses this to drive `candidate.capture` next.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "workspace_handle"
+    ],
+    "title": "SourceImportOutput",
+    "type": "object"
+  }
+]

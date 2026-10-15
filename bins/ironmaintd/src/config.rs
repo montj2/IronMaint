@@ -277,14 +277,14 @@ impl RuntimeConfig {
         // is trimmed so a config file with newlines survives
         // the parse. The flag, if given, takes precedence;
         // the env var is only consulted when no flag was set.
-        if source_import_allowlist.is_empty() {
-            if let Some(raw) = get_env("IRONMAINT_SOURCE_IMPORT_ALLOWLIST") {
-                source_import_allowlist = raw
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-            }
+        if source_import_allowlist.is_empty()
+            && let Some(raw) = get_env("IRONMAINT_SOURCE_IMPORT_ALLOWLIST")
+        {
+            source_import_allowlist = raw
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
         }
 
         // Existence is checked here rather than at the point of

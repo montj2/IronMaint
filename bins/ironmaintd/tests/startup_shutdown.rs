@@ -3820,7 +3820,7 @@ async fn source_import_clones_a_real_git_remote() {
         Value::Null,
         "source.import returned a protocol error: {import_resp}"
     );
-    let handle = import_resp["result"]["structuredContent"]["workspace_handle"]
+    let handle = import_resp["workspace_handle"]
         .as_str()
         .expect("workspace_handle string")
         .to_string();
@@ -3885,35 +3885,54 @@ async fn source_import_rejects_a_url_not_on_the_allowlist() {
         .expect("job_id string")
         .to_string();
 
-    let import_resp = d
-        .call(
-            "source.import",
+    let import_resp_raw = d
+        .post(
             json!({
-                "job_id": job_id,
-                "url": "file:///nonexistent/never-on-the-allowlist.git",
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "source.import",
+                    "arguments": {
+                        "job_id": job_id,
+                        "url": "file:///nonexistent/never-on-the-allowlist.git",
+                    },
+                },
             }),
+            Some(TOKEN),
         )
         .await;
-    // The call must fail at the protocol layer. The
-    // transport wraps the dispatcher's
-    // `McpError::InvalidInput` as a JSON-RPC error
-    // with the same message. The exact code depends
-    // on the transport, so we assert on the message
-    // and on the absence of a result.
-    let err = import_resp["error"]
-        .as_object()
-        .expect("source.import with a URL not on the allowlist must produce a protocol error");
-    let msg = err["message"].as_str().unwrap_or_default();
-    assert!(
-        msg.contains("allowlist")
-            || msg.contains("invalid input")
-            || msg.contains("Invalid input"),
-        "source.import error message does not mention the allowlist: {msg}"
-    );
     assert_eq!(
-        import_resp["result"],
-        Value::Null,
-        "source.import with a non-allowlisted URL must not return a result"
+        import_resp_raw.status(),
+        200,
+        "tools/call for source.import was not served at all"
+    );
+    let import_resp: Value = import_resp_raw
+        .json()
+        .await
+        .expect("json body from source.import call");
+    // The MCP transport wraps the dispatcher's
+    // `McpError::InvalidInput` as a tool-level error
+    // (isError = true), not a JSON-RPC protocol error.
+    // The structured error's `message` is what an agent
+    // sees. The exact code depends on the transport
+    // layer, so we assert on the message and on the
+    // absence of a `workspace_handle` in the result.
+    assert_eq!(
+        import_resp["result"]["isError"],
+        Value::Bool(true),
+        "source.import with a URL not on the allowlist must return isError=true: {import_resp}"
+    );
+    let message = import_resp["result"]["structuredContent"]["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains("allowlist"),
+        "source.import error message does not mention the allowlist: {message}"
+    );
+    assert!(
+        import_resp["result"]["structuredContent"]["workspace_handle"].is_null(),
+        "source.import with a non-allowlisted URL must not return a workspace_handle: {import_resp}"
     );
 
     d.shutdown().await;

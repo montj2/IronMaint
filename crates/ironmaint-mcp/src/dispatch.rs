@@ -629,18 +629,46 @@ async fn dispatch_evidence_artifact_read<S: IronMaintStore + ?Sized, E: Executor
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 
-// PHASE-1.1 PR 1.1.G (source import, P2 #3). RED state:
-// the body returns `McpError::Other("not implemented")` so
-// the conformance test fails on the unimplemented shape.
-// The GREEN commit replaces the body with the allowlist
-// check, the workspace resolution, and the
-// `WorkspaceManager::import_git_remote` call. The function
-// signature is final — the only change is the body.
+// PHASE-1.1 PR 1.1.G (source import, P2 #3). GREEN
+// body: the URL is checked against the runtime's
+// allowlist (deny-all by default), then the workspace is
+// resolved and the `WorkspaceManager::import_git_remote`
+// call does the `git clone --depth 1 --branch <ref>
+// <url>`. The handle string the manager returns is
+// echoed back so the caller can drive the next
+// `candidate.capture` against the same path.
 async fn dispatch_source_import<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
-    _runtime: &McpRuntime<S, E>,
-    _input: serde_json::Value,
+    runtime: &McpRuntime<S, E>,
+    input: serde_json::Value,
 ) -> Result<serde_json::Value, McpError> {
-    Err(McpError::Other(
-        "source.import is not implemented (PHASE-1.1 PR 1.1.G RED state)".to_string(),
-    ))
+    let input: crate::tools::workspace::SourceImportInput =
+        serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
+    // Closed-by-default allowlist: a `Vec<String>` of
+    // `[]` rejects every URL. The check is a prefix
+    // match, so an entry of `https://github.com/debian/`
+    // accepts any path beneath that host. A future PR
+    // can introduce a real `UrlPattern` type without
+    // changing the dispatcher signature.
+    let allowed = runtime
+        .source_import_allowlist
+        .iter()
+        .any(|prefix| input.url.starts_with(prefix.as_str()));
+    if !allowed {
+        return Err(McpError::InvalidInput(format!(
+            "url `{}` is not on the source.import allowlist; \
+             configure --source-import-allowlist (or the \
+             IRONMAINT_SOURCE_IMPORT_ALLOWLIST env var) to \
+             add a prefix it starts with",
+            input.url
+        )));
+    }
+    let workspace = runtime.workspace()?;
+    let handle = workspace
+        .import_git_remote(input.job_id, &input.url, input.ref_name.as_deref())
+        .await
+        .map_err(workspace_error)?;
+    let out = crate::tools::workspace::SourceImportOutput {
+        workspace_handle: handle,
+    };
+    serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
