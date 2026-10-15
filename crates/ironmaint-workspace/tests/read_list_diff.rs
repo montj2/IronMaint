@@ -111,7 +111,7 @@ async fn status_reflects_workspace_dirty_state() {
     let handle_root = tmp.path().join("ws-root");
     tokio::fs::create_dir_all(&handle_root).await.unwrap();
 
-    let (mgr, id, _job, _store): (
+    let (mgr, id, job, _store): (
         WorkspaceManager<MockStore>,
         ironmaint_workspace::WorkspaceId,
         JobId,
@@ -137,7 +137,7 @@ async fn status_reflects_workspace_dirty_state() {
     let _capture = mgr
         .capture_candidate(
             id,
-            JobId::new(),
+            job,
             common::package(),
             "https://example.invalid/foo.git",
             None,
