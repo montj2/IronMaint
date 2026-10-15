@@ -8,7 +8,8 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, dead_code)]
 
 use ironmaint_core::{
-    DistributionFamily, DistributionRef, DistributionRelease, JobId, PackageIdentity, PackageName,
+    DistributionFamily, DistributionRef, DistributionRelease, JobId, JobProjection, JobState,
+    MaintenanceEventId, MaintenanceJob, PackageIdentity, PackageName,
 };
 use ironmaint_store::mock::MockStore;
 use ironmaint_workspace::WorkspaceManager;
@@ -73,6 +74,26 @@ pub async fn fresh_workspace(
     tokio::fs::create_dir_all(&handle_dir).await.unwrap();
     init_repo(&handle_dir).await;
     let job = JobId::new();
+    // PHASE-1.1 PR 1.1.F: `MockStore::put_source_candidate` now
+    // mirrors the SQLite `FOREIGN KEY (job_id) REFERENCES
+    // projections(job_id)`, so any test that captures a candidate
+    // needs a job projection in place. The runtime's `job.create`
+    // flow does this; tests do it once, here, instead of in every
+    // capture_candidate case.
+    use ironmaint_store::ProjectionStore;
+    use time::macros::datetime;
+    let now = datetime!(2026-01-01 00:00:00 UTC);
+    let proj = JobProjection {
+        job: MaintenanceJob::new(job, package(), MaintenanceEventId::new(), now),
+        state: JobState::Intake,
+        active_candidate: None,
+        version: 0,
+        updated_at: now,
+    };
+    store
+        .put_projection(&proj, 0)
+        .await
+        .expect("seed the test job's projection");
     (mgr, id, job, store)
 }
 

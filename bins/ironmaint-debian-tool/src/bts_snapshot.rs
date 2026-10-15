@@ -51,7 +51,11 @@
 //! does that from a hard-coded fixture; the live mode
 //! would shell out to the shim.
 
+use std::io;
+use std::process::{Command, Stdio};
+
 use serde::Deserialize;
+use thiserror::Error;
 
 use crate::report::{
     BTS_SNAPSHOT_REPORT_KIND, BTS_SNAPSHOT_SCHEMA_VERSION, BugRecord, BugSummary, IssueVerdict,
@@ -88,34 +92,126 @@ pub struct Package {
 /// test's `snapshot_at` field is deterministic.
 pub const HERMETIC_SNAPSHOT_AT: &str = "2026-10-09T00:00:00Z";
 
+/// The env var that names the `bts` shim the
+/// bts-snapshot subcommand shells out to. Default
+/// behaviour: a hermetic Rust-side fixture (the
+/// pre-1.1.C path) so the §97 gate does not need the
+/// helper to be installed. PHASE-1.1 PR 1.1.C
+/// (real BTS integration): the runtime sets this
+/// to `/usr/local/bin/bts` (or the container's
+/// `bts-helper.py` shim path) when the live
+/// transport is desired; the integration test in
+/// `tests/bts_snapshot_live.rs` sets it to a
+/// per-test fake-bts script.
+pub const BTS_HELPER_ENV: &str = "BTS_HELPER";
+
+/// Errors the live BTS transport can produce.
+///
+/// PHASE-1.1 PR 1.1.C (real BTS integration): the
+/// `bts_snapshot` subcommand shells out to the
+/// `bts-helper.py` shim (path controlled by the
+/// `BTS_HELPER` env var). The three failure modes
+/// — `Transport` (could not spawn the helper),
+/// `HelperExit` (helper ran but exited non-zero),
+/// `MalformedJson` (helper exited 0 but its stdout
+/// is not a valid `DebianIssueReportV1`) — are the
+/// three variants. The dispatcher in `main.rs` maps
+/// all three to `DebianIssueReportV1 { verdict:
+/// InfrastructureError, ... }` (per §24, transport
+/// failures are infrastructure errors, not tool
+/// failures).
+#[derive(Debug, Error)]
+pub enum BtsError {
+    /// The helper could not be spawned (PATH lookup
+    /// failure, permission denied, etc.) or its
+    /// stdout / stderr could not be read.
+    #[error("BTS helper transport failed: {0}")]
+    Transport(#[source] io::Error),
+    /// The helper exited with a non-zero exit code.
+    /// The `stderr` field carries whatever the helper
+    /// wrote to stderr, which is the diagnostic
+    /// surface the runtime surfaces.
+    #[error("BTS helper exited {code}: {stderr}")]
+    HelperExit { code: i32, stderr: String },
+    /// The helper exited 0 but its stdout is not a
+    /// valid `DebianIssueReportV1`. The §24 "malformed
+    /// service response" case.
+    #[error("BTS helper produced malformed JSON: {0}")]
+    MalformedJson(#[source] serde_json::Error),
+}
+
 /// Run the 1E.2 check for the candidate whose
 /// `source_name` is `input.package.name`.
 ///
-/// 1E.2 GREEN: emits the comprehensive
-/// `DebianIssueReportV1` (PHASE-1.md §23). The
-/// `verdict` is `pass` (the hermetic fixture is a
-/// successful snapshot); the §23 fields
-/// (`source_package`, `snapshot_at`, `bugs`,
-/// `summary`) are populated from a small in-memory
-/// table that mirrors the 1E.1 `bts-helper.py`
-/// `--self-test` fixture.
+/// PHASE-1.1 PR 1.1.C (real BTS integration): the
+/// pre-1.1.C body returned a hard-coded three-bug
+/// fixture regardless of the candidate's source
+/// package, so the live BTS transport was never
+/// exercised. The new body shells out to the
+/// `bts-helper.py` shim (path controlled by the
+/// `BTS_HELPER` env var; default: a hermetic
+/// Rust-side fallback so the §97 gate does not need
+/// the helper to be installed).
 ///
-/// The fixture has three bugs: one open/serious,
-/// one open/forwarded, one done. The summary is
-/// computed from the bug list: `open: 2`, `serious: 1`,
-/// `patch_tagged: 1`, `forwarded: 1`.
-///
-/// Public so `tests/bts_snapshot.rs` and the daemon's
-/// integration test can drive the logic without a real
-/// subprocess.
-#[must_use]
-pub fn run(input: &CandidateInput) -> crate::report::DebianIssueReportV1 {
-    // The hermetic fixture: a successful snapshot
-    // against the candidate's source package. The
-    // `verdict` is `pass` regardless of bug count (§24);
-    // the 1E.1 shim's `--self-test` fixture has 3 bugs,
-    // and the 1E.2 GREEN report carries the same 3
-    // bugs in the comprehensive shape.
+/// The §23 wire format on stdout is unchanged: the
+/// helper emits a `DebianIssueReportV1` and the
+/// dispatcher writes that JSON to stdout. The
+/// `verdict` tri-state is preserved — a successful
+/// subprocess yields `verdict: pass`; a transport /
+/// helper-exit / malformed-JSON failure yields
+/// `verdict: infrastructure_error` (the dispatcher's
+/// error-to-verdict mapping, not the helper's).
+pub fn run(input: &CandidateInput) -> Result<crate::report::DebianIssueReportV1, BtsError> {
+    // The pre-1.1.C test surface was the in-process
+    // hermetic fixture; preserving that path is what
+    // keeps the §97 gate hermetic (the gate's tests
+    // do not set `BTS_HELPER`). The new test surface
+    // (PHASE-1.1 PR 1.1.C) sets `BTS_HELPER` to a
+    // fake-bts script and exercises the live path.
+    match std::env::var(BTS_HELPER_ENV) {
+        Ok(helper_path) if !helper_path.is_empty() => run_live(input, &helper_path),
+        _ => Ok(hermetic_report(input)),
+    }
+}
+
+/// The live path: shell out to the helper, parse its
+/// stdout as a `DebianIssueReportV1`, return the
+/// report. The helper is invoked as `<helper>
+/// <package_name>` (no `--self-test`); the
+/// `bts-helper.py` shim supports both modes and
+/// defaults to live mode (network). A `BtsError` is
+/// returned for any of the three failure modes; the
+/// dispatcher in `main.rs` maps the error to a
+/// `verdict: infrastructure_error` report.
+fn run_live(
+    input: &CandidateInput,
+    helper_path: &str,
+) -> Result<crate::report::DebianIssueReportV1, BtsError> {
+    let output = Command::new(helper_path)
+        .arg(&input.package.name)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .map_err(BtsError::Transport)?;
+    if !output.status.success() {
+        let code = output.status.code().unwrap_or(-1);
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(BtsError::HelperExit { code, stderr });
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let report: crate::report::DebianIssueReportV1 =
+        serde_json::from_str(stdout.as_ref()).map_err(BtsError::MalformedJson)?;
+    Ok(report)
+}
+
+/// The pre-1.1.C hermetic fixture, preserved as a
+/// fallback for the §97 gate (which does not set
+/// `BTS_HELPER` and therefore does not need the
+/// helper to be installed). The fixture is a
+/// three-bug table that mirrors the 1E.1
+/// `bts-helper.py --self-test` shape.
+fn hermetic_report(input: &CandidateInput) -> crate::report::DebianIssueReportV1 {
     let source_package = input.package.name.clone();
     let bugs = hermetic_bugs();
     let summary = bug_summary(&bugs);
@@ -200,6 +296,11 @@ mod tests {
     /// package the candidate names. §24 says the
     /// snapshot either succeeded or the transport
     /// failed; a populated bug list is *not* a failure.
+    ///
+    /// The test does *not* set `BTS_HELPER`, so the
+    /// `run` function falls through to the
+    /// in-process hermetic fixture. The live-path
+    /// tests are in `tests/bts_snapshot_live.rs`.
     #[test]
     fn hermetic_fixture_emits_pass_verdict() {
         let input = CandidateInput {
@@ -211,7 +312,7 @@ mod tests {
                 version: "1.0.0-1".to_string(),
             },
         };
-        let report = run(&input);
+        let report = run(&input).expect("hermetic fixture does not error");
         assert_eq!(report.verdict, IssueVerdict::Pass);
         assert_eq!(report.report_kind, BTS_SNAPSHOT_REPORT_KIND);
         assert_eq!(report.schema_version, BTS_SNAPSHOT_SCHEMA_VERSION);
@@ -232,7 +333,7 @@ mod tests {
                 version: "1.0.0-1".to_string(),
             },
         };
-        let report = run(&input);
+        let report = run(&input).expect("hermetic fixture does not error");
         assert_eq!(report.source_package, "example");
     }
 
@@ -251,7 +352,7 @@ mod tests {
                 version: "1.0.0-1".to_string(),
             },
         };
-        let report = run(&input);
+        let report = run(&input).expect("hermetic fixture does not error");
         assert_eq!(report.snapshot_at, HERMETIC_SNAPSHOT_AT);
     }
 
@@ -269,7 +370,7 @@ mod tests {
                 version: "1.0.0-1".to_string(),
             },
         };
-        let report = run(&input);
+        let report = run(&input).expect("hermetic fixture does not error");
         assert_eq!(report.bugs.len(), 3);
     }
 
@@ -287,7 +388,7 @@ mod tests {
                 version: "1.0.0-1".to_string(),
             },
         };
-        let report = run(&input);
+        let report = run(&input).expect("hermetic fixture does not error");
         assert_eq!(report.summary.open, 2);
         assert_eq!(report.summary.serious, 1);
         assert_eq!(report.summary.patch_tagged, 1);
@@ -301,16 +402,15 @@ mod tests {
     /// structural-equality test.
     #[test]
     fn comprehensive_report_round_trips_through_json() {
-        let input = CandidateInput {
-            schema: "ironmaint.candidate_input.v3".to_string(),
-            job_id: "0192…".to_string(),
-            check_id: "0192…".to_string(),
-            package: Package {
-                name: "example".to_string(),
-                version: "1.0.0-1".to_string(),
-            },
+        let report = DebianIssueReportV1 {
+            schema_version: BTS_SNAPSHOT_SCHEMA_VERSION,
+            report_kind: BTS_SNAPSHOT_REPORT_KIND.to_string(),
+            verdict: IssueVerdict::Pass,
+            source_package: "example".to_string(),
+            snapshot_at: HERMETIC_SNAPSHOT_AT.to_string(),
+            bugs: Vec::new(),
+            summary: BugSummary::default(),
         };
-        let report = run(&input);
         let json = serde_json::to_string(&report).unwrap();
         let round: DebianIssueReportV1 = serde_json::from_str(&json).unwrap();
         assert_eq!(round, report);

@@ -57,11 +57,16 @@ fn copy_recursive(src: &std::path::Path, dst: &std::path::Path) {
 }
 
 /// Build a `CandidateInput` whose `package` matches the
-/// good fixture (`example` 0+ironmaint). The version
-/// `0+ironmaint` is the placeholder the workspace's
-/// `capture_candidate` sets when a real version is not
-/// available; the fixture's `debian/changelog` is written
-/// to match it so the version cross-check passes.
+/// good fixture (`example` 1.0.0-1). The version `1.0.0-1`
+/// is the real Debian-style version the fixture's
+/// `debian/changelog` declares; the workspace's
+/// `capture_candidate` now resolves the version from the
+/// changelog at capture time (PHASE-1.1 PR 1.1.A), so the
+/// `version` we pass in here is what the runtime hands the
+/// source-preparation check (the candidate's
+/// `source_version`), and the cross-check is between the
+/// candidate's version and what the changelog declares —
+/// both should be `1.0.0-1`.
 fn input_for(workspace_path: std::path::PathBuf) -> CandidateInput {
     CandidateInput {
         schema: "ironmaint.candidate_input.v2".to_string(),
@@ -69,7 +74,7 @@ fn input_for(workspace_path: std::path::PathBuf) -> CandidateInput {
         check_id: "0192beef-0000-7000-8000-000000000002".to_string(),
         package: Package {
             name: "example".to_string(),
-            version: "0+ironmaint".to_string(),
+            version: "1.0.0-1".to_string(),
         },
         workspace_path: Some(workspace_path),
         fingerprint: Some("blake3:test-fixture".to_string()),
@@ -107,7 +112,7 @@ fn good_fixture_yields_a_pass_verdict() {
     );
     assert_eq!(
         report.findings.changelog_version.as_deref(),
-        Some("0+ironmaint")
+        Some("1.0.0-1")
     );
     assert!(report.findings.control_source_name_matches_candidate);
     assert!(report.findings.changelog_source_name_matches_candidate);
@@ -119,7 +124,7 @@ fn good_fixture_yields_a_pass_verdict() {
     assert!(report.findings.rules_executable);
     let identity = report.identity.expect("pass fixture has an identity");
     assert_eq!(identity.source, "example");
-    assert_eq!(identity.version, "0+ironmaint");
+    assert_eq!(identity.version, "1.0.0-1");
     assert_eq!(identity.distribution, "unstable");
     assert_eq!(identity.urgency, "medium");
 }

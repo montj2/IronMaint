@@ -106,6 +106,14 @@ pub struct RuntimeConfig {
     pub debian_tool_bin: PathBuf,
     /// `tracing` filter directive (e.g. `info`, `ironmaintd=debug`).
     pub log_filter: String,
+    /// PHASE-1.1 PR 1.1.G (source import, P2 #3): URL
+    /// prefixes the `source.import` MCP tool will accept.
+    /// Empty by default — the tool rejects every URL out
+    /// of the box. The match is a `String::starts_with`
+    /// prefix check; a future PR can introduce a real
+    /// `UrlPattern` type without changing the dispatcher
+    /// signature.
+    pub source_import_allowlist: Vec<String>,
 }
 
 impl RuntimeConfig {
@@ -133,6 +141,11 @@ impl RuntimeConfig {
         let mut fixture_bin: Option<PathBuf> = None;
         let mut debian_tool_bin: Option<PathBuf> = None;
         let mut log_filter: Option<String> = None;
+        // PHASE-1.1 PR 1.1.G: repeatable CLI flag, one URL
+        // prefix per occurrence. The env var is comma-separated
+        // so an operator with several prefixes does not have to
+        // set the flag N times in a unit file.
+        let mut source_import_allowlist: Vec<String> = Vec::new();
 
         // Flags whose value may be given as `--flag=value` or
         // `--flag value`. Hand-rolled because §86 does not
@@ -191,6 +204,13 @@ impl RuntimeConfig {
                     debian_tool_bin = Some(PathBuf::from(take("--debian-tool-bin")?));
                 }
                 "--log" => log_filter = Some(take("--log")?),
+                // PHASE-1.1 PR 1.1.G: repeatable; each
+                // occurrence adds one URL prefix to the
+                // allowlist. `take` consumes the next
+                // argument and advances `index`.
+                "--source-import-allowlist" => {
+                    source_import_allowlist.push(take("--source-import-allowlist")?);
+                }
                 other => {
                     return Err(ConfigError::Argument(format!("unknown flag `{other}`")));
                 }
@@ -252,6 +272,20 @@ impl RuntimeConfig {
         let log_filter = log_filter
             .or_else(|| get_env("IRONMAINT_LOG"))
             .unwrap_or_else(|| "info".to_string());
+        // PHASE-1.1 PR 1.1.G: the env var is comma-separated
+        // (the flag is repeatable). Whitespace around entries
+        // is trimmed so a config file with newlines survives
+        // the parse. The flag, if given, takes precedence;
+        // the env var is only consulted when no flag was set.
+        if source_import_allowlist.is_empty()
+            && let Some(raw) = get_env("IRONMAINT_SOURCE_IMPORT_ALLOWLIST")
+        {
+            source_import_allowlist = raw
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
 
         // Existence is checked here rather than at the point of
         // use, so the operator gets every missing path in one
@@ -279,6 +313,7 @@ impl RuntimeConfig {
             fixture_bin,
             debian_tool_bin,
             log_filter,
+            source_import_allowlist,
         })))
     }
 }

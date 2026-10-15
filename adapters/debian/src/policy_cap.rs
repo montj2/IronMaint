@@ -43,7 +43,7 @@ use ironmaint_policy::{
     PolicyReference,
 };
 
-use crate::authority_manifest::{baseline_policy_version, load_authorities};
+use crate::authority_manifest::{load_authorities, standards_version_target};
 
 /// The `§48` requirement string this adapter derives.
 /// Used as a substring check by `evaluate_obligation` to
@@ -131,7 +131,7 @@ impl PolicyCapability for DebianPolicyDerivation {
             Applicability::Applicable,
             format!(
                 "{STANDARDS_VERSION_REQUIREMENT} ({})",
-                baseline_policy_version()
+                standards_version_target()
             ),
         );
 

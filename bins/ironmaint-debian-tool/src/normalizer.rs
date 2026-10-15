@@ -390,18 +390,53 @@ impl ResultNormalizer for DebianMaintenanceContextNormalizer {
 // =============================================================================
 // 1D.2 — `DebianPolicyDeltaReviewNormalizer` (PHASE-1.md §13, §19, §22, §17).
 //
-// Same shape as the 1C.1 / 1C.2 / 1C.3 normalizers:
+// Maps the 1D.2 report's tri-state verdict to the §17
+// tri-state `EvidenceStatus`:
 // `verdict: "pass"` → `EvidenceStatus::Pass`,
 // `verdict: "fail"` → `EvidenceStatus::Fail` (with the
-// §22 `E_POLICY_BASELINE_STALE` diagnostic propagated
-// as an observation), `verdict: "infrastructure_error"`
-// → `NormalizationError::Unclassifiable` (the runtime
-// surfaces it as `ExecutorError::InfrastructureFailed`).
+// `E_STANDARDS_VERSION_MISSING` / `E_POLICY_BASELINE_STALE`
+// diagnostic propagated as an observation), and
+// `verdict: "infrastructure_error"` →
+// `EvidenceStatus::InfrastructureError`.
 //
-// The 1D.2 unclassifiable message string is
-// `"debian.inspect.policy_delta_review: infrastructure
-// error"` — 1D.2-specific so the runtime log /
-// observation can distinguish four normalizers.
+// PHASE-1.1 PR 1.1.D (policy baseline correctness):
+// the pre-1.1.D normalizer mapped
+// `verdict: "infrastructure_error"` to
+// `NormalizationError::Unclassifiable`, which the
+// runtime's `Err(e)` arm collapsed to
+// `Outcome::Fail` (the runtime's comment notes that
+// "the tool ran to completion and the runtime received
+// its output" → not an infrastructure problem). That
+// mapping was correct for the pre-1.1.D code path (the
+// only way to reach `Verdict::InfrastructureError` was
+// a workspace I/O error, which is exactly the case the
+// runtime's `Unclassifiable → Fail` mapping is for).
+//
+// Post-1.1.D, the §22 gate (`AboveBaseline` case)
+// emits `Verdict::InfrastructureError` for a
+// "manifest is stale, refresh the authority snapshot"
+// case — which is *not* a tool failure, it is an
+// infrastructure problem the operator must resolve.
+// The §17 tri-state is `Pass / Fail /
+// InfrastructureError`, and the spec is explicit
+// (line 978) that an above-baseline candidate "must
+// not be marked bad". The normalizer therefore
+// surfaces the verdict directly to
+// `EvidenceStatus::InfrastructureError`, which the
+// runtime maps to `Outcome::InfrastructureFailed`
+// → `GateStatus::Blocked`. The pre-1.1.D
+// "workspace I/O error" case still maps to
+// `Verdict::InfrastructureError`, but the runtime's
+// `Outcome::Fail` mapping (driven by the
+// `Fail`-arm fallback for unclassifiable errors)
+// is no longer the right destination for either
+// case: the §17 tri-state requires the
+// `InfrastructureError` evidence status to reach
+// the runtime's `GateStatus::Blocked` path. The
+// runtime's `Outcome` arm maps
+// `InfrastructureFailed` → `InfrastructureError`
+// evidence; the `Outcome::Fail` arm maps to
+// `Fail` evidence.
 // =============================================================================
 
 /// The 1D.2 `ResultNormalizer` implementation.
@@ -438,14 +473,20 @@ impl ResultNormalizer for DebianPolicyDeltaReviewNormalizer {
             })
             .collect();
 
+        // PHASE-1.1 PR 1.1.D: the `InfrastructureError`
+        // verdict is now surfaced directly to the §17
+        // tri-state's `EvidenceStatus::InfrastructureError`,
+        // which the runtime maps to
+        // `Outcome::InfrastructureFailed` →
+        // `GateStatus::Blocked`. The pre-1.1.D code
+        // returned `NormalizationError::Unclassifiable`,
+        // which the runtime collapsed to `Outcome::Fail`
+        // — losing the "manifest is stale, not the
+        // package" signal the spec at line 978 requires.
         let evidence_status = match report.verdict {
             Verdict::Pass => EvidenceStatus::Pass,
             Verdict::Fail => EvidenceStatus::Fail,
-            Verdict::InfrastructureError => {
-                return Err(NormalizationError::Unclassifiable(
-                    "debian.inspect.policy_delta_review: infrastructure error".to_string(),
-                ));
-            }
+            Verdict::InfrastructureError => EvidenceStatus::InfrastructureError,
         };
 
         Ok(NormalizedResult {

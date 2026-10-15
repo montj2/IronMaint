@@ -27,6 +27,7 @@
 pub mod activate;
 pub mod apply;
 pub mod capture;
+pub mod changelog;
 pub mod error;
 pub mod git;
 pub mod id;

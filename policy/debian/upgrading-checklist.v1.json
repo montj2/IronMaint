@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "manifest_version": "1",
+  "distribution": "debian",
+  "intervals": [
+    {
+      "from_version": "4.7.4",
+      "to_version": "4.7.4.1",
+      "summary": "4.7.4 → 4.7.4.1: minor clarifications; no behavioural change for the §22 gate.",
+      "source": "Debian Policy 4.7.4.1 release notes (https://www.debian.org/doc/debian-policy/ch-policy.html)"
+    }
+  ]
+}

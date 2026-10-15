@@ -104,10 +104,52 @@ struct Daemon {
 }
 
 impl Daemon {
+    /// Path of the per-job workspace root the daemon was
+    /// started with. Tests use it to locate the
+    /// `<handle>/` directory a `candidate.capture` call
+    /// provisions and to stage fixtures into it.
+    fn workspaces_root(&self) -> std::path::PathBuf {
+        self.tmp.path().join("workspaces")
+    }
+
     /// Start the daemon on an ephemeral port and wait for it to
     /// report the address it bound.
     async fn start() -> Self {
         Self::start_on(Arc::new(tempfile::tempdir().expect("tempdir"))).await
+    }
+
+    /// PHASE-1.1 PR 1.1.G: start the daemon with a
+    /// configured `source.import` allowlist. The flag is
+    /// passed once per URL prefix (the §G implementation
+    /// parses repeated occurrences). The tempdir is
+    /// shared with the test body so the test can stage a
+    /// local bare repo under `tmp.path()` and put its
+    /// `file://` URL on the allowlist.
+    async fn start_with_allowlist(allowlist: Vec<String>) -> Self {
+        let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+        let mut command = command_for(&tmp);
+        for url in &allowlist {
+            command.arg("--source-import-allowlist").arg(url);
+        }
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn ironmaintd");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let mut lines = BufReader::new(stdout).lines();
+        let url = tokio::time::timeout(Duration::from_secs(30), async {
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Some(rest) = line.strip_prefix(LISTENING_PREFIX) {
+                    return Some(rest.to_string());
+                }
+            }
+            None
+        })
+        .await
+        .unwrap_or(None)
+        .unwrap_or_else(|| panic!("the daemon never reported a listening address"));
+        Self { child, url, tmp }
     }
 
     async fn start_on(tmp: Arc<tempfile::TempDir>) -> Self {
@@ -456,7 +498,14 @@ async fn the_daemon_advertises_every_tool_the_server_registers() {
     // exist because 1A.3 writes `Evidence` rows with bound report
     // artifacts, and an MCP client that ran `check.run` needs a way
     // to read them back; without these the §31 exit-checkpoint
-    // ("have an MCP client read the report") is unmet.
+    // ("have an MCP client read the report") is unmet. The
+    // fifteenth — `source.import` (PHASE-1.1 PR 1.1.G, P2 #3) —
+    // exists because before 1.1.G an agent had no controlled path
+    // to populate a workspace from a remote: the
+    // `candidate.capture` tool inspected whatever was already on
+    // disk, and the only way to bring in upstream was the
+    // operator's host shell, which defeats the
+    // `PrivilegedOperation` model for everything else.
     //
     // The e2e script hardcodes the same list. A missing tool here is
     // the exact failure that made `ironclaw-e2e.sh` unrunnable.
@@ -490,6 +539,7 @@ async fn the_daemon_advertises_every_tool_the_server_registers() {
             "job.resume",
             "operation.get",
             "release.candidate.create",
+            "source.import",
             "workspace.apply_patch",
             "workspace.stat",
         ]
@@ -974,17 +1024,33 @@ fn copy_recursive(src: &std::path::Path, dst: &std::path::Path) {
 /// `debian` family (so the production `adapters/debian/`
 /// adapter — registered in 1B.3 — plans the
 /// `debian.inspect.source_preparation` check) and the
-/// given `source_name`. The `source_version` is not part
-/// of the `candidate.capture` MCP input shape: the
-/// workspace's `capture_candidate` derives the version
-/// from the candidate's `PackageRevision` constructor,
-/// which currently uses the placeholder
-/// `0+ironmaint` (PHASE-0B §6.7). The hermetic fixture's
-/// `debian/changelog` is written to use the same
-/// placeholder so the version cross-check passes; see
-/// `containers/fixtures/debian/example-1.0/debian/changelog`.
+/// given `source_name`. The `expected_version` field is
+/// left unset so the runtime resolves the candidate's
+/// `source_version` from the workspace's
+/// `debian/changelog` (PHASE-1.1 PR 1.1.A). The hermetic
+/// fixture's `debian/changelog` is written to declare a
+/// real Debian-style version so the cross-check between
+/// the changelog and the candidate's resolved version is
+/// a real assertion of identity, not a tautology against
+/// a fixed placeholder.
 fn candidate_capture_args(job_id: &str, source_name: &str) -> Value {
-    json!({
+    candidate_capture_args_with_version(job_id, source_name, None)
+}
+
+/// Like `candidate_capture_args` but lets the caller pin
+/// the version the runtime will use as the candidate's
+/// `source_version`. When `expected_version` is `Some`,
+/// the runtime records that value on the candidate and
+/// the `debian.inspect.source_preparation` check emits
+/// an `E_VERSION_MISMATCH` diagnostic if the changelog's
+/// first entry disagrees. When `None`, the runtime reads
+/// the version from the workspace's `debian/changelog`.
+fn candidate_capture_args_with_version(
+    job_id: &str,
+    source_name: &str,
+    expected_version: Option<&str>,
+) -> Value {
+    let mut args = json!({
         "job_id": job_id,
         "package": {
             "distribution": {"family": "debian", "release": "sid"},
@@ -992,51 +1058,52 @@ fn candidate_capture_args(job_id: &str, source_name: &str) -> Value {
             "binary_names": [],
         },
         "repository_url": "https://example.invalid/ironmaint-debian-tool-fixture.git",
-    })
+    });
+    if let Some(v) = expected_version {
+        args["expected_version"] = json!(v);
+    }
+    args
 }
 
-/// The `debian.inspect.source_preparation` check passes
-/// when the candidate's workspace contains a well-formed
-/// Debian 3.0 (quilt) source tree whose `Source:`,
-/// `Version:`, and `debian/source/format` all match.
-#[tokio::test]
-async fn debian_inspect_source_preparation_passes_against_the_hermetic_fixture() {
-    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
-    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
-
-    // Create a job, capture a candidate whose identity
-    // matches the good fixture.
-    let created = d.call("job.create", create_job_args()).await;
-    let job_id = created["job_id"]
-        .as_str()
-        .expect("job_id string")
-        .to_string();
-    let _captured = d
+/// Provision the job's workspace, stage the named
+/// hermetic fixture into it, and capture a candidate
+/// against the staged tree. Returns the active
+/// candidate's `check_id` (the `source_preparation`
+/// check, which is the first thing `next_actions`
+/// advertises).
+///
+/// The two-capture pattern is required because the
+/// daemon's `ensure_workspace` is what creates the
+/// `<workspace_root>/<handle>/` directory the fixture
+/// has to be staged into. The first `candidate.capture`
+/// provisions the empty workspace; the fixture is then
+/// copied in; the second `candidate.capture` reads the
+/// staged tree — including the changelog that drives
+/// the version resolution (PHASE-1.1 PR 1.1.A). Without
+/// the second capture, the candidate's
+/// `source_version` would be derived from the empty
+/// pre-stage workspace, not the real Debian source
+/// tree the check ultimately inspects.
+async fn capture_against_staged_fixture(
+    d: &mut Daemon,
+    job_id: &str,
+    source_name: &str,
+    fixture_relpath: &str,
+) -> String {
+    // 1. Provision the workspace via an initial
+    //    capture. The candidate is created but its
+    //    `source_version` is the placeholder fallback
+    //    (empty workspace has no `debian/changelog`).
+    let _ = d
         .call(
             "candidate.capture",
-            candidate_capture_args(&job_id, "example"),
+            candidate_capture_args(job_id, source_name),
         )
         .await;
-    // The candidate's `check_id` is not in
-    // `candidate.capture`'s response (it carries
-    // `fingerprint` and `notes` only); it is
-    // advertised through `job.next_actions`, which is
-    // the tool the agent uses to discover what to run.
-    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
-    let check_id = next["actions"]["allowed"]
-        .as_array()
-        .and_then(|a| {
-            a.iter().find_map(|a| {
-                a.get("run_check")?.get("check_id")?.as_str().map(String::from)
-            })
-        })
-        .expect("job.next_actions should list a run_check action for the planned source_preparation check");
 
-    // The candidate capture auto-provisions a workspace
-    // directory at `<workspace_root>/<handle>/`. Find
-    // the (only) subdir under `workspaces/` and stage
-    // the good fixture into it.
-    let workspaces_root = tmp.path().join("workspaces");
+    // 2. Locate the (only) workspace handle and stage
+    //    the fixture into it.
+    let workspaces_root = d.workspaces_root();
     let mut handles = std::fs::read_dir(&workspaces_root)
         .expect("read_dir workspaces")
         .map(|e| e.expect("entry").path())
@@ -1049,8 +1116,53 @@ async fn debian_inspect_source_preparation_passes_against_the_hermetic_fixture()
     );
     let workspace_path = handles.pop().unwrap();
     let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../containers/fixtures/debian/example-1.0");
+        .join("../../containers/fixtures/debian")
+        .join(fixture_relpath);
     copy_recursive(&fixture_root, &workspace_path);
+
+    // 3. Capture again — this time the workspace has
+    //    the real Debian source tree, so
+    //    `capture_candidate` reads the changelog and
+    //    resolves the version from it. The runtime
+    //    activates the new candidate, which is the one
+    //    `next_actions` will report.
+    let _ = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(job_id, source_name),
+        )
+        .await;
+
+    // 4. Pull the check_id from `next_actions`.
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    next["actions"]["allowed"]
+        .as_array()
+        .and_then(|a| {
+            a.iter().find_map(|a| {
+                a.get("run_check")?
+                    .get("check_id")?
+                    .as_str()
+                    .map(String::from)
+            })
+        })
+        .expect("job.next_actions should list a run_check action for the active candidate")
+}
+
+/// The `debian.inspect.source_preparation` check passes
+/// when the candidate's workspace contains a well-formed
+/// Debian 3.0 (quilt) source tree whose `Source:`,
+/// `Version:`, and `debian/source/format` all match.
+#[tokio::test]
+async fn debian_inspect_source_preparation_passes_against_the_hermetic_fixture() {
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+    let check_id = capture_against_staged_fixture(&mut d, &job_id, "example", "example-1.0").await;
 
     // Run the check. The MCP `tools/call` response wraps
     // the `RunCheckOutput` in `body["result"]` (not
@@ -1098,6 +1210,518 @@ async fn debian_inspect_source_preparation_passes_against_the_hermetic_fixture()
     d.shutdown().await;
 }
 
+/// The candidate's `source_version` is bound to the
+/// `debian/changelog` first entry, not the historical
+/// `0+ironmaint` placeholder (PHASE-1.1 PR 1.1.A —
+/// P1 finding #1 from `doc/PHASE-1-FEEDBACK.md`).
+///
+/// The test stages the good hermetic fixture (whose
+/// `debian/changelog` declares version `1.0.0-1`),
+/// captures a candidate with no `expected_version`,
+/// runs the `source_preparation` check, and asserts
+/// the report's `changelog_version_matches_candidate`
+/// is `true` — which only holds if the runtime read the
+/// version from the changelog. With the historical
+/// hard-coded `0+ironmaint` body the cross-check fails
+/// and this test fails (RED).
+#[tokio::test]
+async fn candidate_capture_uses_real_changelog_version() {
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+    let check_id = capture_against_staged_fixture(&mut d, &job_id, "example", "example-1.0").await;
+
+    let response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {
+                        "job_id": job_id,
+                        "check_id": check_id.clone(),
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(response.status(), 200, "check.run was not served");
+    let body: Value = response.json().await.expect("json body");
+    assert_eq!(
+        body["error"],
+        Value::Null,
+        "check.run returned a protocol error: {body}"
+    );
+    let result = &body["result"]["structuredContent"];
+    let evidence_id = result["evidence_id"]
+        .as_str()
+        .expect("evidence_id string")
+        .to_string();
+
+    // Read the bound report so we can assert the
+    // version cross-check held. The report's
+    // `changelog_version` is what the parser read from
+    // the fixture; `changelog_version_matches_candidate`
+    // is the cross-check between that and the candidate's
+    // `package.version` (what `capture_candidate` set).
+    let get_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.get",
+                    "arguments": {"evidence_id": evidence_id.clone()},
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(get_response.status(), 200, "evidence.get was not served");
+    let get_body: Value = get_response.json().await.expect("json body");
+    let artifacts = get_body["result"]["structuredContent"]["evidence"]["artifacts"]
+        .as_array()
+        .expect("artifacts array on the Evidence row");
+    assert!(!artifacts.is_empty(), "executor binds one report artifact");
+    let artifact_id = artifacts[0]["id"]
+        .as_str()
+        .expect("artifact id string")
+        .to_string();
+
+    let artifact_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.artifact.read",
+                    "arguments": {
+                        "evidence_id": evidence_id,
+                        "artifact_id": artifact_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(artifact_response.status(), 200, "read was not served");
+    let artifact_body: Value = artifact_response.json().await.expect("json body");
+    let bytes_base64 = artifact_body["result"]["structuredContent"]["bytes_base64"]
+        .as_str()
+        .expect("bytes_base64 string");
+    use base64::Engine as _;
+    let artifact_bytes = base64::engine::general_purpose::STANDARD
+        .decode(bytes_base64)
+        .expect("base64-decode artifact bytes");
+    let report: Value = serde_json::from_slice(&artifact_bytes).expect("report JSON");
+
+    assert_eq!(
+        report["findings"]["changelog_version"].as_str(),
+        Some("1.0.0-1"),
+        "the fixture's debian/changelog declares 1.0.0-1; the parser must surface that"
+    );
+    assert_eq!(
+        report["findings"]["changelog_version_matches_candidate"], true,
+        "candidate's package.version must match the changelog's first entry; \
+         with the historical hard-coded `0+ironmaint` this is false (RED): {report}"
+    );
+    assert_eq!(
+        result["evidence_status"], "pass",
+        "the version cross-check holds only when capture_candidate read the \
+         changelog, so the source_preparation tool's verdict is `pass`: {result}"
+    );
+
+    d.shutdown().await;
+}
+
+/// A caller-supplied `expected_version` wins over the
+/// `debian/changelog`'s first entry. The runtime records
+/// the supplied value as the candidate's `source_version`
+/// and the `debian.inspect.source_preparation` check
+/// records an `E_VERSION_MISMATCH` diagnostic when the
+/// supplied value disagrees with the changelog
+/// (PHASE-1.1 PR 1.1.A). The capture itself succeeds;
+/// the verdict is `fail` only because the cross-check
+/// on the §17 identity assertion failed — the
+/// `evidence_status` surfaces the cross-check's
+/// `Verdict::Fail` to the runtime.
+#[tokio::test]
+async fn candidate_capture_uses_supplied_expected_version() {
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+
+    // First capture: provision the workspace.
+    let _ = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    // Stage the good fixture (changelog says `1.0.0-1`).
+    let workspaces_root = d.workspaces_root();
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+
+    // Second capture: with a supplied expected_version
+    // that disagrees with the staged changelog. The
+    // runtime uses the supplied value as the candidate's
+    // `source_version`; the source_preparation check
+    // records the disagreement as an
+    // `E_VERSION_MISMATCH` diagnostic.
+    let _ = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args_with_version(&job_id, "example", Some("9.9.9-1")),
+        )
+        .await;
+
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let check_id = next["actions"]["allowed"]
+        .as_array()
+        .and_then(|a| {
+            a.iter().find_map(|a| {
+                a.get("run_check")?
+                    .get("check_id")?
+                    .as_str()
+                    .map(String::from)
+            })
+        })
+        .expect("job.next_actions should list a run_check action for the active candidate");
+
+    let response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {
+                        "job_id": job_id,
+                        "check_id": check_id.clone(),
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(response.status(), 200, "check.run was not served");
+    let body: Value = response.json().await.expect("json body");
+    assert_eq!(
+        body["error"],
+        Value::Null,
+        "check.run returned a protocol error: {body}"
+    );
+    let result = &body["result"]["structuredContent"];
+    let evidence_id = result["evidence_id"]
+        .as_str()
+        .expect("evidence_id string")
+        .to_string();
+
+    let get_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.get",
+                    "arguments": {"evidence_id": evidence_id.clone()},
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    let get_body: Value = get_response.json().await.expect("json body");
+    let artifacts = get_body["result"]["structuredContent"]["evidence"]["artifacts"]
+        .as_array()
+        .expect("artifacts array on the Evidence row");
+    let artifact_id = artifacts[0]["id"]
+        .as_str()
+        .expect("artifact id string")
+        .to_string();
+
+    let artifact_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.artifact.read",
+                    "arguments": {
+                        "evidence_id": evidence_id,
+                        "artifact_id": artifact_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    let artifact_body: Value = artifact_response.json().await.expect("json body");
+    let bytes_base64 = artifact_body["result"]["structuredContent"]["bytes_base64"]
+        .as_str()
+        .expect("bytes_base64 string");
+    use base64::Engine as _;
+    let artifact_bytes = base64::engine::general_purpose::STANDARD
+        .decode(bytes_base64)
+        .expect("base64-decode artifact bytes");
+    let report: Value = serde_json::from_slice(&artifact_bytes).expect("report JSON");
+
+    // The changelog parser still reports the real
+    // fixture version (the source tree is unchanged).
+    assert_eq!(
+        report["findings"]["changelog_version"].as_str(),
+        Some("1.0.0-1"),
+        "the changelog parser must read the real fixture version"
+    );
+    // The cross-check is `false` because the
+    // candidate's `package.version` is the supplied
+    // `9.9.9-1`, not the changelog's `1.0.0-1`.
+    assert_eq!(
+        report["findings"]["changelog_version_matches_candidate"], false,
+        "the supplied expected_version must override the changelog read; \
+         the cross-check is then `false` because the values disagree: {report}"
+    );
+    let codes: Vec<&str> = report["diagnostics"]
+        .as_array()
+        .expect("diagnostics array")
+        .iter()
+        .map(|d| d["code"].as_str().expect("code string"))
+        .collect();
+    assert!(
+        codes.contains(&"E_VERSION_MISMATCH"),
+        "expected an E_VERSION_MISMATCH diagnostic; got {codes:?}"
+    );
+    assert_eq!(
+        result["evidence_status"], "fail",
+        "the cross-check failure is a `Verdict::Fail`, not `Pass`: {result}"
+    );
+
+    d.shutdown().await;
+}
+
+/// The check's evidence is bound to the captured tree, not
+/// the live workspace. PHASE-1.1 PR 1.1.B (evidence
+/// integrity): after `candidate.capture`, a concurrent
+/// `workspace.apply_patch` would change the live workspace's
+/// tree, but the check must still see the captured tree —
+/// the runtime materialises a `git worktree add --detach`
+/// snapshot at the candidate's tree OID and passes that
+/// frozen path to the tool. The test stages the good
+/// fixture, captures, then deletes the live workspace's
+/// `debian/changelog`. With the GREEN code, the
+/// `debian.inspect.source_preparation` check still passes
+/// because it reads from the frozen worktree (which has
+/// the original changelog). With the pre-1.1.B code, the
+/// check would fail because the live workspace has no
+/// changelog for the cross-check to read.
+#[tokio::test]
+async fn check_evidence_is_bound_to_the_captured_tree_not_the_live_workspace() {
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+
+    // First capture: provision the workspace.
+    let _ = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    // Stage the good fixture.
+    let workspaces_root = d.workspaces_root();
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+
+    // Second capture: bind the candidate to the staged
+    // fixture's tree.
+    let _ = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    // Now mutate the live workspace *after* capture, so
+    // any check that reads the live workspace would see
+    // the broken state. With the GREEN code, the check
+    // materialises a frozen worktree from the candidate's
+    // tree OID (which is the pre-mutation tree) and reads
+    // from there, so the mutation is invisible to the
+    // check.
+    let live_changelog = workspace_path.join("debian").join("changelog");
+    assert!(
+        live_changelog.is_file(),
+        "the staged fixture has a debian/changelog"
+    );
+    std::fs::remove_file(&live_changelog).expect("delete live changelog");
+    assert!(
+        !live_changelog.is_file(),
+        "the live workspace's changelog is gone"
+    );
+
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let source_preparation_check_id = next["actions"]["allowed"]
+        .as_array()
+        .and_then(|a| {
+            a.iter().find_map(|a| {
+                a.get("run_check")?
+                    .get("check_id")?
+                    .as_str()
+                    .map(String::from)
+            })
+        })
+        .expect("job.next_actions should list a run_check action for the active candidate");
+
+    let response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "check.run",
+                    "arguments": {
+                        "job_id": job_id,
+                        "check_id": source_preparation_check_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(response.status(), 200, "check.run was not served");
+    let body: Value = response.json().await.expect("json body");
+    assert_eq!(
+        body["error"],
+        Value::Null,
+        "check.run returned a protocol error: {body}"
+    );
+    let result = &body["result"]["structuredContent"];
+    let evidence_id = result["evidence_id"]
+        .as_str()
+        .expect("evidence_id string")
+        .to_string();
+    let evidence_status = result["evidence_status"]
+        .as_str()
+        .expect("evidence_status string");
+    assert_eq!(
+        evidence_status, "pass",
+        "the check sees the captured tree, not the live workspace: \
+         the source_preparation check passes because the frozen worktree \
+         has the original changelog. With the pre-1.1.B code the check \
+         would read the live workspace (no changelog) and fail: {result}"
+    );
+
+    // The bound report carries the changelog version from
+    // the captured tree, not from the live (now empty)
+    // workspace. The cross-check passes because the
+    // candidate's `package.version` (resolved from the
+    // captured changelog by 1.1.A) matches the frozen
+    // worktree's changelog version.
+    let get_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.get",
+                    "arguments": {"evidence_id": evidence_id.clone()},
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    let get_body: Value = get_response.json().await.expect("json body");
+    let artifacts = get_body["result"]["structuredContent"]["evidence"]["artifacts"]
+        .as_array()
+        .expect("artifacts array");
+    assert!(!artifacts.is_empty(), "evidence has at least one artifact");
+    let artifact_id = artifacts[0]["id"]
+        .as_str()
+        .expect("artifact id string")
+        .to_string();
+    let artifact_response = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "evidence.artifact.read",
+                    "arguments": {
+                        "evidence_id": evidence_id,
+                        "artifact_id": artifact_id,
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    let artifact_body: Value = artifact_response.json().await.expect("json body");
+    let bytes_base64 = artifact_body["result"]["structuredContent"]["bytes_base64"]
+        .as_str()
+        .expect("bytes_base64 string");
+    use base64::Engine as _;
+    let artifact_bytes = base64::engine::general_purpose::STANDARD
+        .decode(bytes_base64)
+        .expect("base64-decode artifact bytes");
+    let report: Value = serde_json::from_slice(&artifact_bytes).expect("report JSON");
+    assert_eq!(
+        report["findings"]["changelog_version"].as_str(),
+        Some("1.0.0-1"),
+        "the changelog parser reads from the frozen worktree (the \
+         captured tree), not from the live (now empty) workspace: {report}"
+    );
+    assert_eq!(
+        report["findings"]["changelog_version_matches_candidate"], true,
+        "the cross-check passes because the candidate's `package.version` \
+         (resolved from the captured changelog) matches the frozen \
+         worktree's changelog version: {report}"
+    );
+
+    d.shutdown().await;
+}
+
 /// The check fails when the candidate's identity
 /// disagrees with the source tree's `debian/changelog`
 /// first-entry source name. The §17 fail path is
@@ -1117,33 +1741,8 @@ async fn debian_inspect_source_preparation_fails_on_a_mismatched_changelog() {
         .as_str()
         .expect("job_id string")
         .to_string();
-    let _captured = d
-        .call(
-            "candidate.capture",
-            candidate_capture_args(&job_id, "example"),
-        )
-        .await;
-    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
-    let check_id = next["actions"]["allowed"]
-        .as_array()
-        .and_then(|a| {
-            a.iter().find_map(|a| {
-                a.get("run_check")?.get("check_id")?.as_str().map(String::from)
-            })
-        })
-        .expect("job.next_actions should list a run_check action for the planned source_preparation check");
-
-    let workspaces_root = tmp.path().join("workspaces");
-    let mut handles = std::fs::read_dir(&workspaces_root)
-        .expect("read_dir workspaces")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.is_dir())
-        .collect::<Vec<_>>();
-    assert_eq!(handles.len(), 1);
-    let workspace_path = handles.pop().unwrap();
-    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../containers/fixtures/debian/example-broken-1.0.0");
-    copy_recursive(&fixture_root, &workspace_path);
+    let check_id =
+        capture_against_staged_fixture(&mut d, &job_id, "example", "example-broken-1.0.0").await;
 
     let response = d
         .post(
@@ -1219,12 +1818,40 @@ async fn debian_inspect_source_analysis_emits_the_comprehensive_section18_report
         .await;
 
     // 2. Stage the good fixture into the auto-provisioned
-    //    workspace handle. The first `next_actions` call
-    //    returns *two* run_check actions (the 1C.1
-    //    source-preparation check and the 1C.2
-    //    source-analysis check); the first is the one
-    //    we run to verify the workspace path is set up
-    //    correctly, the second is the new 1C.2 check.
+    //    workspace handle, then capture a second time
+    //    against the staged tree. The two-capture pattern
+    //    is required because `capture_candidate` resolves
+    //    the version from `debian/changelog` (PHASE-1.1
+    //    PR 1.1.A), and the changelog is only present
+    //    after the fixture is staged. The second capture
+    //    is the candidate the rest of the test operates
+    //    on; the first capture's placeholder candidate
+    //    is overwritten by the runtime's
+    //    `activate_candidate` semantics.
+    let workspaces_root = d.workspaces_root();
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(handles.len(), 1);
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+    let _recaptured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    // 3. `next_actions` returns the 5 pre-build
+    //    `run_check` actions (1C.1, 1C.2, 1C.3, 1D.2,
+    //    1E.2) planned against the staged tree. The
+    //    first is the source-preparation check (1C.1);
+    //    the second is the source-analysis check (1C.2)
+    //    the test exercises.
     let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
     let allowed = next["actions"]["allowed"]
         .as_array()
@@ -1240,19 +1867,6 @@ async fn debian_inspect_source_analysis_emits_the_comprehensive_section18_report
     );
     let source_preparation_check_id = check_ids[0].to_string();
     let source_analysis_check_id = check_ids[1].to_string();
-
-    // 3. Stage the fixture.
-    let workspaces_root = tmp.path().join("workspaces");
-    let mut handles = std::fs::read_dir(&workspaces_root)
-        .expect("read_dir workspaces")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.is_dir())
-        .collect::<Vec<_>>();
-    assert_eq!(handles.len(), 1);
-    let workspace_path = handles.pop().unwrap();
-    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../containers/fixtures/debian/example-1.0");
-    copy_recursive(&fixture_root, &workspace_path);
 
     // 4. Run source_preparation (the 1C.1 check) first.
     //    This confirms the workspace path is set up
@@ -1484,13 +2098,41 @@ async fn debian_inspect_maintenance_context_emits_the_comprehensive_section19_re
         .await;
 
     // 2. Stage the good fixture into the auto-provisioned
-    //    workspace handle. The first `next_actions` call
-    //    returns *three* run_check actions (the 1C.1
-    //    source-preparation check, the 1C.2
-    //    source-analysis check, and the 1C.3
-    //    maintenance-context check); the first two
-    //    are run to verify the workspace path is set up
-    //    correctly, the third is the new 1C.3 check.
+    //    workspace handle, then capture a second time
+    //    against the staged tree. The two-capture pattern
+    //    is required because `capture_candidate` resolves
+    //    the version from `debian/changelog` (PHASE-1.1
+    //    PR 1.1.A), and the changelog is only present
+    //    after the fixture is staged. The second capture
+    //    is the candidate the rest of the test operates
+    //    on; the first capture's placeholder candidate
+    //    is overwritten by the runtime's
+    //    `activate_candidate` semantics.
+    let workspaces_root = d.workspaces_root();
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(handles.len(), 1);
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+    let _recaptured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    // 3. `next_actions` returns the 5 pre-build
+    //    `run_check` actions (1C.1, 1C.2, 1C.3, 1D.2,
+    //    1E.2) planned against the staged tree. The
+    //    first is the source-preparation check (1C.1);
+    //    the second is the source-analysis check (1C.2);
+    //    the third is the maintenance-context check
+    //    (1C.3) the test exercises.
     let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
     let allowed = next["actions"]["allowed"]
         .as_array()
@@ -1507,19 +2149,6 @@ async fn debian_inspect_maintenance_context_emits_the_comprehensive_section19_re
     let source_preparation_check_id = check_ids[0].to_string();
     let source_analysis_check_id = check_ids[1].to_string();
     let maintenance_context_check_id = check_ids[2].to_string();
-
-    // 3. Stage the fixture.
-    let workspaces_root = tmp.path().join("workspaces");
-    let mut handles = std::fs::read_dir(&workspaces_root)
-        .expect("read_dir workspaces")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.is_dir())
-        .collect::<Vec<_>>();
-    assert_eq!(handles.len(), 1);
-    let workspace_path = handles.pop().unwrap();
-    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../containers/fixtures/debian/example-1.0");
-    copy_recursive(&fixture_root, &workspace_path);
 
     // 4. Run source_preparation (the 1C.1 check) first.
     //    This confirms the workspace path is set up
@@ -1948,15 +2577,27 @@ async fn debian_issue_bts_snapshot_passes_against_the_hermetic_fixture() {
 
 /// 1D.2 integration test: a candidate whose
 /// `debian/control` declares a `Standards-Version`
-/// above the §19 manifest's `baseline_policy_version`
-/// (= `"4.7.4.1"`) yields a `Verdict::Fail` evidence
-/// with the `E_POLICY_BASELINE_STALE` diagnostic and
-/// the `AboveBaseline` comparison outcome. The test
+/// above the §19 manifest's `standards_version_target`
+/// (= `"4.7.4"`) yields a `Verdict::InfrastructureError`
+/// evidence with the `E_POLICY_BASELINE_STALE` diagnostic
+/// and the `AboveBaseline` comparison outcome. The test
 /// stages the `example-future-1.0` hermetic fixture
 /// (its `Standards-Version: 4.9.0` is above the
 /// manifest baseline) and exercises the full MCP
 /// capture → plan → check.run → evidence.get →
 /// evidence.artifact.read → decode path.
+///
+/// PHASE-1.1 PR 1.1.D (policy baseline correctness):
+/// the pre-1.1.D test expected `Verdict::Fail`
+/// (the candidate is bad) and `baseline_policy_version`
+/// (the *Policy Manual document* version, 4.7.4.1).
+/// The 1.1.D-corrected test expects
+/// `Verdict::InfrastructureError` (the manifest is
+/// stale, not the package — the spec at line 978
+/// is explicit that an above-baseline candidate
+/// "must not be marked bad") and
+/// `standards_version_target` (= `"4.7.4"`, the
+/// `Standards-Version` target).
 #[tokio::test]
 async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
     let tmp = Arc::new(tempfile::tempdir().expect("tmpdir"));
@@ -1968,6 +2609,31 @@ async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
         .expect("job_id string")
         .to_string();
     let _captured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    // Stage the future-version fixture into the
+    // auto-provisioned workspace handle, then capture
+    // a second time so the candidate's `source_version`
+    // is bound to the staged tree (PHASE-1.1 PR 1.1.A:
+    // `capture_candidate` resolves the version from
+    // `debian/changelog`). The `Standards-Version: 4.9.0`
+    // is above the manifest's `4.7.4.1` baseline.
+    let workspaces_root = d.workspaces_root();
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(handles.len(), 1);
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-future-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+    let _recaptured = d
         .call(
             "candidate.capture",
             candidate_capture_args(&job_id, "example"),
@@ -1990,22 +2656,6 @@ async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
         .get(3)
         .cloned()
         .expect("policy-delta check_id must be in next_actions");
-
-    // Stage the future-version fixture into the
-    // auto-provisioned workspace handle. The
-    // `Standards-Version: 4.9.0` is above the
-    // manifest's `4.7.4.1` baseline.
-    let workspaces_root = tmp.path().join("workspaces");
-    let mut handles = std::fs::read_dir(&workspaces_root)
-        .expect("read_dir workspaces")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.is_dir())
-        .collect::<Vec<_>>();
-    assert_eq!(handles.len(), 1);
-    let workspace_path = handles.pop().unwrap();
-    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../containers/fixtures/debian/example-future-1.0");
-    copy_recursive(&fixture_root, &workspace_path);
 
     // Run only the policy-delta check (skip the
     // 1C.1 / 1C.2 / 1C.3 checks; the future
@@ -2038,8 +2688,8 @@ async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
     assert_eq!(run_body["error"], Value::Null, "{run_body}");
     let run_result = &run_body["result"]["structuredContent"];
     assert_eq!(
-        run_result["evidence_status"], "fail",
-        "the §22 gate must fire on Standards-Version 4.9.0 (above baseline 4.7.4.1): {run_result}"
+        run_result["evidence_status"], "infrastructure_error",
+        "the §22 gate must fire on Standards-Version 4.9.0 (above baseline 4.7.4): {run_result}"
     );
     let evidence_id = run_result["evidence_id"]
         .as_str()
@@ -2099,8 +2749,8 @@ async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
 
     assert_eq!(
         report["verdict"].as_str(),
-        Some("fail"),
-        "the future-fixture verdict is fail: {report}"
+        Some("infrastructure_error"),
+        "the future-fixture verdict is infrastructure_error (post-1.1.D): {report}"
     );
     assert_eq!(
         report["candidate_standards_version"].as_str(),
@@ -2109,8 +2759,8 @@ async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
     );
     assert_eq!(
         report["baseline_standards_version"].as_str(),
-        Some("4.7.4.1"),
-        "the manifest's baseline is 4.7.4.1: {report}"
+        Some("4.7.4"),
+        "the manifest's standards_version_target is 4.7.4 (post-1.1.D): {report}"
     );
     assert_eq!(
         report["comparison_outcome"].as_str(),
@@ -2130,7 +2780,7 @@ async fn debian_policy_delta_review_blocks_a_candidate_above_the_baseline() {
 
 /// 1D.2 integration test: the good fixture's
 /// `Standards-Version: 4.6.2` is below the
-/// manifest's `4.7.4.1` baseline, so the check
+/// manifest's `4.7.4` baseline, so the check
 /// yields `Verdict::Pass` with the
 /// `BelowBaseline` comparison outcome. This
 /// is the §22 pass-path proof: the gate does
@@ -2146,6 +2796,29 @@ async fn debian_policy_delta_review_passes_a_candidate_below_the_baseline() {
         .expect("job_id string")
         .to_string();
     let _captured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
+
+    // Stage the good fixture into the auto-provisioned
+    // workspace handle, then capture a second time so
+    // the candidate's `source_version` is bound to the
+    // staged tree (PHASE-1.1 PR 1.1.A: `capture_candidate`
+    // resolves the version from `debian/changelog`).
+    let workspaces_root = d.workspaces_root();
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(handles.len(), 1);
+    let workspace_path = handles.pop().unwrap();
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/example-1.0");
+    copy_recursive(&fixture_root, &workspace_path);
+    let _recaptured = d
         .call(
             "candidate.capture",
             candidate_capture_args(&job_id, "example"),
@@ -2168,18 +2841,6 @@ async fn debian_policy_delta_review_passes_a_candidate_below_the_baseline() {
         .get(3)
         .cloned()
         .expect("policy-delta check_id must be in next_actions");
-
-    let workspaces_root = tmp.path().join("workspaces");
-    let mut handles = std::fs::read_dir(&workspaces_root)
-        .expect("read_dir workspaces")
-        .map(|e| e.expect("entry").path())
-        .filter(|p| p.is_dir())
-        .collect::<Vec<_>>();
-    assert_eq!(handles.len(), 1);
-    let workspace_path = handles.pop().unwrap();
-    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../containers/fixtures/debian/example-1.0");
-    copy_recursive(&fixture_root, &workspace_path);
 
     let run_response = d
         .post(
@@ -2204,7 +2865,7 @@ async fn debian_policy_delta_review_passes_a_candidate_below_the_baseline() {
     let run_result = &run_body["result"]["structuredContent"];
     assert_eq!(
         run_result["evidence_status"], "pass",
-        "the §22 gate does not fire on Standards-Version 4.6.2 (below baseline 4.7.4.1): {run_result}"
+        "the §22 gate does not fire on Standards-Version 4.6.2 (below baseline 4.7.4): {run_result}"
     );
     let evidence_id = run_result["evidence_id"]
         .as_str()
@@ -2339,11 +3000,14 @@ async fn debian_state_machine_vertical_slice_walks_event_detected_to_source_inte
         .await;
 
     // 2. Stage the good fixture into the job's
-    //    workspace handle. The workspace was created
-    //    empty by `candidate.capture`; copying the
-    //    fixture in-place is what 1C.1 / 1C.2 / 1C.3
-    //    / 1D.2 / 1E.2 already do.
-    let workspaces_root = tmp.path().join("workspaces");
+    //    workspace handle, then capture a second time
+    //    so the candidate's `source_version` is bound
+    //    to the staged tree. The two-capture pattern
+    //    is required because `capture_candidate`
+    //    resolves the version from `debian/changelog`
+    //    (PHASE-1.1 PR 1.1.A), and the changelog is
+    //    only present after the fixture is staged.
+    let workspaces_root = d.workspaces_root();
     let mut handles = std::fs::read_dir(&workspaces_root)
         .expect("read_dir workspaces")
         .map(|e| e.expect("entry").path())
@@ -2354,6 +3018,12 @@ async fn debian_state_machine_vertical_slice_walks_event_detected_to_source_inte
     let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../containers/fixtures/debian/example-1.0");
     copy_recursive(&fixture_root, &workspace_path);
+    let _recaptured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
 
     // 3. Discover the five pre-build check_ids via
     //    `job.next_actions`. The inspection plan emits
@@ -2523,9 +3193,11 @@ async fn maintainer_intake_scenario_assembles_a_43_shaped_exit_artifact_from_tru
         .await;
 
     // 2. Stage the good fixture into the job's workspace
-    //    handle, mirroring the 1F.1 setup so the binary
-    //    finds the source tree it expects.
-    let workspaces_root = tmp.path().join("workspaces");
+    //    handle, then capture a second time so the
+    //    candidate's `source_version` is bound to the
+    //    staged tree (PHASE-1.1 PR 1.1.A: `capture_candidate`
+    //    resolves the version from `debian/changelog`).
+    let workspaces_root = d.workspaces_root();
     let mut handles = std::fs::read_dir(&workspaces_root)
         .expect("read_dir workspaces")
         .map(|e| e.expect("entry").path())
@@ -2536,6 +3208,12 @@ async fn maintainer_intake_scenario_assembles_a_43_shaped_exit_artifact_from_tru
     let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../containers/fixtures/debian/example-1.0");
     copy_recursive(&fixture_root, &workspace_path);
+    let _recaptured = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args(&job_id, "example"),
+        )
+        .await;
 
     // 3. Discover the five pre-build check_ids via
     //    `job.next_actions`, in the same order the
@@ -2816,6 +3494,445 @@ async fn maintainer_intake_scenario_assembles_a_43_shaped_exit_artifact_from_tru
         outcome["blocked"]["current"].as_str(),
         Some("source_integrity"),
         "the §43 `Workflow` line's source state is SourceIntegrity, not anything earlier: {reconcile}"
+    );
+
+    d.shutdown().await;
+}
+
+/// PHASE-1.1 PR 1.1.E (P2 #1 from
+/// `doc/PHASE-1-FEEDBACK.md`) — opt-in test against
+/// the pinned real Debian source package
+/// `containers/fixtures/debian/pinned-real/`.
+///
+/// Spec §29 mandates a pinned real Debian source
+/// package as a separate opt-in test, separate from
+/// the hand-crafted hermetic fixtures. The test is
+/// **skipped** in the §97 gate (the env var is not
+/// set in CI); running it locally with
+/// `IRONMAINT_REAL_FIXTURE_REACHABLE=1` exercises the
+/// full §13 inspection suite against a real-format
+/// Debian source tree.
+///
+/// ## GREEN state (this commit)
+///
+/// The test stages the pinned-real fixture, captures
+/// a candidate with `expected_version: Some("2.10-2")`,
+/// runs the five pre-build checks
+/// (`source_preparation`, `source_analysis`,
+/// `maintenance_context`, `policy_delta_review`,
+/// `bts_snapshot`), and asserts all five return
+/// `Pass`. The pinned-real fixture's
+/// `Standards-Version: 4.7.4` is *at* the post-1.1.D
+/// manifest's `standards_version_target` — the §22
+/// gate classifies it as `AtBaseline`, the
+/// `intervening_checklist_entries` field is empty
+/// (no entries needed for the at-baseline case), and
+/// the candidate's `source_version` matches the
+/// `debian/changelog`'s first entry (1.1.A's
+/// resolution). The bts_snapshot subcommand is the
+/// hermetic mode (1E.2 + 1.1.C), so the verdict is
+/// `pass` regardless of which source package the
+/// candidate names.
+#[tokio::test]
+async fn pinned_real_debian_source_package_inspection() {
+    if std::env::var("IRONMAINT_REAL_FIXTURE_REACHABLE").is_err() {
+        // Opt-in skip. The §97 gate does not set this
+        // env var; local developers can opt in by
+        // running:
+        //
+        //   IRONMAINT_REAL_FIXTURE_REACHABLE=1 \
+        //     cargo test -p ironmaintd --test \
+        //     startup_shutdown -- --exact \
+        //     pinned_real_debian_source_package_inspection
+        //
+        // See `doc/CONTAINER-IMAGES.md` for the
+        // opt-in pattern.
+        return;
+    }
+
+    let _ = tracing_subscriber::fmt::try_init();
+    let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+    let mut d = Daemon::start_on(Arc::clone(&tmp)).await;
+
+    // 1. Job creation.
+    let created = d.call("job.create", create_job_args()).await;
+    let job_id = created["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+
+    // 2. Stage the pinned-real fixture into the
+    //    daemon's per-job workspace. The first
+    //    capture provisions the empty workspace;
+    //    the fixture is then copied in; the second
+    //    capture reads the staged tree.
+    let fixture_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../containers/fixtures/debian/pinned-real");
+    let _first = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args_with_version(&job_id, "hello", None),
+        )
+        .await;
+    let workspaces_root = d.workspaces_root();
+    let mut handles = std::fs::read_dir(&workspaces_root)
+        .expect("read_dir workspaces")
+        .map(|e| e.expect("entry").path())
+        .filter(|p| p.is_dir())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        handles.len(),
+        1,
+        "expected exactly one workspace handle; got {handles:?}"
+    );
+    let workspace_path = handles.pop().unwrap();
+    copy_recursive(&fixture_root, &workspace_path);
+
+    // 3. Re-capture with the pinned version. The
+    //    pinned-real fixture's `debian/changelog`
+    //    declares `hello (2.10-2) unstable;` —
+    //    `expected_version: Some("2.10-2")` matches.
+    let _second = d
+        .call(
+            "candidate.capture",
+            candidate_capture_args_with_version(&job_id, "hello", Some("2.10-2")),
+        )
+        .await;
+
+    // 4. The five pre-build checks advertised by
+    //    `next_actions`. The order is
+    //    1C.1 → 1C.2 → 1C.3 → 1D.2 → 1E.2 (per
+    //    `debian_issue_bts_snapshot_passes_...`
+    //    above and the other `debian_inspect_*`
+    //    tests).
+    let next = d.call("job.next_actions", json!({"job_id": job_id})).await;
+    let allowed = next["actions"]["allowed"]
+        .as_array()
+        .expect("allowed array");
+    let check_ids: Vec<&str> = allowed
+        .iter()
+        .filter_map(|a| a.get("run_check")?.get("check_id")?.as_str())
+        .collect();
+    assert_eq!(
+        check_ids.len(),
+        5,
+        "the pinned-real fixture's pre-build suite is five checks (§13): {allowed:?}"
+    );
+
+    // 5. Run each of the five pre-build checks. The
+    //    pinned-real fixture's source tree is
+    //    real-format Debian, so all five checks
+    //    must return `Pass` (the §22 gate's
+    //    `AtBaseline` arm; the §24 BTS hermetic
+    //    `pass` verdict).
+    for (idx, check_id) in check_ids.iter().enumerate() {
+        let run_response = d
+            .post(
+                json!({
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "check.run",
+                        "arguments": {
+                            "job_id": job_id,
+                            "check_id": check_id,
+                        },
+                    },
+                }),
+                Some(TOKEN),
+            )
+            .await;
+        assert_eq!(
+            run_response.status(),
+            200,
+            "check.run for check #{idx} ({check_id}) was not served"
+        );
+        let run_body: Value = run_response.json().await.expect("json body");
+        assert_eq!(
+            run_body["error"],
+            Value::Null,
+            "check.run for check #{idx} ({check_id}) returned a protocol error: {run_body}"
+        );
+        let evidence_status = run_body["result"]["structuredContent"]["evidence_status"]
+            .as_str()
+            .expect("evidence_status string");
+        assert_eq!(
+            evidence_status, "pass",
+            "the pinned-real fixture's check #{idx} ({check_id}) must return \
+             `pass` (the §13 inspection suite's contract on a real-format \
+             Debian source tree is `pass` for all five pre-build checks): \
+             {run_body}"
+        );
+    }
+
+    d.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-1.1 PR 1.1.G — `source.import` (P2 #3).
+//
+// The two tests below are the conformance pins for the
+// new tool. The first is the "happy path" — a real `git
+// clone` against a local bare repo with the URL on the
+// allowlist. The second is the "deny path" — a URL not on
+// the allowlist must be refused with `McpError::InvalidInput`
+// before any git process is spawned.
+//
+// Both tests are hermetic: the bare repo lives in a tempdir
+// the test owns, and the daemon's state dir is also a tempdir
+// (via `Daemon::start_with_allowlist`). The §97 gate does not
+// depend on any external network resource.
+//
+// RED state (this commit): the dispatcher entry is registered
+// but the body returns `McpError::Other("not implemented")`.
+// Both tests fail because the dispatcher does not actually
+// clone the repo / check the allowlist. The GREEN commit
+// replaces the dispatcher body with the real implementation.
+
+/// Build a local bare git repo at `bare_path`, seeded with
+/// one commit on `main`. Used by the
+/// `source_import_clones_a_real_git_remote` test below —
+/// the daemon is started with `bare_path` on the allowlist,
+/// and the test asserts the clone populates the workspace.
+async fn seed_bare_repo(bare_path: &std::path::Path) {
+    // Step 1: create a working repo with a single commit,
+    // so the bare repo has at least one ref to clone.
+    let seed_dir = tempfile::tempdir().expect("seed tempdir");
+    let seed_path = seed_dir.path();
+    let run = |args: &[&str]| {
+        let p = seed_path.to_path_buf();
+        let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        async move {
+            tokio::process::Command::new("git")
+                .args(&v)
+                .current_dir(&p)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", "/var/empty")
+                .output()
+                .await
+                .expect("git invocation")
+        }
+    };
+    let _ = run(&["init", "--initial-branch=main"]).await;
+    let _ = run(&["config", "user.email", "ironmaint@invalid"]).await;
+    let _ = run(&["config", "user.name", "ironmaint"]).await;
+    tokio::fs::write(seed_path.join("README.md"), "ironmaint 1.1.G fixture\n")
+        .await
+        .expect("write README");
+    let _ = run(&["add", "."]).await;
+    let _ = run(&["commit", "-m", "initial"]).await;
+
+    // Step 2: `git clone --bare` the working repo into
+    // `bare_path`. The result is what `source.import`
+    // will clone from.
+    let status = tokio::process::Command::new("git")
+        .args(["clone", "--bare"])
+        .arg(seed_path)
+        .arg(bare_path)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/var/empty")
+        .output()
+        .await
+        .expect("git clone --bare");
+    assert!(
+        status.status.success(),
+        "git clone --bare failed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+}
+
+#[tokio::test]
+async fn source_import_clones_a_real_git_remote() {
+    // Skip if git is not on the test's PATH — same
+    // `git_available` shape used in
+    // `ironmaint-workspace/tests/common/mod.rs`. The §97
+    // gate image always has git, so this is a "developer
+    // machine without git" guard rather than a CI guard.
+    let git_check = tokio::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .await;
+    if !matches!(git_check, Ok(ref o) if o.status.success()) {
+        eprintln!("git is not available; skipping source.import hermetic test");
+        return;
+    }
+
+    // Stage a local bare repo and put it on the
+    // allowlist. `Daemon::start_with_allowlist` shares
+    // the same tempdir the test body uses, so the test
+    // can resolve `<tmp>/bare.git` from the daemon's
+    // point of view.
+    let tmp = tempfile::tempdir().expect("test tempdir");
+    let bare_path = tmp.path().join("bare.git");
+    seed_bare_repo(&bare_path).await;
+    let bare_url = format!("file://{}", bare_path.display());
+
+    let mut d = Daemon::start_with_allowlist(vec![bare_url.clone()]).await;
+
+    // Create a job to import into. `job.create` is the
+    // canonical MCP entry point — the runtime's
+    // `handle_create_job` mints a `JobId` and writes
+    // the projection (the `MockStore` candidate-job FK
+    // check 1.1.F added requires the projection to be
+    // there before `candidate.capture`; `source.import`
+    // is even simpler — it only needs the projection,
+    // which the create already wrote).
+    let create_resp = d
+        .call(
+            "job.create",
+            json!({
+                "orchestrator": {"kind": "ironclaw"},
+                "package": {
+                    "distribution": {"family": "debian", "release": "sid"},
+                    "source_name": "source-import-fixture",
+                    "binary_names": [],
+                },
+            }),
+        )
+        .await;
+    let job_id = create_resp["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+
+    // Call `source.import` with the local bare URL.
+    // In RED state, the dispatcher returns
+    // `McpError::Other("not implemented")` and the
+    // response is a protocol error. In GREEN state,
+    // the dispatcher checks the allowlist (passes),
+    // resolves the workspace, and `git clone`s the
+    // bare repo into the workspace handle.
+    let import_resp = d
+        .call(
+            "source.import",
+            json!({
+                "job_id": job_id,
+                "url": bare_url,
+                "ref_name": "main",
+            }),
+        )
+        .await;
+    assert_eq!(
+        import_resp["error"],
+        Value::Null,
+        "source.import returned a protocol error: {import_resp}"
+    );
+    let handle = import_resp["workspace_handle"]
+        .as_str()
+        .expect("workspace_handle string")
+        .to_string();
+    assert!(
+        !handle.is_empty(),
+        "source.import returned an empty workspace handle: {import_resp}"
+    );
+
+    // The handle must point at a directory that now
+    // contains the cloned repo's `README.md` and a
+    // `.git` directory (the `git clone` produces
+    // both). The path is the daemon's
+    // `--workspace-root` plus the handle.
+    let handle_dir = d.workspaces_root().join(&handle);
+    let readme = handle_dir.join("README.md");
+    assert!(
+        readme.is_file(),
+        "the cloned workspace at {} does not contain README.md; \
+         source.import did not materialise the remote content",
+        handle_dir.display()
+    );
+    let contents = tokio::fs::read_to_string(&readme)
+        .await
+        .expect("read README from cloned workspace");
+    assert!(
+        contents.contains("1.1.G"),
+        "the cloned README does not match the seeded content: {contents:?}"
+    );
+    assert!(
+        handle_dir.join(".git").exists(),
+        "the cloned workspace at {} has no .git directory",
+        handle_dir.display()
+    );
+
+    d.shutdown().await;
+}
+
+#[tokio::test]
+async fn source_import_rejects_a_url_not_on_the_allowlist() {
+    // No allowlist is configured — the daemon denies
+    // every URL by default. The test asserts the
+    // dispatcher returns a typed `InvalidInput`
+    // protocol error and that no workspace directory
+    // is created on disk.
+    let mut d = Daemon::start_with_allowlist(vec![]).await;
+
+    let create_resp = d
+        .call(
+            "job.create",
+            json!({
+                "orchestrator": {"kind": "ironclaw"},
+                "package": {
+                    "distribution": {"family": "debian", "release": "sid"},
+                    "source_name": "source-import-deny",
+                    "binary_names": [],
+                },
+            }),
+        )
+        .await;
+    let job_id = create_resp["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+
+    let import_resp_raw = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 2,
+                "method": "tools/call",
+                "params": {
+                    "name": "source.import",
+                    "arguments": {
+                        "job_id": job_id,
+                        "url": "file:///nonexistent/never-on-the-allowlist.git",
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(
+        import_resp_raw.status(),
+        200,
+        "tools/call for source.import was not served at all"
+    );
+    let import_resp: Value = import_resp_raw
+        .json()
+        .await
+        .expect("json body from source.import call");
+    // The MCP transport wraps the dispatcher's
+    // `McpError::InvalidInput` as a tool-level error
+    // (isError = true), not a JSON-RPC protocol error.
+    // The structured error's `message` is what an agent
+    // sees. The exact code depends on the transport
+    // layer, so we assert on the message and on the
+    // absence of a `workspace_handle` in the result.
+    assert_eq!(
+        import_resp["result"]["isError"],
+        Value::Bool(true),
+        "source.import with a URL not on the allowlist must return isError=true: {import_resp}"
+    );
+    let message = import_resp["result"]["structuredContent"]["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    assert!(
+        message.contains("allowlist"),
+        "source.import error message does not mention the allowlist: {message}"
+    );
+    assert!(
+        import_resp["result"]["structuredContent"]["workspace_handle"].is_null(),
+        "source.import with a non-allowlisted URL must not return a workspace_handle: {import_resp}"
     );
 
     d.shutdown().await;

@@ -7,9 +7,14 @@ against the repository.
 - **Base:** `develop` (PR #63, Phase 1G.1)
 - **Scope:** sub-phases 1A.1 – 1G.1, **16 PRs** (`#46` – `#63`)
 - **Date:** 2026-10-13
+- **Phase 1.1 corrective pass:** PRs #70, #71, #72, #73 (1.1.A, 1.1.B, 1.1.C, 1.1.D, 1.1.E, 1.1.F, 1.1.G) — see §1.1 below for what changed
 
 > **The single most important sentence in this document.** All 35 items in
-> §41's Definition of Done are checked below. Phase 1 is complete.
+> §41's Definition of Done are checked below. Phase 1 is complete; the
+> 1.1 corrective pass tightens four of the rows with an inline note
+> prefixed **"corrected Phase 1.1 / PR …"** or **"met (refined
+> Phase 1.1 / PR …)"**. The body of this document is the *original*
+> Phase 1 record; §1.1 (at the top) is the Phase 1.1 record.
 > The five pre-build gates walk the state machine from `EventDetected` to
 > `SourceIntegrity` through MCP, end to end, against a hermetic
 > Debian fixture. Items 29–32 are **negative-space** — they are met
@@ -21,6 +26,101 @@ against the repository.
 > wired in. The state machine stops at `SourceIntegrity` because the
 > `BuildValidation` rule has no satisfied gate — the missing
 > capability is the proof, not a bug.
+
+---
+
+## 1.1. Phase 1.1 corrective pass — what changed
+
+The architect reviewed `master` at `21b76ac` after the
+Phase 1 release merge and surfaced **4 P1 findings and
+3 P2 findings** in `doc/PHASE-1-FEEDBACK.md`. Phase 1.1
+is the corrective pass: it fixes the four P1s and
+implements the three P2s, without touching anything
+§106 protects (state machine, persistence, executor,
+candidate identity, evidence, state ownership, MCP
+boundary, IronClaw integration), and updates this
+document to be honest about what Phase 1 actually
+delivered. The 8-PR sequence (1.1.A – 1.1.H) lands
+against `develop` and ends with the §97 gate green
+on the corrected tree.
+
+### The 4 P1 fixes
+
+| Finding | PR | What it fixes |
+|---|---|---|
+| **P1 #1** Candidate version hard-coded to `0+ironmaint`; `E_VERSION_MISMATCH` dormant because the candidate and fixture both used the sentinel | **1.1.A** / #65 | `capture.rs` now reads `debian/changelog`'s first entry via `read_changelog_first_entry(workspace_path)` (in `ironmaint-workspace/src/changelog.rs`); the candidate's `source_version` is the real version unless the caller supplies an `expected_version` override. The runtime gains an `expected_version: Option<String>` field on `CaptureInput`. Two new tests: `candidate_capture_uses_real_changelog_version`, `candidate_capture_uses_supplied_expected_version` |
+| **P1 #2** `build_candidate_input` reads the live workspace; no `git worktree` snapshot of the captured tree | **1.1.B** / #66 | New `GitInvocation::worktree_add_detached` primitive; runtime's `handle_run_check` materialises a frozen worktree at `<workspace>/<handle>/.ironmaint-checks/<evidence_id>`, re-verifies the tree hash pre- and post-check, and tears the frozen copy down after. `apply_patch` still mutates the live workspace; the check path is bound to the captured tree. New tests: `frozen_for_check_*` and `evidence_frozen_during_check` |
+| **P1 #3** `bts_snapshot::run` returns a hard-coded three-bug fixture; Python helper's `python-debianbts` API call is `get_bugs` (returns numbers) instead of `get_status` (returns detailed records) | **1.1.C** / #67 | `bts_snapshot::run` now spawns `containers/debian-tools/bts-helper.py`; the helper uses `get_status(*bugs)`; the malformed-JSON path is pinned by `fake_bts_returns_malformed_json_is_infrastructure_error`. The live BTS query is opt-in (gated on `IRONMAINT_BTS_LIVE`); the §97 gate is hermetic |
+| **P1 #4** `authorities.v1.json`'s `baseline_policy_version` is the *Policy Manual document* version (4.7.4.1), not the *Standards-Version target* (4.7.4) the §20 / §22 spec calls for; verdict semantics say `Fail` for a candidate above baseline (spec line 978 forbids it); report is missing the upgrading-checklist entries §20 promised | **1.1.D** / #70 | `authorities.v1.json` splits into `policy_document_version: "4.7.4.1"` and `standards_version_target: "4.7.4"`; new `policy/debian/upgrading-checklist.v1.json` carries the 4.7.4 → 4.7.4.1 interval; `AboveBaseline` is now `Verdict::InfrastructureError` (mapping to `GateStatus::Blocked`, not `Fail`); the report's `intervening_checklist_entries[]` is populated from the new JSON. The future-fixture test asserts `infrastructure_error`, not `fail` |
+
+### The 3 P2 additions
+
+| Finding | PR | What it adds |
+|---|---|---|
+| **P2 #1** Spec §29 mandates a pinned real Debian source package as a separate opt-in test; only hand-crafted fixtures exist | **1.1.E** / #71 | `containers/fixtures/debian/pinned-real/` — a real-format `hello 2.10-2` source tree (METADATA, `debian/changelog`, `debian/control`, `debian/copyright`, `debian/rules`, `debian/source/format`, `debian/watch`, `debian/tests/control`, `hello.c`, `Makefile`). The test is gated on `IRONMAINT_REAL_FIXTURE_REACHABLE=1` (the §97 gate does not depend on the external archive). `doc/CONTAINER-IMAGES.md` §5.1.1 documents the opt-in pattern |
+| **P2 #2** D-21 / MockStore parity — the mock-store half of the candidate-job FK conformance case is absent; `MockStore::put_source_candidate` accepts orphans that SQLite refuses | **1.1.F** / #72 | `MockStore::put_source_candidate` now mirrors the SQLite `FOREIGN KEY (job_id) REFERENCES projections(job_id)`: a candidate whose job is not in the `projections` map is refused with `StoreErrorKind::Conflict`. New both-stores conformance case: `crates/ironmaint-testkit/tests/store_parity_both_stores.rs::a_candidate_for_an_unknown_job_is_refused_by_both_stores`. The 1A.1 runtime pre-check stays as belt-and-braces. `doc/DEBT.md` D-21 row is amended to record the lower-layer fix on top of the runtime guard |
+| **P2 #3** No controlled source-import path; `candidate.capture` inspects whatever is on disk, and the only way to bring in upstream was the operator's host shell | **1.1.G** / #73 | 15th MCP tool, `source.import`. Takes a `job_id`, a `url`, and an optional `ref_name`; the URL is gated against a config-supplied `--source-import-allowlist` (deny-all default, prefix match); the dispatcher calls `WorkspaceManager::import_git_remote` which `git clone --depth 1 --branch <ref> <url>`s the remote into the workspace. The next `candidate.capture` operates on the cloned tree. Two new tests: `source_import_clones_a_real_git_remote` (hermetic, local bare repo) and `source_import_rejects_a_url_not_on_the_allowlist` (deny-by-default) |
+
+### §106 — what was deliberately not touched
+
+- No state machine change. `ironmaint-state` is unchanged
+  on top of the 1A.1 closure of D-21 (which itself is
+  runtime-pre-check only, not a state-machine change).
+- No new `AdapterCapability`, no new `EvidenceKind`, no
+  new `GateStage`, no new `JobState`. The 1.1 fixes are
+  all about *what's already there* being wrong, not
+  about adding new domain primitives.
+- No new `AdapterRegistry` capability advertisement. S6's
+  Phase 2 deny list stays the same. No `BuildPlanning`,
+  no `IssueWrite`, no `PublicationPlanning`.
+- No new seam check. `verify-seams` S1/S2/S4/S5/S6/S8
+  stay green; the architectural guardrails are not
+  modified.
+- The 1.1.A `expected_version` is a CaptureInput field,
+  not a state-shape change. The 1.1.B frozen worktree is
+  a runtime detail, not a SourceCandidate re-fingerprint.
+  The 1.1.C subprocess is a transport change, not a
+  python-debianbts direct binding. The 1.1.D manifest
+  split is a data-file change, not a new `Authority::id`
+  schema. The 1.1.G `source.import` is a 15th tool, not
+  a replacement for any of the 14. None of these touch
+  the §106-protected surfaces.
+
+### §97 gate on the corrected tree (Phase 1.1 close)
+
+The §97 gate is run on the final tree, on the
+`feature/phase-1.1/dod-honesty` branch after the four
+PR-by-PR iterations land in `develop`. The result is
+the receipt for Phase 1.1:
+
+- `cargo fmt --check` — clean
+- `cargo clippy --workspace --all-targets --all-features -- -D warnings` — clean
+- `cargo test --workspace` — all pass
+- `cargo run -p xtask -- verify-architecture` — no violations
+- `cargo run -p xtask -- verify-schemas` — no drift (13 types)
+- `cargo run -p xtask -- verify-mcp-schemas` — no drift (15 types; the 15th is `source.import`)
+- `cargo run -p xtask -- verify-migrations` — clean (25 applied objects, 2 migrations)
+- `cargo run -p xtask -- verify-seams` — no violations (S1: 12, S2: 4, S4: 8, S5: 27, S6: 24, S8: 14)
+- `cargo test --workspace --features integration` — all pass
+
+The full transcript is the agent's working record; the
+gate's structural conclusion is "the corrected tree
+meets the §97 bar on top of Phase 1".
+
+### DoD rows affected (annotated in §12 below)
+
+- **Item 9** (real Debian source tree inspection) — *refined*: live-workspace reading is now structurally disallowed (1.1.B)
+- **Item 10** (candidate identity validation) — *corrected*: the `0+ironmaint` hard-coded literal is gone; the candidate's `source_version` is the real `debian/changelog` version (1.1.A)
+- **Item 20** (BTS state read-only) — *corrected*: the live BTS query is wired; the malformed-JSON path is pinned (1.1.C)
+- **Item 24** (Standards-Version delta) — *corrected*: `AboveBaseline` is `Blocked`, not `Fail`; the report carries the upgrading-checklist entries (1.1.D)
+
+The other 31 DoD rows are unchanged from the Phase 1
+record. The Phase 1 architectural claims — *workspace
+and dependency boundaries; core identities;
+evidence/policy/state; the `DistributionAdapter` API;
+the two distribution stubs; the schemas and
+architecture hardening* — hold; Phase 1.1 is
+corrective, not additive to the structural surface.
 
 ---
 
@@ -397,7 +497,8 @@ Phase 2 work re-enables them through the S6 allowlist
 
 ## 11. Open debt at Phase 1 close
 
-From `doc/DEBT.md` (2026-10-13, post-1G.1):
+From `doc/DEBT.md` (2026-10-13, post-1G.1; **amended
+2026-10-15 by Phase 1.1 / PR 1.1.F**):
 
 | ID | Severity | Status | Notes |
 |---|---|---|---|
@@ -410,9 +511,19 @@ From `doc/DEBT.md` (2026-10-13, post-1G.1):
 | D-15 | LOW | environment-blocked | no `ironclaw` binary; the spec's "IronClaw agent completes the synthetic repair workflow" cannot be checked in this environment (carried over from Phase 0B) |
 | D-17 | LOW | real but bounded, not Phase 1's problem | unchanged |
 | D-19 | LOW | real but bounded, not Phase 1's problem | unchanged |
+| D-21 | MEDIUM | **CLOSED 2026-10-05** (PR 1A.1); **AMENDED 2026-10-15** (PR 1.1.F) | the runtime pre-check that 1A.1 added is now belt-and-braces; `MockStore::put_source_candidate` itself now mirrors the SQLite `FOREIGN KEY (job_id) REFERENCES projections(job_id)`, refused with `StoreErrorKind::Conflict`. The both-stores conformance pin is `crates/ironmaint-testkit/tests/store_parity_both_stores.rs` |
 
-**The one new entry 1G.1 introduced is the D-11 closure.** The
-other rows pre-date Phase 1 and are unchanged.
+**The two 1G.1 / 1.1.F entries are the D-11 closure (1G.1)
+and the D-21 amendment (1.1.F).** D-21's "Phase 1
+closure note" was honest about *what Phase 1 did* —
+the runtime pre-check makes the disagreement
+unobservable through the MCP surface — but the
+architect's P2 #2 finding was that the lower-layer
+fix is what closes the disagreement, not the runtime
+guard. 1.1.F does the lower-layer fix and keeps the
+runtime guard as belt-and-braces.
+
+The other rows pre-date Phase 1 and are unchanged.
 
 ---
 
@@ -436,8 +547,8 @@ latter; the gap is the point.
 | 6 | Agents can retrieve those artifacts through scoped read-only MCP operations | **met** | 1A.4 / PR #49; `evidence.list` / `evidence.get` / `evidence.artifact.read`; the 1G.1 §43-shape test exercises all three end-to-end |
 | 7 | A production Debian adapter replaces the Debian stub in `ironmaintd` | **met** | 1B.3 / PR #52; `bins/ironmaintd/src/main.rs` now registers `debian::DebianAdapter::new()`; the stub is no longer in the production path; the production adapter passes the shared conformance suite |
 | 8 | Debian version comparison matches Debian's native semantics on a test corpus | **met** | 1B.2 / PR #51; `debversion` crate adopted; `adapters/debian-stub/tests/oracle_compare_versions.rs` walks the corpus against `dpkg --compare-versions` (gated on `dpkg` present); 1B.3 vendors the comparator into the production adapter |
-| 9 | A real Debian source tree can be structurally inspected | **met** | 1C.1 / PR #53 + 1C.2 / PR #55 + 1C.3 / PR #57; the 3 inspection checks against the good fixture all return `Pass` and produce a structured report |
-| 10 | Candidate package identity is validated against the source tree | **met** | 1C.1 / PR #53; the `source_preparation` report's `verdict` is `Fail` with `E_CHANGELOG_SOURCE_NAME_MISMATCH` against the broken fixture |
+| 9 | A real Debian source tree can be structurally inspected | **met (refined Phase 1.1 / PR 1.1.B)** | 1C.1 / PR #53 + 1C.2 / PR #55 + 1C.3 / PR #57; the 3 inspection checks against the good fixture all return `Pass` and produce a structured report. The Phase 1 claim was "inspect the live workspace"; Phase 1.1 refines that to "inspect a frozen worktree (`git worktree add --detach <tree>`) at the captured tree, with a post-check re-verification of the tree hash." The frozen copy is torn down after the check; the live workspace is unchanged. The original `Live workspace reading` is now structurally disallowed by the runtime, not just by convention |
+| 10 | Candidate package identity is validated against the source tree | **met (corrected Phase 1.1 / PR 1.1.A)** | 1C.1 / PR #53; the `source_preparation` report's `verdict` is `Fail` with `E_CHANGELOG_SOURCE_NAME_MISMATCH` against the broken fixture. The Phase 1 claim was "met by 1C.1" but it was met for the *identity check*, not for the *identity resolution* — the candidate's `source_version` was hard-coded to `0+ironmaint` at `crates/ironmaint-workspace/src/capture.rs`, so a real version from `debian/changelog` never reached the candidate. Phase 1.1 / PR 1.1.A replaces the hard-coded literal with a `read_changelog_first_entry(workspace_path)` call (in `ironmaint-workspace/src/changelog.rs`); the candidate's `source_version` is now the real `debian/changelog` version unless the caller supplies an `expected_version` override, in which case a `Diagnostic` records the disagreement. The `E_VERSION_MISMATCH` diagnostic at `bins/ironmaint-debian-tool/src/source_preparation.rs:208` is no longer dormant |
 | 11 | `debian/control` information is represented structurally | **met** | 1C.2 / PR #55; `DebianSourceReportV1.source_metadata` + `binary_packages[]` |
 | 12 | `debian/changelog` information is represented structurally | **met** | 1C.1 / 1C.2 / 1C.3; `ChangelogIdentity` (source, version, distribution, urgency, maintainer, timestamp) |
 | 13 | source format is reported | **met** | 1C.1 / 1C.2; `DebianSourceReportV1.source_format` (`"3.0 (quilt)"` etc.) |
@@ -447,11 +558,11 @@ latter; the gap is the point.
 | 17 | copyright metadata is reported | **met** | 1C.2; `copyright.files_stanza_count` + `copyright.machine_readable` |
 | 18 | maintainer scripts are reported | **met** | 1C.2 / 1C.3; `maintainer_scripts.{preinst,postinst,prerm,postrm}.executable` |
 | 19 | GBP configuration is reported where present | **met** | 1C.2 / 1C.3; `gbp.gbp_conf_present` + `gbp.gbp_dch_conf_present` + the parsed `[BUILD-DEFAULTS]` branch settings |
-| 20 | current Debian BTS state is available read-only | **met** | 1E.1 / PR #60 + 1E.2 / PR #61; `DebianIssueReportV1` (`bts_snapshot` subcommand) |
+| 20 | current Debian BTS state is available read-only | **met (corrected Phase 1.1 / PR 1.1.C)** | 1E.1 / PR #60 + 1E.2 / PR #61; `DebianIssueReportV1` (`bts_snapshot` subcommand). The Phase 1 claim was "met by 1E.x" but the 1E.x tests were a hermetic fixture (`hermetic_bugs()` in `bins/ironmaint-debian-tool/src/bts_snapshot.rs`), not a live BTS query — the `bts_snapshot::run` body never called the Python helper (`containers/debian-tools/bts-helper.py`) at all, and the helper itself misused the `python-debianbts` API (`get_bugs` returns numbers, `get_status` is the call that returns detailed records). Phase 1.1 / PR 1.1.C replaces the hard-coded fixture with a subprocess call to the helper, fixes the helper's `get_status(*bugs)` call, and pins the malformed-JSON infrastructure-error path with `fake_bts_returns_malformed_json_is_infrastructure_error`. The live BTS query remains opt-in (gated on `IRONMAINT_BTS_LIVE`); the §97 gate is hermetic |
 | 21 | BTS unavailability becomes `Blocked`, not package failure | **met** | 1E.2 / PR #61; fake-BTS hermetic test asserts the normalizer maps `infrastructure_error` → `ExecutorError::InfrastructureFailed` |
 | 22 | Debian Policy baseline provenance is current and explicit | **met** | 1D.1 / PR #58; `policy/debian/authorities.v1.json` (4 authorities, `baseline_policy_version: "4.7.4.1"`) |
 | 23 | Developer's Reference is classified non-normatively | **met** | 1D.1; `AuthorityClassification::BestPractice` (not `FormalSpecification`); the `developers_reference_is_best_practice_not_formal_specification` test pins it |
-| 24 | `Standards-Version` delta analysis works | **met** | 1D.2 / PR #59; `DebianPolicyDeltaReviewV1` with the `comparison_outcome` tri-state; `debian_policy_delta_review_passes_a_candidate_below_the_baseline` (good fixture) and `debian_policy_delta_review_blocks_a_candidate_above_the_baseline` (future fixture) |
+| 24 | `Standards-Version` delta analysis works | **met (corrected Phase 1.1 / PR 1.1.D)** | 1D.2 / PR #59; `DebianPolicyDeltaReviewV1` with the `comparison_outcome` tri-state; `debian_policy_delta_review_passes_a_candidate_below_the_baseline` (good fixture) and `debian_policy_delta_review_blocks_a_candidate_above_the_baseline` (future fixture). The Phase 1 claim was "met by 1D.2" but the implementation emitted `Verdict::Fail` for a candidate above the baseline, which the spec explicitly forbids at line 978 ("must not be marked bad") — the spec says the gate is *blocked*, not *failed*. Phase 1.1 / PR 1.1.D splits `policy/debian/authorities.v1.json` into `policy_document_version` and `standards_version_target` (the §20 / §22 spec uses the latter as the comparator), changes the verdict semantics so `AboveBaseline` is `Verdict::InfrastructureError` (mapping to `GateStatus::Blocked`, not `GateStatus::Fail`), parses the new `policy/debian/upgrading-checklist.v1.json` to populate the report's `intervening_checklist_entries[]` (the §20 promise), and bumps the future-fixture test to assert `infrastructure_error`, not `fail` |
 | 25 | Phase 1 creates no false claim of complete Policy compliance | **met** | by construction; the production adapter does not advertise `PolicyDerivation`, the `policy()` accessor returns `None`, and the 5 checks are observational (§18 line 847-849) — only the 1D.2 delta review makes a judgement, and that judgement is explicitly a Standards-Version delta, not a Policy compliance verdict |
 | 26 | The five pre-build gates are real checks | **met** | 1C.1 / 1C.2 / 1C.3 / 1D.2 / 1E.2; each registered as a `ToolDefinitionRecord` with a real binary, a real normalizer, and a real report artifact |
 | 27 | A real candidate traverses all five through the existing state machine | **met** | 1F.1 / PR #62; `debian_state_machine_vertical_slice_…` walks `EventDetected → Intake → SourceReview → CandidateAssembly → SourceRevision → SourceIntegrity` in 5 `reconcile` calls through MCP |

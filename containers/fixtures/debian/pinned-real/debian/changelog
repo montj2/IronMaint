@@ -1,0 +1,13 @@
+hello (2.10-2) unstable; urgency=medium
+
+  * Test fixture for PHASE-1.1 PR 1.1.E
+    (containers/fixtures/debian/pinned-real/).
+  * This changelog follows the real Debian changelog
+    format used by `hello` upstream; the version
+    2.10-2 is the version the upstream `hello`
+    package reached in unstable. The §13 inspection
+    suite must recognise this header and the version
+    field, and the candidate's `source_version` (read
+    by 1.1.A) must match the version recorded here.
+
+ -- Santiago Vila <sanvila@debian.org>  Mon, 18 Sep 2023 00:00:00 +0000

@@ -135,6 +135,68 @@ impl GitInvocation {
         Ok(())
     }
 
+    /// PHASE-1.1 PR 1.1.G: `git clone --depth 1 --branch <ref>
+    /// <url>` into the workspace directory. The current
+    /// contents of the directory are NOT removed — that is
+    /// `WorkspaceManager::import_git_remote`'s job, so a
+    /// caller that wants to keep an existing tree can call
+    /// this in a fresh directory instead. The command runs
+    /// from the workspace's parent directory so the clone
+    /// target is the workspace itself; on non-zero exit the
+    /// git stderr is folded into the typed error so the
+    /// dispatcher can surface a useful message back to the
+    /// agent.
+    ///
+    /// `--depth 1` is the §G deliberate choice: a
+    /// package-maintenance tool only needs the ref's tip,
+    /// and shallow clones keep the workspace small for the
+    /// the §13 / §16 inspection suite. A future PR can
+    /// make the depth configurable if a use-case demands
+    /// it.
+    pub async fn clone_into(
+        &self,
+        url: &str,
+        ref_name: Option<&str>,
+    ) -> Result<(), WorkspaceError> {
+        let parent = self.workspace_root.parent().ok_or_else(|| {
+            WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "workspace path {} has no parent to clone into",
+                self.workspace_root.display()
+            )))
+        })?;
+        let dir_name = self.workspace_root.file_name().ok_or_else(|| {
+            WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "workspace path {} has no file name to clone into",
+                self.workspace_root.display()
+            )))
+        })?;
+        let mut cmd = Command::new("git");
+        cmd.current_dir(parent)
+            .env_clear()
+            .envs(&self.env)
+            .arg("clone")
+            .arg("--depth")
+            .arg("1")
+            .arg("--quiet")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(r) = ref_name {
+            cmd.arg("--branch").arg(r);
+        }
+        cmd.arg(url).arg(dir_name);
+        let out = cmd.output().await.map_err(|e| {
+            WorkspaceError::new(WorkspaceErrorKind::Command(format!("git clone spawn: {e}")))
+        })?;
+        if !out.status.success() {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git clone of {url} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ))));
+        }
+        Ok(())
+    }
+
     pub async fn apply(&self, patch: &str) -> Result<(), WorkspaceError> {
         let mut child = self
             .cmd()
@@ -382,6 +444,29 @@ impl GitInvocation {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     }
 
+    /// `git rev-parse HEAD^{tree}` — the tree OID of the
+    /// current HEAD. Used by the frozen-worktree drift check
+    /// (PHASE-1.1 PR 1.1.B): the runtime re-derives the
+    /// worktree's tree after the check completes and asserts
+    /// it still matches the candidate's captured tree, so a
+    /// check tool that wrote to the frozen copy fails the
+    /// drift check with a typed conflict.
+    pub async fn head_tree(&self) -> Result<String, WorkspaceError> {
+        let out = self
+            .cmd()
+            .args(["rev-parse", "HEAD^{tree}"])
+            .output()
+            .await
+            .map_err(|e| WorkspaceError::new(WorkspaceErrorKind::Command(format!("wait: {e}"))))?;
+        if !out.status.success() {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git rev-parse HEAD^{{tree}} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ))));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+
     /// `git commit --allow-empty -m <message>` with this
     /// invocation's sanitised environment as author/committer.
     /// The `--allow-empty` flag is required so a capture flow
@@ -426,5 +511,74 @@ impl GitInvocation {
             ))));
         }
         Ok(String::from_utf8_lossy(&out.stdout).into_owned())
+    }
+
+    /// `git commit-tree <tree> -m _frozen_worktree` followed by
+    /// `git worktree add --detach <frozen_path> <commit>` —
+    /// materialise a read-only checkout of the workspace at the
+    /// given tree OID. PHASE-1.1 PR 1.1.B (evidence integrity):
+    /// the `check.run` path needs a frozen view of the captured
+    /// tree, so a concurrent `apply_patch` to the live workspace
+    /// cannot change the evidence's binding to that tree.
+    ///
+    /// `git worktree add` requires a commit-ish, not a tree
+    /// OID, and the candidate's `commit` and `tree` are
+    /// decoupled — the working tree may have uncommitted
+    /// changes that are not yet in any commit. The
+    /// `git commit-tree` plumbing creates a new commit object
+    /// that wraps the tree (the tree's blob content is
+    /// unchanged; the commit is a fresh OID the repo does not
+    /// have yet); the `worktree add --detach` then checks
+    /// that commit out as a working directory, and
+    /// `git rev-parse HEAD^{tree}` on the worktree returns
+    /// the requested tree. The architectural property the
+    /// runtime relies on is that the check tool *only reads*
+    /// from the worktree — a tool that writes is caught by
+    /// the post-check tree-sha check.
+    pub async fn worktree_add_detached(
+        &self,
+        frozen_path: &Path,
+        tree: &str,
+    ) -> Result<(), WorkspaceError> {
+        // Step 1: create a fresh commit wrapping the tree.
+        // The commit's parent is irrelevant — the worktree
+        // is detached, and the post-check drift check
+        // compares `HEAD^{tree}` to the requested tree, not
+        // the commit's history.
+        let commit_out = self
+            .cmd()
+            .args(["commit-tree", tree, "-m", "IronMaint frozen worktree"])
+            .output()
+            .await
+            .map_err(|e| WorkspaceError::new(WorkspaceErrorKind::Command(format!("wait: {e}"))))?;
+        if !commit_out.status.success() {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git commit-tree {} failed: {}",
+                tree,
+                String::from_utf8_lossy(&commit_out.stderr)
+            ))));
+        }
+        let commit = String::from_utf8_lossy(&commit_out.stdout)
+            .trim()
+            .to_string();
+
+        // Step 2: add the worktree at the new commit.
+        let out = self
+            .cmd()
+            .args(["worktree", "add", "--detach"])
+            .arg(frozen_path)
+            .arg(&commit)
+            .output()
+            .await
+            .map_err(|e| WorkspaceError::new(WorkspaceErrorKind::Command(format!("wait: {e}"))))?;
+        if !out.status.success() {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git worktree add --detach {} {} failed: {}",
+                frozen_path.display(),
+                commit,
+                String::from_utf8_lossy(&out.stderr)
+            ))));
+        }
+        Ok(())
     }
 }

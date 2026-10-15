@@ -25,6 +25,7 @@ async fn capture_returns_same_fingerprint_for_same_head() {
             job,
             common::package(),
             "https://example.invalid/foo.git",
+            None,
         )
         .await
         .unwrap();
@@ -34,6 +35,7 @@ async fn capture_returns_same_fingerprint_for_same_head() {
             job,
             common::package(),
             "https://example.invalid/foo.git",
+            None,
         )
         .await
         .unwrap();
@@ -50,6 +52,7 @@ async fn capture_returns_same_fingerprint_for_same_head() {
             job,
             common::package(),
             "https://example.invalid/foo.git",
+            None,
         )
         .await
         .unwrap();
@@ -59,6 +62,7 @@ async fn capture_returns_same_fingerprint_for_same_head() {
             job,
             common::package(),
             "https://example.invalid/bar.git",
+            None,
         )
         .await
         .unwrap();
@@ -86,6 +90,7 @@ async fn capture_writes_maintenance_commit_with_required_metadata() {
             job,
             common::package(),
             "https://example.invalid/foo.git",
+            None,
         )
         .await
         .unwrap();
@@ -137,6 +142,7 @@ async fn re_capturing_an_unchanged_tree_stores_one_candidate() {
             job,
             common::package(),
             "https://example.invalid/foo.git",
+            None,
         )
         .await
         .unwrap();
@@ -146,6 +152,7 @@ async fn re_capturing_an_unchanged_tree_stores_one_candidate() {
             job,
             common::package(),
             "https://example.invalid/foo.git",
+            None,
         )
         .await
         .unwrap();
@@ -208,6 +215,7 @@ async fn capture_history_grows_per_call() {
             job,
             common::package(),
             "https://example.invalid/foo.git",
+            None,
         )
         .await
         .unwrap();
@@ -217,6 +225,7 @@ async fn capture_history_grows_per_call() {
             job,
             common::package(),
             "https://example.invalid/foo.git",
+            None,
         )
         .await
         .unwrap();

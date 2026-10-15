@@ -34,6 +34,7 @@ async fn phase_0b_3_exit_checkpoint() {
             job,
             common::package(),
             "https://example.invalid/foo.git",
+            None,
         )
         .await
         .unwrap();
@@ -50,6 +51,7 @@ async fn phase_0b_3_exit_checkpoint() {
             job,
             common::package(),
             "https://example.invalid/foo.git",
+            None,
         )
         .await
         .unwrap();
@@ -66,6 +68,7 @@ async fn phase_0b_3_exit_checkpoint() {
             job,
             common::package(),
             "https://example.invalid/foo.git",
+            None,
         )
         .await
         .unwrap();

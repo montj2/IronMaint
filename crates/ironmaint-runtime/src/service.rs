@@ -2602,10 +2602,57 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
         // payload is `Value::Null`. The fixture keys registered in
         // 0B do not opt in, so this branch is dormant until the
         // first Phase 1 inspection tool lands in 1C.x.
-        let input = match tool.input_mode() {
-            ironmaint_executor::ToolInputMode::None => serde_json::Value::Null,
+        //
+        // PHASE-1.1 PR 1.1.B (evidence integrity): the
+        // `JsonStdin` branch materialises a frozen worktree at
+        // the candidate's commit before the check, so a
+        // concurrent `apply_patch` cannot change the evidence's
+        // binding to the captured tree. The frozen worktree is
+        // passed to `build_candidate_input` as the
+        // `workspace_path`; the live workspace is not read by
+        // the check. The post-check drift check
+        // (`frozen.tree_sha()` vs `source.tree()`) catches a
+        // tool that wrote to the frozen copy — a contract
+        // violation, because the architectural property the
+        // runtime relies on is that the tool only reads.
+        let (input, _frozen_guard) = match tool.input_mode() {
+            ironmaint_executor::ToolInputMode::None => (serde_json::Value::Null, None),
             ironmaint_executor::ToolInputMode::JsonStdin => {
-                build_candidate_input(&source, &check, self.workspace.as_deref()).await?
+                let (frozen_path, guard) = match self.workspace.as_deref() {
+                    Some(ws) => {
+                        let id = ws.id_for_job(job_id).await.map_err(|e| {
+                            RuntimeError::new(RuntimeErrorKind::Store, format!("id_for_job: {e}"))
+                        })?;
+                        // The worktree id namespaces the
+                        // worktree under `.ironmaint-checks/`
+                        // so concurrent checks against the same
+                        // workspace do not collide. `check_id`
+                        // is unique per `check.run` call, so it
+                        // is the natural namespace.
+                        let worktree_id = check_id.to_string();
+                        let tree_sha = source.tree().as_str().to_string();
+                        let frozen = ws
+                            .frozen_for_check(id, &worktree_id, &tree_sha)
+                            .await
+                            .map_err(|e| {
+                                RuntimeError::new(
+                                    RuntimeErrorKind::Executor,
+                                    format!("frozen_for_check: {e}"),
+                                )
+                            })?;
+                        let path = frozen.path().to_path_buf();
+                        (Some(path), Some(frozen))
+                    }
+                    None => (None, None),
+                };
+                let input = build_candidate_input(
+                    &source,
+                    &check,
+                    self.workspace.as_deref(),
+                    frozen_path.as_deref(),
+                )
+                .await?;
+                (input, guard)
             }
         };
 
@@ -2662,6 +2709,42 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                 )
             }
         };
+
+        // PHASE-1.1 PR 1.1.B (evidence integrity): after the
+        // check completes, re-derive the frozen worktree's
+        // tree OID and assert it still matches the
+        // candidate's `tree`. A mismatch means the tool wrote
+        // to the frozen copy — a contract violation, because
+        // the architectural property the runtime relies on
+        // is that the check tool only reads. The check fires
+        // on the *post*-check tree, not the pre-check tree,
+        // because the drift (a write) happened during the
+        // check.
+        //
+        // The drift check runs only when a frozen worktree
+        // was materialised; tools that operate in
+        // `ToolInputMode::None` (the 0B fixture keys) never
+        // see a workspace, so the post-check drift check
+        // would be checking a path that is not theirs.
+        if let Some(frozen) = _frozen_guard.as_ref() {
+            let actual = frozen
+                .tree_sha()
+                .await
+                .map_err(|e| RuntimeError::new(RuntimeErrorKind::Executor, e.to_string()))?;
+            let expected = source.tree().as_str().to_string();
+            if actual != expected {
+                drop(_frozen_guard);
+                return Err(RuntimeError::new(
+                    RuntimeErrorKind::Executor,
+                    format!(
+                        "frozen worktree tree drift after check: \
+                         expected {expected}, got {actual}; the check tool \
+                         mutated the frozen copy, which is a contract \
+                         violation (PHASE-1.1 PR 1.1.B)"
+                    ),
+                ));
+            }
+        }
 
         // Translate executor-owned `Outcome` (PHASE-0B.md §32) into
         // the canonical evidence-status vocabulary. The mapping
@@ -2734,9 +2817,26 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> RuntimeService<S, E> {
                         // the Evidence row to see the nuance, and
                         // the state machine's `Fail` arm is the
                         // right hook for a human review.
+                        //
+                        // PHASE-1.1 PR 1.1.D (policy baseline
+                        // correctness): the §17 tri-state's
+                        // `InfrastructureError` evidence status
+                        // is mapped to
+                        // `Outcome::InfrastructureFailed`, which
+                        // the state machine surfaces as
+                        // `GateStatus::Blocked` (not `Fail`).
+                        // The pre-1.1.D code collapsed all
+                        // non-`Pass` statuses to `Outcome::Fail`,
+                        // which lost the "manifest is stale, not
+                        // the package" signal the spec at line
+                        // 978 requires for the §22
+                        // `AboveBaseline` case.
                         let o = match r.evidence_status {
                             ironmaint_evidence::EvidenceStatus::Pass => {
                                 ironmaint_executor::Outcome::Pass
+                            }
+                            ironmaint_evidence::EvidenceStatus::InfrastructureError => {
+                                ironmaint_executor::Outcome::InfrastructureFailed
                             }
                             _ => ironmaint_executor::Outcome::Fail,
                         };
@@ -3169,6 +3269,7 @@ async fn build_candidate_input<S: IronMaintStore + ?Sized>(
     source: &SourceCandidate,
     check: &CheckDefinition,
     workspace: Option<&ironmaint_workspace::WorkspaceManager<Arc<S>>>,
+    frozen_path: Option<&std::path::Path>,
 ) -> Result<serde_json::Value, RuntimeError> {
     use ironmaint_core::GitObjectId;
 
@@ -3197,27 +3298,43 @@ async fn build_candidate_input<S: IronMaintStore + ?Sized>(
         "fingerprint": source.fingerprint().as_str(),
     });
 
-    // Resolve the per-job working tree. `id_for_job` is the
-    // store-backed lookup; the per-job handle is the directory
-    // the runtime created (via `ensure_workspace`) when
-    // `candidate.capture` activated the candidate. A lookup
-    // failure is reported as a missing field — the tool then
-    // reports `verdict: "infrastructure_error"`, which is the
-    // §17 distinction from `verdict: "fail"` (a present-but-
-    // wrong workspace).
-    if let (Some(ws), Some(obj)) = (workspace, payload.as_object_mut()) {
-        // No workspace for this job — leave the field out.
-        // The tool's contract (PHASE-1.md §17) maps
-        // "workspace_path missing" to
-        // `verdict: "infrastructure_error"`, which is the
-        // right answer for "the runtime did not materialise
-        // a working tree, so the check cannot run."
-        if let Ok(id) = ws.id_for_job(source.job_id()).await {
-            let path = ws.root().join(format!("{id}"));
+    // Resolve the per-job working tree. PHASE-1.1 PR 1.1.B:
+    // when `frozen_path` is `Some(p)`, the tool's
+    // `workspace_path` is the frozen worktree, not the live
+    // workspace — a concurrent `apply_patch` to the live
+    // workspace cannot change the evidence's binding to the
+    // captured tree. When `frozen_path` is `None`, fall back
+    // to the live workspace path (the pre-1.1.B behaviour;
+    // used when no workspace manager is in scope, e.g. the
+    // runtime's tool runs in a test that bypasses the
+    // workspace service).
+    //
+    // When `frozen_path` is `Some(p)`, the `workspace` arg
+    // is not consulted (the live path is not used). When
+    // `frozen_path` is `None`, the live path is resolved via
+    // `workspace.id_for_job(...)` and the §17 missing-path
+    // branch (a missing live workspace is an
+    // `infrastructure_error`).
+    if let Some(obj) = payload.as_object_mut() {
+        if let Some(p) = frozen_path {
             obj.insert(
                 "workspace_path".to_string(),
-                serde_json::Value::String(path.display().to_string()),
+                serde_json::Value::String(p.display().to_string()),
             );
+        } else if let Some(ws) = workspace {
+            // No frozen path requested — fall back to the live
+            // workspace. A lookup failure is reported as a
+            // missing field — the tool then reports
+            // `verdict: "infrastructure_error"`, which is the
+            // §17 distinction from `verdict: "fail"` (a
+            // present-but-wrong workspace).
+            if let Ok(id) = ws.id_for_job(source.job_id()).await {
+                let path = ws.root().join(format!("{id}"));
+                obj.insert(
+                    "workspace_path".to_string(),
+                    serde_json::Value::String(path.display().to_string()),
+                );
+            }
         }
     }
 

@@ -172,16 +172,34 @@ def self_test_mode(source_package):
 def live_mode(source_package):
     """The live network mode: call python3-debianbts.
 
-    The actual SOAP call lives behind the import. The
-    import is the only network-dependent line; if the
-    python3-debianbts module is missing (e.g. the
-    operator built the image without the apt package),
-    the import fails with a clear error and the shim
-    exits non-zero. The 1E.2 fake-BTS hermetic test is
-    the verification surface for the live path.
+    PHASE-1.1 PR 1.1.C (real BTS integration): the
+    pre-1.1.C code called `get_bugs(package)`, which
+    returns a list of bug *numbers* (ints), not detail
+    records. The code then iterated over the ints and
+    tried to read `severity`/`status`/`subject` from
+    each — every field was missing, and the report
+    carried an empty bug list. The fix is two
+    `python-debianbts` calls:
+
+      1. `get_bugs(package)` returns a list of bug
+         numbers.
+      2. `get_status(*numbers)` returns a list of
+         detail dicts (`severity`, `status`, `subject`,
+         `tags`, etc.). The pre-1.1.C code called
+         `get_status(n)` once per number; the new code
+         passes all numbers as positional args in a
+         single call, which `python-debianbts` supports
+         and which the SOAP client handles more
+         efficiently than N round-trips.
+
+    The detail records' missing fields become defaults
+    so the summary can still be computed. The
+    `BtsTransport` and `BtsMalformedJson` mapping
+    (`stderr` → non-zero exit) is the contract the
+    Rust dispatcher relies on (PHASE-1.1 PR 1.1.C).
     """
     try:
-        from debianbts import get_bugs  # type: ignore
+        from debianbts import get_bugs, get_status  # type: ignore
     except ImportError as e:
         sys.stderr.write(
             "bts: python3-debianbts is not installed: "
@@ -189,7 +207,7 @@ def live_mode(source_package):
         )
         return 1
     try:
-        raw = get_bugs(source_package)
+        bug_numbers = list(get_bugs(source_package) or [])
     except Exception as e:  # noqa: BLE001 — the SOAP client
         # raises a variety of exceptions; the shim
         # normalises them to a single non-zero exit
@@ -199,13 +217,17 @@ def live_mode(source_package):
         # (DNS / TLS / timeout / SOAP / malformed).
         sys.stderr.write(f"bts: get_bugs failed: {e}\n")
         return 1
-    # The python3-debianbts return shape is a list of bug
-    # dicts with at least `id`, `severity`, `status`, `subject`.
-    # The shim normalises to the canonical report shape; missing
-    # fields become empty/None so the summary can still be
-    # computed.
+    # `get_status` accepts a variadic positional arg of
+    # bug numbers. An empty list of numbers is
+    # permitted — the result is `[]` and the report
+    # carries an empty bug list.
+    try:
+        raw = list(get_status(*bug_numbers) or [])
+    except Exception as e:  # noqa: BLE001
+        sys.stderr.write(f"bts: get_status failed: {e}\n")
+        return 1
     bugs = []
-    for raw_bug in raw or []:
+    for raw_bug in raw:
         severity = raw_bug.get("severity", "normal")
         status = raw_bug.get("status", "open")
         tags = list(raw_bug.get("tags", []))

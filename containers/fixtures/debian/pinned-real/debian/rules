@@ -1,0 +1,15 @@
+#!/usr/bin/make -f
+#
+# Standard debhelper build rules. The pinned-real
+# fixture is a real-format Debian source tree, so the
+# rules file follows the canonical debhelper pattern:
+# `dh` with the `dh $@` driver. The test never
+# invokes the rules — the §13 inspection suite reads
+# the source tree but does not build it — so the
+# file's contents are static.
+#
+# PHASE-1.1 PR 1.1.E (P2 #1) —
+# containers/fixtures/debian/pinned-real/.
+
+%:
+	dh $@
