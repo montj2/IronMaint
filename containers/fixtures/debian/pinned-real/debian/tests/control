@@ -1,0 +1,8 @@
+Tests: hello
+Depends: @, build-essential
+Restrictions: rw-build-tree
+# The pinned-real fixture is a real-format Debian
+# source tree, so it has an autopkgtest control
+# file. The test never runs autopkgtest — the
+# §13 inspection suite reads but does not build —
+# so the test body is empty.

@@ -1,0 +1,18 @@
+Source: hello
+Maintainer: Santiago Vila <sanvila@debian.org>
+Section: devel
+Priority: optional
+Standards-Version: 4.7.4
+Build-Depends: debhelper-compat (= 13)
+
+Package: hello
+Architecture: any
+Depends: ${misc:Depends}
+Description: example package based on hello
+ An example package based on the canonical `hello`
+ world package, formatted as a real Debian source
+ tree. The §13 inspection suite must recognise this
+ file's format and the §22 gate must classify the
+ candidate's `Standards-Version: 4.7.4` as
+ `AtBaseline` (the post-1.1.D manifest's
+ `standards_version_target`).
