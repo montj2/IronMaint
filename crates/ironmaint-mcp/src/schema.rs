@@ -156,6 +156,24 @@ pub fn generate_all_schemas() -> BTreeMap<McpToolName, (Value, Value)> {
                 .unwrap_or(Value::Null),
         ),
     );
+    // PHASE-1.1 PR 1.1.G (source import, P2 #3): the 15th
+    // tool. Closes the gap where an agent had no controlled
+    // way to populate the workspace from a remote — the
+    // `candidate.capture` path inspected whatever was on
+    // disk, with no upstream-fetch primitive. The new tool
+    // takes a URL, gates it against a configured allowlist,
+    // and `git clone`s the remote into the workspace. The
+    // 14 → 15 bump in the `tools/list` count is intentional;
+    // §94 enumerates capabilities, not a count.
+    out.insert(
+        McpToolName("source.import".to_string()),
+        (
+            serde_json::to_value(schema_for!(tools::workspace::SourceImportInput))
+                .unwrap_or(Value::Null),
+            serde_json::to_value(schema_for!(tools::workspace::SourceImportOutput))
+                .unwrap_or(Value::Null),
+        ),
+    );
     out
 }
 
@@ -223,6 +241,12 @@ pub fn tool_description(name: &str) -> Option<&'static str> {
              bytes for an `artifact_id` the named evidence row does not reference, so \
              the tool exposes the bytes of that evidence row's artifacts, not an \
              arbitrary digest."
+        }
+        // PHASE-1.1 PR 1.1.G (source import, P2 #3).
+        "source.import" => {
+            "Populate the job's working tree by cloning a remote repository. The URL \
+             must match an entry in the runtime's source-import allowlist (closed by \
+             default). Returns the workspace handle the runtime created."
         }
         _ => return None,
     })
@@ -405,19 +429,23 @@ mod tests {
         // "candidate capture", and so on — not a count of nine, so
         // growing the surface past nine does not contradict it.
         //
-        // Two tools have been added past the 0B.6 set, both
-        // deliberately, and both because §101's walk stops without
-        // them:
+        // The 0B.6 set was nine tools. Each subsequent
+        // addition is a deliberate, documented decision
+        // (§101 §53 PHASE-1.md §31 / PR 1A.4 PHASE-1.1
+        // PR 1.1.G); the order is:
         //
-        // - the tenth, `job.resume` (0B.10 C2): an agent that lands
-        //   in `HumanReviewRequired` otherwise has no way out.
-        // - the eleventh, `release.candidate.create` (0B.10 C5):
-        //   §101 steps 26-27 assemble a release candidate and assert
-        //   it is bound to the final candidate. §53 already grants
-        //   the agent `ironmaint_gate_list` and
-        //   `ironmaint_obligation_list`; the snapshot is the join of
-        //   those two, so withholding the join while handing over
-        //   its parts would be backwards.
+        // - the tenth, `job.resume` (0B.10 C2): an agent
+        //   that lands in `HumanReviewRequired` otherwise
+        //   has no way out.
+        // - the eleventh, `release.candidate.create`
+        //   (0B.10 C5): §101 steps 26-27 assemble a
+        //   release candidate and assert it is bound to
+        //   the final candidate. §53 already grants the
+        //   agent `ironmaint_gate_list` and
+        //   `ironmaint_obligation_list`; the snapshot is
+        //   the join of those two, so withholding the
+        //   join while handing over its parts would be
+        //   backwards.
         // - the twelfth, thirteenth, and fourteenth
         //   (`evidence.list`, `evidence.get`,
         //   `evidence.artifact.read`, PHASE-1.md §31 / PR 1A.4):
@@ -427,6 +455,19 @@ mod tests {
         //   three tools. The runtime is the only place that holds
         //   the store handle (PHASE-0B §98.6); these are the read
         //   side.
+        // - the fifteenth, `source.import` (PHASE-1.1
+        //   PR 1.1.G, P2 #3): before 1.1.G an agent
+        //   had no controlled way to populate the
+        //   workspace from a remote — the
+        //   `candidate.capture` tool inspected whatever
+        //   was already on disk, and the only way to
+        //   bring in upstream content was the
+        //   operator's host shell, which defeats the
+        //   `PrivilegedOperation` model for everything
+        //   else. 1.1.G closes the gap with a
+        //   `git clone --depth 1 --branch <ref> <url>`
+        //   primitive, gated by a config-supplied
+        //   URL allowlist.
         //
         // The original note here said a tenth "would be a scope
         // change and a client-compatibility question, so it should
@@ -434,6 +475,6 @@ mod tests {
         // That was right about the process and all of these are
         // deliberate edits. The guard stays: the next tool should
         // have to come through here too.
-        assert_eq!(tool_names().len(), 14);
+        assert_eq!(tool_names().len(), 15);
     }
 }

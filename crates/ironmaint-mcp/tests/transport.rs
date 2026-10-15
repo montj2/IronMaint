@@ -272,10 +272,12 @@ async fn tools_list_advertises_exactly_the_ten_known_tools() {
     assert_eq!(advertised, expected);
     // 1A.4 (PHASE-1.md §31) added `evidence.list`, `evidence.get`,
     // and `evidence.artifact.read`, taking the surface from 11 to
-    // 14. The set-equality check above is the strong form: this
-    // count check is the one that fails loudly if a new tool is
-    // added but the snapshot is not refreshed.
-    assert_eq!(advertised.len(), 14);
+    // 14. 1.1.G (PHASE-1.1 P2 #3) added `source.import`, taking
+    // the surface from 14 to 15. The set-equality check above is
+    // the strong form: this count check is the one that fails
+    // loudly if a new tool is added but the snapshot is not
+    // refreshed.
+    assert_eq!(advertised.len(), 15);
     h.stop();
 }
 

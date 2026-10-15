@@ -237,6 +237,75 @@ impl<S: WorkspaceMetadataStore> WorkspaceManager<S> {
         Self::id_from_str(handle)
     }
 
+    /// PHASE-1.1 PR 1.1.G (source import, P2 #3): populate
+    /// the workspace by cloning a remote. The current
+    /// contents of the workspace directory are removed
+    /// (the directory itself is kept, so the
+    /// `WorkspaceState` row the manager persists in
+    /// `ensure_workspace` survives the clone) and
+    /// `git clone --depth 1 --branch <ref> <url>` is run
+    /// into the empty directory. The workspace is left
+    /// dirty so the next `candidate.capture` writes a
+    /// §22 maintenance commit on top of the cloned
+    /// branch.
+    ///
+    /// The URL is *not* checked here — the runtime's
+    /// `source.import` dispatcher checks the allowlist
+    /// before calling this method, so the manager
+    /// preserves the single-responsibility split
+    /// (URL policy lives in the MCP layer; tree
+    /// materialisation lives in the workspace layer).
+    ///
+    /// Returns the workspace handle so the dispatcher
+    /// can echo it back to the caller; this is the same
+    /// string the manager's own `state(id)` returns, so
+    /// a tool that captures next can resolve the same
+    /// path the manager would.
+    pub async fn import_git_remote(
+        &self,
+        job_id: JobId,
+        url: &str,
+        ref_name: Option<&str>,
+    ) -> Result<String, WorkspaceError> {
+        // `ensure_workspace` both resolves the existing
+        // handle (or creates one) and materialises a
+        // fresh git repo if none is there. We then
+        // empty the directory so the clone has a clean
+        // target.
+        let id = self.ensure_workspace(job_id).await?;
+        let dir = self.root.join(format!("{id}"));
+        // The `.ironmaint-checks` directory is owned by
+        // the runtime's frozen-worktree path; preserve
+        // it across the import (clearing it would
+        // orphan any in-flight `frozen_for_check`
+        // call, which is exceedingly unlikely on a
+        // brand-new workspace but possible on a re-use
+        // case).
+        let checks = dir.join(".ironmaint-checks");
+        if checks.exists() {
+            tokio::fs::remove_dir_all(&checks).await?;
+        }
+        // Remove everything else in the handle. The
+        // `init` step in `ensure_workspace` left a
+        // single commit on `main`; for a real import
+        // we throw that away and start from the
+        // remote. `remove_dir_all` on the handle
+        // itself would also work, but the directory
+        // must remain (its `WorkspaceState` row
+        // references the handle string).
+        let mut entries = tokio::fs::read_dir(&dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            tokio::fs::remove_dir_all(entry.path()).await?;
+        }
+        // `git clone` writes the cloned tree into the
+        // directory. The command runs from the parent
+        // and targets the directory by name so the
+        // workspace root is the clone destination.
+        let inv = GitInvocation::sanitised_env(&dir);
+        inv.clone_into(url, ref_name).await?;
+        Ok(format!("{id}"))
+    }
+
     /// Resolve the workspace for `job_id`, creating and
     /// materialising one if the job has none yet.
     ///

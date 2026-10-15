@@ -135,6 +135,68 @@ impl GitInvocation {
         Ok(())
     }
 
+    /// PHASE-1.1 PR 1.1.G: `git clone --depth 1 --branch <ref>
+    /// <url>` into the workspace directory. The current
+    /// contents of the directory are NOT removed — that is
+    /// `WorkspaceManager::import_git_remote`'s job, so a
+    /// caller that wants to keep an existing tree can call
+    /// this in a fresh directory instead. The command runs
+    /// from the workspace's parent directory so the clone
+    /// target is the workspace itself; on non-zero exit the
+    /// git stderr is folded into the typed error so the
+    /// dispatcher can surface a useful message back to the
+    /// agent.
+    ///
+    /// `--depth 1` is the §G deliberate choice: a
+    /// package-maintenance tool only needs the ref's tip,
+    /// and shallow clones keep the workspace small for the
+    /// the §13 / §16 inspection suite. A future PR can
+    /// make the depth configurable if a use-case demands
+    /// it.
+    pub async fn clone_into(
+        &self,
+        url: &str,
+        ref_name: Option<&str>,
+    ) -> Result<(), WorkspaceError> {
+        let parent = self.workspace_root.parent().ok_or_else(|| {
+            WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "workspace path {} has no parent to clone into",
+                self.workspace_root.display()
+            )))
+        })?;
+        let dir_name = self.workspace_root.file_name().ok_or_else(|| {
+            WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "workspace path {} has no file name to clone into",
+                self.workspace_root.display()
+            )))
+        })?;
+        let mut cmd = Command::new("git");
+        cmd.current_dir(parent)
+            .env_clear()
+            .envs(&self.env)
+            .arg("clone")
+            .arg("--depth")
+            .arg("1")
+            .arg("--quiet")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(r) = ref_name {
+            cmd.arg("--branch").arg(r);
+        }
+        cmd.arg(url).arg(dir_name);
+        let out = cmd.output().await.map_err(|e| {
+            WorkspaceError::new(WorkspaceErrorKind::Command(format!("git clone spawn: {e}")))
+        })?;
+        if !out.status.success() {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git clone of {url} failed: {}",
+                String::from_utf8_lossy(&out.stderr)
+            ))));
+        }
+        Ok(())
+    }
+
     pub async fn apply(&self, patch: &str) -> Result<(), WorkspaceError> {
         let mut child = self
             .cmd()

@@ -27,10 +27,11 @@ fn schema_tool_names_ten() {
     use ironmaint_mcp::schema::tool_names;
     let names = tool_names();
     // 1A.4 (PHASE-1.md §31) added `evidence.list`, `evidence.get`, and
-    // `evidence.artifact.read`, taking the surface from 11 to 14. The
-    // assertions that *specific* tool names are present stay the same;
-    // the count is what changed.
-    assert_eq!(names.len(), 14);
+    // `evidence.artifact.read`, taking the surface from 11 to 14. 1.1.G
+    // (PHASE-1.1 P2 #3) added `source.import`, taking the surface from
+    // 14 to 15. The assertions that *specific* tool names are present
+    // stay the same; the count is what changed.
+    assert_eq!(names.len(), 15);
     assert!(names.iter().any(|n| n.0 == "job.create"));
     assert!(names.iter().any(|n| n.0 == "job.reconcile"));
     assert!(names.iter().any(|n| n.0 == "job.next_actions"));
