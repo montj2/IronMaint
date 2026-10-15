@@ -319,6 +319,25 @@ async fn candidate_store_round_trip() {
     let cand = source_candidate_for(jid);
     let fp = cand.fingerprint().clone();
 
+    // PHASE-1.1 PR 1.1.F: `MockStore::put_source_candidate` now
+    // mirrors the SQLite `FOREIGN KEY (job_id) REFERENCES
+    // projections(job_id)` and refuses a candidate whose job
+    // has not been projected. Seed the projection the same way
+    // the runtime's `job.create` flow does, then capture.
+    let proj = JobProjection {
+        job: MaintenanceJob::new(
+            jid,
+            package(),
+            MaintenanceEventId::new(),
+            datetime!(2026-01-01 00:00:00 UTC),
+        ),
+        state: JobState::Intake,
+        active_candidate: None,
+        version: 0,
+        updated_at: datetime!(2026-01-01 00:00:00 UTC),
+    };
+    s.put_projection(&proj, 0).await.unwrap();
+
     let id = s.put_source_candidate(&cand).await.unwrap();
     assert_eq!(id, cand.id());
 

@@ -236,6 +236,40 @@ impl CandidateStore for MockStore {
         let job = candidate.job_id();
         let mut w = self.write();
 
+        // PHASE-1.1 PR 1.1.F (D-21 / MockStore parity):
+        // the pre-1.1.F `MockStore` had no candidate-job
+        // referential integrity check. SQLite has always
+        // enforced the `FOREIGN KEY (job_id) REFERENCES projections(job_id)`
+        // constraint declared in `migrations/0001_initial.sql`
+        // (with `PRAGMA foreign_keys = ON` on every
+        // connection); the pre-1.1.F mock did not, so tests
+        // of the `candidate.capture` path that ran on the
+        // mock silently succeeded even when the job did not
+        // exist, while the production path through SQLite
+        // returned a raw `FOREIGN KEY constraint failed`.
+        // The disagreement is now closed at the store
+        // layer: a job "exists" in the mock iff a row is
+        // present in the `projections` table — the same
+        // table the SQLite `FOREIGN KEY` references
+        // (the runtime's `job.create` flow always calls
+        // `put_projection` before any `candidate.capture`,
+        // so the conformance pin holds for the production
+        // path as well as the test path). The `Conflict`
+        // kind matches the SQLite error envelope the
+        // existing parity test
+        // (`store_parity_sqlite.rs::a_candidate_for_an_unknown_job_is_refused`)
+        // already accepts.
+        if !w.projections.contains_key(&job) {
+            return Err(StoreError::new(
+                StoreErrorKind::Conflict,
+                format!(
+                    "source candidate {id} hangs off job {job}, \
+                     which has no projection (the job must be created \
+                     before any candidate is captured)"
+                ),
+            ));
+        }
+
         // `fingerprint` is `UNIQUE` in `migrations/0001_initial.sql`,
         // and SQLite enforces it. This used not to: the insert below
         // was unconditional, so re-capturing an unchanged tree minted a
