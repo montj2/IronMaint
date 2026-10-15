@@ -459,7 +459,9 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
         .with_workspace(Arc::clone(&workspace)),
     );
 
-    let runtime = McpRuntime::new(service).with_workspace(workspace);
+    let runtime = McpRuntime::new(service)
+        .with_workspace(workspace)
+        .with_source_import_allowlist(config.source_import_allowlist.clone());
 
     // --- bind MCP (§50) ---
     let shutdown = CancellationToken::new();

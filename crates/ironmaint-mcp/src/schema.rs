@@ -156,6 +156,24 @@ pub fn generate_all_schemas() -> BTreeMap<McpToolName, (Value, Value)> {
                 .unwrap_or(Value::Null),
         ),
     );
+    // PHASE-1.1 PR 1.1.G (source import, P2 #3): the 15th
+    // tool. Closes the gap where an agent had no controlled
+    // way to populate the workspace from a remote — the
+    // `candidate.capture` path inspected whatever was on
+    // disk, with no upstream-fetch primitive. The new tool
+    // takes a URL, gates it against a configured allowlist,
+    // and `git clone`s the remote into the workspace. The
+    // 14 → 15 bump in the `tools/list` count is intentional;
+    // §94 enumerates capabilities, not a count.
+    out.insert(
+        McpToolName("source.import".to_string()),
+        (
+            serde_json::to_value(schema_for!(tools::workspace::SourceImportInput))
+                .unwrap_or(Value::Null),
+            serde_json::to_value(schema_for!(tools::workspace::SourceImportOutput))
+                .unwrap_or(Value::Null),
+        ),
+    );
     out
 }
 
@@ -223,6 +241,12 @@ pub fn tool_description(name: &str) -> Option<&'static str> {
              bytes for an `artifact_id` the named evidence row does not reference, so \
              the tool exposes the bytes of that evidence row's artifacts, not an \
              arbitrary digest."
+        }
+        // PHASE-1.1 PR 1.1.G (source import, P2 #3).
+        "source.import" => {
+            "Populate the job's working tree by cloning a remote repository. The URL \
+             must match an entry in the runtime's source-import allowlist (closed by \
+             default). Returns the workspace handle the runtime created."
         }
         _ => return None,
     })

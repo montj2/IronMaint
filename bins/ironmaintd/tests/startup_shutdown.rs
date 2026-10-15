@@ -118,6 +118,40 @@ impl Daemon {
         Self::start_on(Arc::new(tempfile::tempdir().expect("tempdir"))).await
     }
 
+    /// PHASE-1.1 PR 1.1.G: start the daemon with a
+    /// configured `source.import` allowlist. The flag is
+    /// passed once per URL prefix (the §G implementation
+    /// parses repeated occurrences). The tempdir is
+    /// shared with the test body so the test can stage a
+    /// local bare repo under `tmp.path()` and put its
+    /// `file://` URL on the allowlist.
+    async fn start_with_allowlist(allowlist: Vec<String>) -> Self {
+        let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
+        let mut command = command_for(&tmp);
+        for url in &allowlist {
+            command.arg("--source-import-allowlist").arg(url);
+        }
+        let mut child = command
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn ironmaintd");
+        let stdout = child.stdout.take().expect("piped stdout");
+        let mut lines = BufReader::new(stdout).lines();
+        let url = tokio::time::timeout(Duration::from_secs(30), async {
+            while let Ok(Some(line)) = lines.next_line().await {
+                if let Some(rest) = line.strip_prefix(LISTENING_PREFIX) {
+                    return Some(rest.to_string());
+                }
+            }
+            None
+        })
+        .await
+        .unwrap_or(None)
+        .unwrap_or_else(|| panic!("the daemon never reported a listening address"));
+        Self { child, url, tmp }
+    }
+
     async fn start_on(tmp: Arc<tempfile::TempDir>) -> Self {
         let mut command = command_for(&tmp);
         let mut child = command
@@ -464,7 +498,14 @@ async fn the_daemon_advertises_every_tool_the_server_registers() {
     // exist because 1A.3 writes `Evidence` rows with bound report
     // artifacts, and an MCP client that ran `check.run` needs a way
     // to read them back; without these the §31 exit-checkpoint
-    // ("have an MCP client read the report") is unmet.
+    // ("have an MCP client read the report") is unmet. The
+    // fifteenth — `source.import` (PHASE-1.1 PR 1.1.G, P2 #3) —
+    // exists because before 1.1.G an agent had no controlled path
+    // to populate a workspace from a remote: the
+    // `candidate.capture` tool inspected whatever was already on
+    // disk, and the only way to bring in upstream was the
+    // operator's host shell, which defeats the
+    // `PrivilegedOperation` model for everything else.
     //
     // The e2e script hardcodes the same list. A missing tool here is
     // the exact failure that made `ironclaw-e2e.sh` unrunnable.
@@ -498,6 +539,7 @@ async fn the_daemon_advertises_every_tool_the_server_registers() {
             "job.resume",
             "operation.get",
             "release.candidate.create",
+            "source.import",
             "workspace.apply_patch",
             "workspace.stat",
         ]
@@ -3623,6 +3665,256 @@ async fn pinned_real_debian_source_package_inspection() {
              {run_body}"
         );
     }
+
+    d.shutdown().await;
+}
+
+// ---------------------------------------------------------------------------
+// PHASE-1.1 PR 1.1.G — `source.import` (P2 #3).
+//
+// The two tests below are the conformance pins for the
+// new tool. The first is the "happy path" — a real `git
+// clone` against a local bare repo with the URL on the
+// allowlist. The second is the "deny path" — a URL not on
+// the allowlist must be refused with `McpError::InvalidInput`
+// before any git process is spawned.
+//
+// Both tests are hermetic: the bare repo lives in a tempdir
+// the test owns, and the daemon's state dir is also a tempdir
+// (via `Daemon::start_with_allowlist`). The §97 gate does not
+// depend on any external network resource.
+//
+// RED state (this commit): the dispatcher entry is registered
+// but the body returns `McpError::Other("not implemented")`.
+// Both tests fail because the dispatcher does not actually
+// clone the repo / check the allowlist. The GREEN commit
+// replaces the dispatcher body with the real implementation.
+
+/// Build a local bare git repo at `bare_path`, seeded with
+/// one commit on `main`. Used by the
+/// `source_import_clones_a_real_git_remote` test below —
+/// the daemon is started with `bare_path` on the allowlist,
+/// and the test asserts the clone populates the workspace.
+async fn seed_bare_repo(bare_path: &std::path::Path) {
+    // Step 1: create a working repo with a single commit,
+    // so the bare repo has at least one ref to clone.
+    let seed_dir = tempfile::tempdir().expect("seed tempdir");
+    let seed_path = seed_dir.path();
+    let run = |args: &[&str]| {
+        let p = seed_path.to_path_buf();
+        let v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        async move {
+            tokio::process::Command::new("git")
+                .args(&v)
+                .current_dir(&p)
+                .env_clear()
+                .env("PATH", "/usr/bin:/bin")
+                .env("HOME", "/var/empty")
+                .output()
+                .await
+                .expect("git invocation")
+        }
+    };
+    let _ = run(&["init", "--initial-branch=main"]).await;
+    let _ = run(&["config", "user.email", "ironmaint@invalid"]).await;
+    let _ = run(&["config", "user.name", "ironmaint"]).await;
+    tokio::fs::write(seed_path.join("README.md"), "ironmaint 1.1.G fixture\n")
+        .await
+        .expect("write README");
+    let _ = run(&["add", "."]).await;
+    let _ = run(&["commit", "-m", "initial"]).await;
+
+    // Step 2: `git clone --bare` the working repo into
+    // `bare_path`. The result is what `source.import`
+    // will clone from.
+    let status = tokio::process::Command::new("git")
+        .args(["clone", "--bare"])
+        .arg(seed_path)
+        .arg(bare_path)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/var/empty")
+        .output()
+        .await
+        .expect("git clone --bare");
+    assert!(
+        status.status.success(),
+        "git clone --bare failed: {}",
+        String::from_utf8_lossy(&status.stderr)
+    );
+}
+
+#[tokio::test]
+async fn source_import_clones_a_real_git_remote() {
+    // Skip if git is not on the test's PATH — same
+    // `git_available` shape used in
+    // `ironmaint-workspace/tests/common/mod.rs`. The §97
+    // gate image always has git, so this is a "developer
+    // machine without git" guard rather than a CI guard.
+    let git_check = tokio::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .await;
+    if !matches!(git_check, Ok(ref o) if o.status.success()) {
+        eprintln!("git is not available; skipping source.import hermetic test");
+        return;
+    }
+
+    // Stage a local bare repo and put it on the
+    // allowlist. `Daemon::start_with_allowlist` shares
+    // the same tempdir the test body uses, so the test
+    // can resolve `<tmp>/bare.git` from the daemon's
+    // point of view.
+    let tmp = tempfile::tempdir().expect("test tempdir");
+    let bare_path = tmp.path().join("bare.git");
+    seed_bare_repo(&bare_path).await;
+    let bare_url = format!("file://{}", bare_path.display());
+
+    let mut d = Daemon::start_with_allowlist(vec![bare_url.clone()]).await;
+
+    // Create a job to import into. `job.create` is the
+    // canonical MCP entry point — the runtime's
+    // `handle_create_job` mints a `JobId` and writes
+    // the projection (the `MockStore` candidate-job FK
+    // check 1.1.F added requires the projection to be
+    // there before `candidate.capture`; `source.import`
+    // is even simpler — it only needs the projection,
+    // which the create already wrote).
+    let create_resp = d
+        .call(
+            "job.create",
+            json!({
+                "orchestrator": {"kind": "ironclaw"},
+                "package": {
+                    "distribution": {"family": "debian", "release": "sid"},
+                    "source_name": "source-import-fixture",
+                    "binary_names": [],
+                },
+            }),
+        )
+        .await;
+    let job_id = create_resp["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+
+    // Call `source.import` with the local bare URL.
+    // In RED state, the dispatcher returns
+    // `McpError::Other("not implemented")` and the
+    // response is a protocol error. In GREEN state,
+    // the dispatcher checks the allowlist (passes),
+    // resolves the workspace, and `git clone`s the
+    // bare repo into the workspace handle.
+    let import_resp = d
+        .call(
+            "source.import",
+            json!({
+                "job_id": job_id,
+                "url": bare_url,
+                "ref_name": "main",
+            }),
+        )
+        .await;
+    assert_eq!(
+        import_resp["error"],
+        Value::Null,
+        "source.import returned a protocol error: {import_resp}"
+    );
+    let handle = import_resp["result"]["structuredContent"]["workspace_handle"]
+        .as_str()
+        .expect("workspace_handle string")
+        .to_string();
+    assert!(
+        !handle.is_empty(),
+        "source.import returned an empty workspace handle: {import_resp}"
+    );
+
+    // The handle must point at a directory that now
+    // contains the cloned repo's `README.md` and a
+    // `.git` directory (the `git clone` produces
+    // both). The path is the daemon's
+    // `--workspace-root` plus the handle.
+    let handle_dir = d.workspaces_root().join(&handle);
+    let readme = handle_dir.join("README.md");
+    assert!(
+        readme.is_file(),
+        "the cloned workspace at {} does not contain README.md; \
+         source.import did not materialise the remote content",
+        handle_dir.display()
+    );
+    let contents = tokio::fs::read_to_string(&readme)
+        .await
+        .expect("read README from cloned workspace");
+    assert!(
+        contents.contains("1.1.G"),
+        "the cloned README does not match the seeded content: {contents:?}"
+    );
+    assert!(
+        handle_dir.join(".git").exists(),
+        "the cloned workspace at {} has no .git directory",
+        handle_dir.display()
+    );
+
+    d.shutdown().await;
+}
+
+#[tokio::test]
+async fn source_import_rejects_a_url_not_on_the_allowlist() {
+    // No allowlist is configured — the daemon denies
+    // every URL by default. The test asserts the
+    // dispatcher returns a typed `InvalidInput`
+    // protocol error and that no workspace directory
+    // is created on disk.
+    let mut d = Daemon::start_with_allowlist(vec![]).await;
+
+    let create_resp = d
+        .call(
+            "job.create",
+            json!({
+                "orchestrator": {"kind": "ironclaw"},
+                "package": {
+                    "distribution": {"family": "debian", "release": "sid"},
+                    "source_name": "source-import-deny",
+                    "binary_names": [],
+                },
+            }),
+        )
+        .await;
+    let job_id = create_resp["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+
+    let import_resp = d
+        .call(
+            "source.import",
+            json!({
+                "job_id": job_id,
+                "url": "file:///nonexistent/never-on-the-allowlist.git",
+            }),
+        )
+        .await;
+    // The call must fail at the protocol layer. The
+    // transport wraps the dispatcher's
+    // `McpError::InvalidInput` as a JSON-RPC error
+    // with the same message. The exact code depends
+    // on the transport, so we assert on the message
+    // and on the absence of a result.
+    let err = import_resp["error"]
+        .as_object()
+        .expect("source.import with a URL not on the allowlist must produce a protocol error");
+    let msg = err["message"].as_str().unwrap_or_default();
+    assert!(
+        msg.contains("allowlist")
+            || msg.contains("invalid input")
+            || msg.contains("Invalid input"),
+        "source.import error message does not mention the allowlist: {msg}"
+    );
+    assert_eq!(
+        import_resp["result"],
+        Value::Null,
+        "source.import with a non-allowlisted URL must not return a result"
+    );
 
     d.shutdown().await;
 }

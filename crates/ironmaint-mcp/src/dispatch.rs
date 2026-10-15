@@ -33,6 +33,12 @@ use crate::schema::McpToolName;
 pub struct McpRuntime<S: IronMaintStore + ?Sized, E: Executor + ?Sized> {
     service: Arc<RuntimeService<S, E>>,
     workspace: Option<Arc<WorkspaceManager<Arc<S>>>>,
+    // PHASE-1.1 PR 1.1.G (source import, P2 #3): the URL
+    // prefixes `source.import` will accept. Closed by
+    // default — a `Vec<String>` of `[]` rejects every URL.
+    // The match is a `String::starts_with` prefix check; a
+    // future PR can introduce a real `UrlPattern` type.
+    source_import_allowlist: Vec<String>,
 }
 
 /// Hand-written rather than `#[derive(Clone)]`: every field is an
@@ -45,6 +51,7 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> Clone for McpRuntime<S, E
         Self {
             service: Arc::clone(&self.service),
             workspace: self.workspace.clone(),
+            source_import_allowlist: self.source_import_allowlist.clone(),
         }
     }
 }
@@ -55,21 +62,24 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> McpRuntime<S, E> {
         Self {
             service,
             workspace: None,
+            source_import_allowlist: Vec::new(),
         }
     }
 
     /// Attach a workspace manager, enabling `workspace.stat`,
     /// `workspace.apply_patch`, and a real `candidate.capture`.
-    ///
-    /// The manager borrows the *same* store the runtime holds, as
-    /// `Arc<S>`. `RuntimeService` keeps its store private and
-    /// exposes no accessor (PHASE-0B.md §98.6), and a daemon's
-    /// SQLite backend takes an exclusive `fs2` lock on its state
-    /// directory, so opening a second connection is not an
-    /// option either.
     #[must_use]
     pub fn with_workspace(mut self, workspace: Arc<WorkspaceManager<Arc<S>>>) -> Self {
         self.workspace = Some(workspace);
+        self
+    }
+
+    /// PHASE-1.1 PR 1.1.G: the URL prefixes the `source.import`
+    /// tool will accept. Empty by default (deny-all), set via
+    /// `RuntimeConfig::source_import_allowlist` from the daemon.
+    #[must_use]
+    pub fn with_source_import_allowlist(mut self, allowlist: Vec<String>) -> Self {
+        self.source_import_allowlist = allowlist;
         self
     }
 
@@ -126,6 +136,14 @@ pub async fn dispatch<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
         "evidence.list" => dispatch_evidence_list(&runtime, input).await,
         "evidence.get" => dispatch_evidence_get(&runtime, input).await,
         "evidence.artifact.read" => dispatch_evidence_artifact_read(&runtime, input).await,
+        // PHASE-1.1 PR 1.1.G (source import, P2 #3): the 15th
+        // tool. In RED state the dispatcher entry is wired but
+        // the body returns `Other("not implemented")` so the
+        // conformance test fails on the *unimplemented* shape
+        // and the GREEN commit replaces the body with the
+        // allowlist check, `ensure_workspace`, and
+        // `WorkspaceManager::import_git_remote`.
+        "source.import" => dispatch_source_import(&runtime, input).await,
         unknown => Err(McpError::Other(format!("unknown tool: {unknown}"))),
     }
 }
@@ -609,4 +627,20 @@ async fn dispatch_evidence_artifact_read<S: IronMaintStore + ?Sized, E: Executor
         bytes_base64,
     };
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
+}
+
+// PHASE-1.1 PR 1.1.G (source import, P2 #3). RED state:
+// the body returns `McpError::Other("not implemented")` so
+// the conformance test fails on the unimplemented shape.
+// The GREEN commit replaces the body with the allowlist
+// check, the workspace resolution, and the
+// `WorkspaceManager::import_git_remote` call. The function
+// signature is final — the only change is the body.
+async fn dispatch_source_import<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
+    _runtime: &McpRuntime<S, E>,
+    _input: serde_json::Value,
+) -> Result<serde_json::Value, McpError> {
+    Err(McpError::Other(
+        "source.import is not implemented (PHASE-1.1 PR 1.1.G RED state)".to_string(),
+    ))
 }
