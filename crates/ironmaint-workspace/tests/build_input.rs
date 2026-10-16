@@ -165,16 +165,22 @@ fn make_candidate(commit: &str, tree: &str) -> SourceCandidate {
     )
 }
 
-/// Convenience: build the workspace, fixture, tarball,
-/// and descriptor, and return the manager, job_id, and
-/// descriptor ready for `stage_build_input`. The test
-/// then asserts the staging succeeded and the handle's
-/// invariants.
-async fn setup() -> (WorkspaceManager<MockStore>, JobId, BuildInputDescriptor) {
+/// Test fixture: a managed workspace, a committed
+/// 3.0 (quilt) source tree, a synthetic orig tarball,
+/// and the resulting `BuildInputDescriptor`. Owns the
+/// `TempDir`s so the workspace and the tarball
+/// survive across the `stage_build_input` call.
+struct Fixture {
+    _tmp: TempDir,
+    _orig_tmp: TempDir,
+    mgr: WorkspaceManager<MockStore>,
+    job_id: JobId,
+    descriptor: BuildInputDescriptor,
+}
+
+async fn setup() -> Fixture {
     if !common::git_available().await {
         eprintln!("git not available; skipping stage_build_input test");
-        // Returning a stub manager the test will skip
-        // on. We use a panic-on-call pattern instead.
         panic!("git not available; the test will skip on machines without git");
     }
 
@@ -184,7 +190,8 @@ async fn setup() -> (WorkspaceManager<MockStore>, JobId, BuildInputDescriptor) {
 
     let store = MockStore::new();
     let mgr = WorkspaceManager::new(handle_root.clone(), store);
-    let id = mgr.create(JobId::new()).await.unwrap();
+    let job_id = JobId::new();
+    let id = mgr.create(job_id).await.unwrap();
     let handle_dir = handle_root.join(format!("{id}"));
     tokio::fs::create_dir_all(&handle_dir).await.unwrap();
     common::init_repo(&handle_dir).await;
@@ -194,7 +201,7 @@ async fn setup() -> (WorkspaceManager<MockStore>, JobId, BuildInputDescriptor) {
     let commit = git(&handle_dir, &["rev-parse", "HEAD"]).await;
     let tree = git(&handle_dir, &["rev-parse", "HEAD^{tree}"]).await;
 
-    let (_orig_tmp, orig_path, orig_sha256) = make_synthetic_orig_tarball();
+    let (orig_tmp, orig_path, orig_sha256) = make_synthetic_orig_tarball();
     let candidate = make_candidate(&commit, &tree);
     let descriptor = BuildInputDescriptor::quilt(
         candidate,
@@ -204,7 +211,13 @@ async fn setup() -> (WorkspaceManager<MockStore>, JobId, BuildInputDescriptor) {
         },
     );
 
-    (mgr, JobId::new(), descriptor)
+    Fixture {
+        _tmp: tmp,
+        _orig_tmp: orig_tmp,
+        mgr,
+        job_id,
+        descriptor,
+    }
 }
 
 #[tokio::test]
@@ -220,19 +233,21 @@ async fn stage_build_input_produces_handle_whose_tree_matches_candidate() {
     //
     // GREEN state: the staging primitive re-derives
     // the tree OID and the assertions below pass.
-    let (mgr, job_id, descriptor) = setup().await;
-    let handle = mgr
-        .stage_build_input(&job_id, &descriptor)
+    let fix = setup().await;
+    let handle = fix
+        .mgr
+        .stage_build_input(&fix.job_id, &fix.descriptor)
+        .await
         .expect("stage_build_input should succeed (RED state: stub returns Err)");
 
     assert_eq!(
         handle.tree_sha(),
-        descriptor.candidate.tree().as_str(),
+        fix.descriptor.candidate.tree().as_str(),
         "staged tree OID must equal the candidate's tree OID"
     );
     assert_eq!(
         handle.candidate().fingerprint(),
-        descriptor.candidate.fingerprint(),
+        fix.descriptor.candidate.fingerprint(),
         "the handle's candidate must be the descriptor's candidate"
     );
 }
@@ -243,9 +258,11 @@ async fn stage_build_input_places_upstream_tarball_alongside_extracted_tree() {
     // upstream tarball at the path `dpkg-source -b`
     // expects. After staging, the tarball lives at
     // `<staged>/<upstream_tarball.filename()>`.
-    let (mgr, job_id, descriptor) = setup().await;
-    let handle = mgr
-        .stage_build_input(&job_id, &descriptor)
+    let fix = setup().await;
+    let handle = fix
+        .mgr
+        .stage_build_input(&fix.job_id, &fix.descriptor)
+        .await
         .expect("stage_build_input should succeed (RED state: stub returns Err)");
 
     assert!(
@@ -271,9 +288,11 @@ async fn stage_build_input_creates_output_dir_as_sibling_of_staged_root() {
     // tool that writes into the staged root would
     // write into a read-only path; the output dir is
     // the only writable sibling.
-    let (mgr, job_id, descriptor) = setup().await;
-    let handle = mgr
-        .stage_build_input(&job_id, &descriptor)
+    let fix = setup().await;
+    let handle = fix
+        .mgr
+        .stage_build_input(&fix.job_id, &fix.descriptor)
+        .await
         .expect("stage_build_input should succeed (RED state: stub returns Err)");
 
     let output_dir = handle.output_dir();
@@ -305,37 +324,17 @@ async fn stage_build_input_makes_staged_root_readonly() {
     // accessor on the handle returns `true` so the
     // executor (2A.1) can assert the precondition
     // before running the build tool.
-    let (mgr, job_id, descriptor) = setup().await;
-    let handle = mgr
-        .stage_build_input(&job_id, &descriptor)
+    let fix = setup().await;
+    let handle = fix
+        .mgr
+        .stage_build_input(&fix.job_id, &fix.descriptor)
+        .await
         .expect("stage_build_input should succeed (RED state: stub returns Err)");
 
     assert!(
         handle.is_staged_root_readonly(),
         "staged root {} must be read-only after staging",
         handle.root().display()
-    );
-}
-
-#[tokio::test]
-async fn stage_build_input_red_stub_returns_unimplemented_error() {
-    // A second, more direct assertion of the RED
-    // state. The stub returns a typed error whose
-    // message names the PR. When the GREEN commit
-    // replaces the stub, this test will start failing
-    // — at which point the test should be removed
-    // (the GREEN implementation makes it obsolete).
-    let (mgr, job_id, descriptor) = setup().await;
-    let result = mgr.stage_build_input(&job_id, &descriptor);
-    let err = result.expect_err(
-        "stage_build_input returned Ok; the RED-state stub is gone. Remove this test \
-         in the GREEN commit (the conformance tests above now exercise the real \
-         implementation).",
-    );
-    let msg = err.to_string();
-    assert!(
-        msg.contains("not yet implemented in 2.0-D red commit"),
-        "expected the RED-state error message, got: {msg}"
     );
 }
 

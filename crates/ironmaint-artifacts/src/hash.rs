@@ -4,6 +4,22 @@
 //! the algorithm crate directly. The `Sha256Of` newtype carries
 //! the hex digest around for type-safe handoff between writer
 //! and reader.
+//!
+//! ## Why SHA-256 only — and not the BLAKE3 candidate fingerprint
+//!
+//! The artifact store is content-addressed by SHA-256 exclusively.
+//! This is a deliberate decision recorded in PHASE-2 PR 2.0-D
+//! (`doc/PHASE-2-D.md`, bullet 4): a build report's evidence
+//! binds to the **candidate fingerprint** (BLAKE3 over the
+//! versioned byte representation of the candidate — see
+//! `ironmaint-core::SourceCandidate::fingerprint`), but the
+//! contents the report references — binary debs, `.buildinfo`,
+//! `.changes`, `lintian` reports, `sbuild` logs — are addressed
+//! in the artifact store by their own SHA-256. The candidate
+//! fingerprint is recorded as evidence metadata on the build
+//! report, not as a CAS key on the contents. A future PR that
+//! re-keys the artifact store by BLAKE3 is an explicit decision
+//! (with migration); today the store is SHA-256 only.
 
 use std::fmt;
 
