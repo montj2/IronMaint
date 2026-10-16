@@ -211,12 +211,12 @@ fn compare_standards_version(
 }
 
 /// Return the §20 upgrading-checklist entries
-/// that name the interval between
-/// `candidate` and `baseline`. An entry
+/// whose interval lies *on* the path from
+/// `candidate` to `baseline`. An entry
 /// `(from, to)` qualifies when
-/// `from < baseline` AND `to >= candidate`
-/// (loose, narrative match — the §20 entries
-/// describe an interval, not a precise
+/// `from >= candidate` AND `to <= baseline`
+/// (containment — the entry's interval is
+/// entirely inside the candidate→baseline
 /// range). The entries are returned in the
 /// order they appear in the JSON file.
 ///
@@ -225,7 +225,40 @@ fn compare_standards_version(
 /// values yield an empty `Vec` (the report's
 /// `intervening_checklist_entries` is empty
 /// for the at-or-above cases).
+///
+/// PHASE-1.1 PR 1.1.J (policy delta evidence):
+/// the pre-1.1.J predicate was
+/// `to >= candidate && from <= baseline`
+/// (overlap, not containment). That match
+/// returned entries whose interval was
+/// entirely *above* the candidate (e.g. the
+/// bundled `4.7.4 → 4.7.4.1` entry when the
+/// candidate is `4.6.0` and the baseline is
+/// `4.7.4`), which is wrong: the entry is
+/// on a path the candidate has not yet
+/// reached. The new predicate is containment
+/// (see `intervening_entries_in` for the
+/// testable filter and the inline teeth-check).
 fn intervening_entries(candidate: Option<&str>, baseline: &str) -> Vec<ChecklistEntry> {
+    intervening_entries_in(candidate, baseline, &load_upgrading_checklist())
+}
+
+/// The testable filter (PHASE-1.1 PR 1.1.J). Takes the
+/// checklist as a parameter so the predicate can be
+/// exercised against a synthetic manifest with multiple
+/// intervals; the production `intervening_entries` calls
+/// this with the bundled `load_upgrading_checklist()`.
+///
+/// `candidate` and `baseline` are `&str`
+/// `Standards-Version` values; unparseable
+/// values yield an empty `Vec` (the report's
+/// `intervening_checklist_entries` is empty
+/// for the at-or-above cases).
+fn intervening_entries_in(
+    candidate: Option<&str>,
+    baseline: &str,
+    checklist: &[ChecklistEntry],
+) -> Vec<ChecklistEntry> {
     let Some(candidate) = candidate else {
         return Vec::new();
     };
@@ -235,33 +268,35 @@ fn intervening_entries(candidate: Option<&str>, baseline: &str) -> Vec<Checklist
     let Ok(baseline_v) = debversion::Version::from_str(baseline) else {
         return Vec::new();
     };
-    load_upgrading_checklist()
-        .into_iter()
+    checklist
+        .iter()
         .filter(|e| {
-            // Match an entry whose interval
-            // overlaps the path from
-            // `candidate` to `baseline` (both
-            // inclusive of the entry's
-            // endpoints, since the §20
-            // narrative is the per-version
-            // change-log).
+            // CONTAINMENT (PHASE-1.1 PR 1.1.J): the
+            // entry's interval must lie ON the path
+            // from `candidate` to `baseline` —
+            // i.e. `from >= candidate` and `to
+            // <= baseline`. The previous *overlap*
+            // test (`to >= candidate && from <=
+            // baseline`) matched entries whose
+            // interval was entirely above the
+            // candidate (e.g. the bundled
+            // `4.7.4 → 4.7.4.1` entry when the
+            // candidate is 4.6.0 and the baseline
+            // is 4.7.4), which is wrong: the entry
+            // is on a path the candidate has not
+            // yet reached. The new test in
+            // `mod tests` pins the containment
+            // shape against a synthetic
+            // 4-interval manifest.
             let Ok(from_v) = debversion::Version::from_str(&e.from_version) else {
                 return false;
             };
             let Ok(to_v) = debversion::Version::from_str(&e.to_version) else {
                 return false;
             };
-            // The entry covers the
-            // candidate-to-baseline path
-            // when its `to` is at or above
-            // the candidate (so the entry
-            // names the post-candidate
-            // change) and its `from` is at
-            // or below the baseline (so the
-            // entry's interval is in the
-            // known-Policy range).
-            to_v >= candidate_v && from_v <= baseline_v
+            from_v >= candidate_v && to_v <= baseline_v
         })
+        .cloned()
         .collect()
 }
 
@@ -649,6 +684,85 @@ mod tests {
         assert_eq!(
             compare_standards_version(Some(""), "4.7.4"),
             StandardsDelta::MissingCandidate
+        );
+    }
+
+    /// PHASE-1.1 PR 1.1.J teeth-check (RED): the
+    /// `intervening_entries` filter is supposed to return
+    /// the entries whose interval lies on the path from
+    /// the candidate to the baseline (containment), not
+    /// the entries whose interval merely overlaps that
+    /// path. With a synthetic 4-interval manifest this
+    /// test pins the containment shape; today the
+    /// predicate is overlap and the test fails.
+    ///
+    /// The synthetic manifest covers the 4.5.0 → 4.7.4.1
+    /// path in 4 equal-ish intervals. With a candidate of
+    /// 4.5.0 and a baseline of 4.7.4, the *correct*
+    /// subset is the first three intervals (the path
+    /// from 4.5.0 to 4.7.4); the 4.7.4 → 4.7.4.1 entry
+    /// is entirely *above* the baseline, so it must be
+    /// excluded. With a candidate of 4.6.0 the first
+    /// interval (4.5.0 → 4.6.0) is entirely *below* the
+    /// candidate and the 4.7.4 → 4.7.4.1 entry is above,
+    /// so only the middle two are in the subset.
+    #[test]
+    fn intervening_entries_reports_containment_not_overlap() {
+        let entries = vec![
+            ChecklistEntry {
+                from_version: "4.5.0".to_string(),
+                to_version: "4.6.0".to_string(),
+                summary: "4.5.0 → 4.6.0".to_string(),
+                source: "synthetic".to_string(),
+            },
+            ChecklistEntry {
+                from_version: "4.6.0".to_string(),
+                to_version: "4.7.0".to_string(),
+                summary: "4.6.0 → 4.7.0".to_string(),
+                source: "synthetic".to_string(),
+            },
+            ChecklistEntry {
+                from_version: "4.7.0".to_string(),
+                to_version: "4.7.4".to_string(),
+                summary: "4.7.0 → 4.7.4".to_string(),
+                source: "synthetic".to_string(),
+            },
+            ChecklistEntry {
+                from_version: "4.7.4".to_string(),
+                to_version: "4.7.4.1".to_string(),
+                summary: "4.7.4 → 4.7.4.1".to_string(),
+                source: "synthetic".to_string(),
+            },
+        ];
+
+        // Case 1: candidate at the bottom of the path.
+        // Expect the first three entries; the 4.7.4 →
+        // 4.7.4.1 entry is above the baseline and must
+        // be excluded.
+        let result = intervening_entries_in(Some("4.5.0"), "4.7.4", &entries);
+        let summaries: Vec<&str> = result.iter().map(|e| &*e.summary).collect();
+        assert_eq!(
+            summaries,
+            vec!["4.5.0 → 4.6.0", "4.6.0 → 4.7.0", "4.7.0 → 4.7.4"],
+            "candidate=4.5.0, baseline=4.7.4: the entry's interval must lie ON the path \
+             (containment). The pre-1.1.J overlap predicate returns the last two entries \
+             (4.7.0→4.7.4 and 4.7.4→4.7.4.1), which is wrong: the 4.7.4→4.7.4.1 entry is \
+             above the baseline. The first entry (4.5.0→4.6.0) is on the path and must be \
+             present."
+        );
+
+        // Case 2: candidate in the middle of the path.
+        // Expect only the middle two entries; the first
+        // is below the candidate and the last is above
+        // the baseline.
+        let result = intervening_entries_in(Some("4.6.0"), "4.7.4", &entries);
+        let summaries: Vec<&str> = result.iter().map(|e| &*e.summary).collect();
+        assert_eq!(
+            summaries,
+            vec!["4.6.0 → 4.7.0", "4.7.0 → 4.7.4"],
+            "candidate=4.6.0, baseline=4.7.4: the entry's interval must lie ON the path \
+             (containment). The 4.5.0→4.6.0 entry is below the candidate; the \
+             4.7.4→4.7.4.1 entry is above the baseline. Only the middle two are on the path."
         );
     }
 }

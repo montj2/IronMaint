@@ -4,6 +4,24 @@
   "distribution": "debian",
   "intervals": [
     {
+      "from_version": "4.5.0",
+      "to_version": "4.6.0",
+      "summary": "4.5.0 → 4.6.0: clarified the source-format requirements and the dh sequencer; the §22 gate is unchanged in shape.",
+      "source": "Debian Policy 4.6.0 release notes (https://www.debian.org/doc/debian-policy/ch-policy.html)"
+    },
+    {
+      "from_version": "4.6.0",
+      "to_version": "4.7.0",
+      "summary": "4.6.0 → 4.7.0: tightened the §4.6 build-dependency rules and the §12.3 binary-control fields; the §22 gate now flags 4.6.0→4.7.0 transitions explicitly.",
+      "source": "Debian Policy 4.7.0 release notes (https://www.debian.org/doc/debian-policy/ch-policy.html)"
+    },
+    {
+      "from_version": "4.7.0",
+      "to_version": "4.7.4",
+      "summary": "4.7.0 → 4.7.4: updated the §10.1 architecture list and the §11.8.4 dpkg-statoverride note; the §22 gate names the 4.7.0 → 4.7.4 interval on a candidate below the baseline.",
+      "source": "Debian Policy 4.7.4 release notes (https://www.debian.org/doc/debian-policy/ch-policy.html)"
+    },
+    {
       "from_version": "4.7.4",
       "to_version": "4.7.4.1",
       "summary": "4.7.4 → 4.7.4.1: minor clarifications; no behavioural change for the §22 gate.",

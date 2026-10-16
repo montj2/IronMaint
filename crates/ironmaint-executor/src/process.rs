@@ -11,9 +11,13 @@
 //!    conformance suite but using it is reserved for a future
 //!    sub-phase).
 //! 3. Spawn the tool subprocess with `tool.executable()` +
-//!    `tool.fixed_args()` (no shell). Sanitised env from
-//!    [`ProcessEnvironment`] merged with the request's
-//!    allow-listed overrides.
+//!    `tool.fixed_args()` (no shell). Closed env (PHASE-1.1
+//!    PR 1.1.I): `env_clear()` wipes the ambient process
+//!    environment, then the [`ProcessEnvironment`] baseline
+//!    (`PATH`/`HOME`/`LC_ALL`), the tool's per-tool `env()`,
+//!    and the request's `env_overrides` are layered on top in
+//!    that order. The child sees nothing the daemon
+//!    inherited.
 //! 4. Read stdout / stderr concurrently through [`bounded_read`]
 //!    caps so a child that emits gigabytes cannot exhaust memory.
 //! 5. Enforce the wall-clock timeout via [`tokio::time::timeout`]:
@@ -256,8 +260,28 @@ impl Executor for ProcessExecutor {
         for arg in tool.fixed_args() {
             cmd.arg(arg);
         }
-        // (4) Sanitised env.
+        // (4) Sanitised env (PHASE-1.1 PR 1.1.I). The composition
+        // is:
+        //   a. `env_clear()` — the child sees nothing from the
+        //      ironmaintd daemon's ambient env. Without this
+        //      line, every `IRONMAINT_*`, `BTS_HELPER`, `AWS_*`,
+        //      `LD_*`, proxy var, and the test runner's
+        //      `CARGO_*`/`RUSTC*` set leaks through to the tool
+        //      (architect's post-release review).
+        //   b. `self.env` (the `ProcessEnvironment` baseline:
+        //      `PATH`/`HOME`/`LC_ALL`).
+        //   c. `tool.env()` (the per-tool allow-list, e.g.
+        //      `BTS_HELPER` for the bts-snapshot tool). The
+        //      default is empty; the six synthetic keys do
+        //      nothing here.
+        //   d. `request.env_overrides` (per-call overrides from
+        //      the dispatcher). Applied last so a per-call value
+        //      wins over a per-tool default.
+        cmd.env_clear();
         for (k, v) in self.env.iter() {
+            cmd.env(k, v);
+        }
+        for (k, v) in tool.env() {
             cmd.env(k, v);
         }
         for (k, v) in &request.env_overrides {
