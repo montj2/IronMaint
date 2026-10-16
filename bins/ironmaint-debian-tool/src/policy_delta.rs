@@ -211,12 +211,12 @@ fn compare_standards_version(
 }
 
 /// Return the §20 upgrading-checklist entries
-/// that name the interval between
-/// `candidate` and `baseline`. An entry
+/// whose interval lies *on* the path from
+/// `candidate` to `baseline`. An entry
 /// `(from, to)` qualifies when
-/// `from < baseline` AND `to >= candidate`
-/// (loose, narrative match — the §20 entries
-/// describe an interval, not a precise
+/// `from >= candidate` AND `to <= baseline`
+/// (containment — the entry's interval is
+/// entirely inside the candidate→baseline
 /// range). The entries are returned in the
 /// order they appear in the JSON file.
 ///
@@ -225,6 +225,20 @@ fn compare_standards_version(
 /// values yield an empty `Vec` (the report's
 /// `intervening_checklist_entries` is empty
 /// for the at-or-above cases).
+///
+/// PHASE-1.1 PR 1.1.J (policy delta evidence):
+/// the pre-1.1.J predicate was
+/// `to >= candidate && from <= baseline`
+/// (overlap, not containment). That match
+/// returned entries whose interval was
+/// entirely *above* the candidate (e.g. the
+/// bundled `4.7.4 → 4.7.4.1` entry when the
+/// candidate is `4.6.0` and the baseline is
+/// `4.7.4`), which is wrong: the entry is
+/// on a path the candidate has not yet
+/// reached. The new predicate is containment
+/// (see `intervening_entries_in` for the
+/// testable filter and the inline teeth-check).
 fn intervening_entries(candidate: Option<&str>, baseline: &str) -> Vec<ChecklistEntry> {
     intervening_entries_in(candidate, baseline, &load_upgrading_checklist())
 }
@@ -257,29 +271,30 @@ fn intervening_entries_in(
     checklist
         .iter()
         .filter(|e| {
-            // Match an entry whose interval
-            // overlaps the path from
-            // `candidate` to `baseline` (both
-            // inclusive of the entry's
-            // endpoints, since the §20
-            // narrative is the per-version
-            // change-log).
+            // CONTAINMENT (PHASE-1.1 PR 1.1.J): the
+            // entry's interval must lie ON the path
+            // from `candidate` to `baseline` —
+            // i.e. `from >= candidate` and `to
+            // <= baseline`. The previous *overlap*
+            // test (`to >= candidate && from <=
+            // baseline`) matched entries whose
+            // interval was entirely above the
+            // candidate (e.g. the bundled
+            // `4.7.4 → 4.7.4.1` entry when the
+            // candidate is 4.6.0 and the baseline
+            // is 4.7.4), which is wrong: the entry
+            // is on a path the candidate has not
+            // yet reached. The new test in
+            // `mod tests` pins the containment
+            // shape against a synthetic
+            // 4-interval manifest.
             let Ok(from_v) = debversion::Version::from_str(&e.from_version) else {
                 return false;
             };
             let Ok(to_v) = debversion::Version::from_str(&e.to_version) else {
                 return false;
             };
-            // The entry covers the
-            // candidate-to-baseline path
-            // when its `to` is at or above
-            // the candidate (so the entry
-            // names the post-candidate
-            // change) and its `from` is at
-            // or below the baseline (so the
-            // entry's interval is in the
-            // known-Policy range).
-            to_v >= candidate_v && from_v <= baseline_v
+            from_v >= candidate_v && to_v <= baseline_v
         })
         .cloned()
         .collect()
@@ -724,8 +739,7 @@ mod tests {
         // Expect the first three entries; the 4.7.4 →
         // 4.7.4.1 entry is above the baseline and must
         // be excluded.
-        let result =
-            intervening_entries_in(Some("4.5.0"), "4.7.4", &entries);
+        let result = intervening_entries_in(Some("4.5.0"), "4.7.4", &entries);
         let summaries: Vec<&str> = result.iter().map(|e| &*e.summary).collect();
         assert_eq!(
             summaries,
@@ -741,8 +755,7 @@ mod tests {
         // Expect only the middle two entries; the first
         // is below the candidate and the last is above
         // the baseline.
-        let result =
-            intervening_entries_in(Some("4.6.0"), "4.7.4", &entries);
+        let result = intervening_entries_in(Some("4.6.0"), "4.7.4", &entries);
         let summaries: Vec<&str> = result.iter().map(|e| &*e.summary).collect();
         assert_eq!(
             summaries,

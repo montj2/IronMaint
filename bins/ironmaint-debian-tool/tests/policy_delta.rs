@@ -134,12 +134,28 @@ Description: at-baseline fixture for PR 1.1.D\n",
 /// `standards_version_target`. The report's verdict is
 /// `Pass` and the `intervening_checklist_entries` field
 /// is populated with the §20 upgrading-checklist
-/// entries between the candidate's `4.6.2` and the
+/// entries between the candidate's `4.6.0` and the
 /// baseline's `4.7.4`.
 ///
 /// Pre-1.1.D: the `intervening_checklist_entries` field
 /// does not exist on `DebianPolicyDeltaReviewV1` — the
 /// test cannot even reference it. RED.
+///
+/// PHASE-1.1 PR 1.1.J (policy delta evidence): the test
+/// is tightened to assert the *exact* subset of §20
+/// entries the report carries. The bundled
+/// `upgrading-checklist.v1.json` (post-1.1.J) lists
+/// four intervals: 4.5.0→4.6.0, 4.6.0→4.7.0,
+/// 4.7.0→4.7.4, 4.7.4→4.7.4.1. With a candidate of
+/// `4.6.0` and a baseline of `4.7.4`, the *containment*
+/// predicate (`from >= candidate && to <= baseline`)
+/// returns exactly the two middle intervals: the
+/// 4.5.0→4.6.0 entry is below the candidate; the
+/// 4.7.4→4.7.4.1 entry is above the baseline. The
+/// pre-1.1.J overlap predicate returned
+/// `[4.7.0→4.7.4, 4.7.4→4.7.4.1]` (the last two —
+/// wrong: the 4.7.4→4.7.4.1 entry is entirely above
+/// the baseline).
 #[test]
 fn below_baseline_is_pass_with_checklist_entries() {
     let (_tmp, workspace) = control_with_body(
@@ -147,7 +163,7 @@ fn below_baseline_is_pass_with_checklist_entries() {
 Maintainer: IronMaint Test <test@example.invalid>\n\
 Section: utils\n\
 Priority: optional\n\
-Standards-Version: 4.6.2\n\
+Standards-Version: 4.6.0\n\
 \n\
 Package: example\n\
 Architecture: any\n\
@@ -155,36 +171,38 @@ Description: below-baseline fixture for PR 1.1.D\n",
     );
     let report = run(&input_with_workspace(workspace));
     assert_eq!(report.verdict, Verdict::Pass, "report: {report:?}");
-    assert_eq!(report.candidate_standards_version.as_deref(), Some("4.6.2"));
+    assert_eq!(report.candidate_standards_version.as_deref(), Some("4.6.0"));
     assert_eq!(report.baseline_standards_version.as_deref(), Some("4.7.4"));
     assert_eq!(
         report.comparison_outcome,
         Some(StandardsVersionComparison::BelowBaseline)
     );
-    // The §20 checklist promise. Pre-1.1.D: the field
-    // does not exist on the report; the test references
-    // a non-existent field. The new
-    // `upgrading-checklist.v1.json` carries the 4.6.2 →
-    // 4.7.4 interval; the §20 promise is that the report
-    // names the intervening entries. RED.
+    // The §20 checklist promise. The bundled
+    // `upgrading-checklist.v1.json` carries four
+    // intervals (4.5.0→4.6.0, 4.6.0→4.7.0,
+    // 4.7.0→4.7.4, 4.7.4→4.7.4.1). With
+    // candidate=4.6.0 and baseline=4.7.4, the
+    // *containment* predicate
+    // (`from >= 4.6.0 && to <= 4.7.4`) returns
+    // exactly the two middle intervals, in JSON
+    // order. The pre-1.1.J overlap predicate
+    // (`to >= 4.6.0 && from <= 4.7.4`) returned
+    // the last two — wrong: the 4.7.4→4.7.4.1
+    // entry is entirely *above* the baseline.
     let entries = &report.intervening_checklist_entries;
-    assert!(
-        !entries.is_empty(),
-        "below-baseline reports must name the intervening checklist entries (§20); \
+    let summaries: Vec<&str> = entries.iter().map(|e| e.summary.as_str()).collect();
+    assert_eq!(
+        summaries,
+        vec![
+            "4.6.0 → 4.7.0: tightened the §4.6 build-dependency rules and the §12.3 binary-control fields; the §22 gate now flags 4.6.0→4.7.0 transitions explicitly.",
+            "4.7.0 → 4.7.4: updated the §10.1 architecture list and the §11.8.4 dpkg-statoverride note; the §22 gate names the 4.7.0 → 4.7.4 interval on a candidate below the baseline.",
+        ],
+        "candidate=4.6.0, baseline=4.7.4: the report must name the two entries \
+         whose interval is on the path from the candidate to the baseline \
+         (containment). The 4.5.0→4.6.0 entry is below the candidate; the \
+         4.7.4→4.7.4.1 entry is above the baseline. Pre-1.1.J the overlap \
+         predicate returned the wrong subset (last two instead of middle two); \
          report: {report:?}"
-    );
-    // Every named entry sits between the candidate's
-    // `4.6.2` and the baseline's `4.7.4`. The fixture
-    // file's 4.7.4 → 4.7.4.1 interval is the only
-    // post-1.1.D entry; an earlier interval (4.6.2 →
-    // 4.7.4) would also be named. We pin the count at
-    // ≥ 1 rather than a specific value so future
-    // interval extensions don't break the test.
-    assert!(
-        entries
-            .iter()
-            .any(|e| e.from_version.as_str() <= "4.7.4" && e.to_version.as_str() >= "4.7.4"),
-        "an entry covering the 4.7.4 baseline must be present: {entries:?}"
     );
 }
 
