@@ -390,46 +390,58 @@ fn check_gates(
     };
 
     for &stage in requirements.gates {
-        // Find a mandatory definition for this stage and candidate.
-        let definition = ctx
+        // PHASE-2 PR 2.0-E: collect every mandatory
+        // `GateDefinition` for this `(stage, candidate)`
+        // pair and enforce each one. The previous
+        // implementation used `.find(...)`, which silently
+        // ignored every mandatory definition after the
+        // first — a stage with N mandatory checks only
+        // enforced check #1. The fix is local to this loop;
+        // the runtime aggregation in `evaluate_gate` is
+        // already correct across N checks bound to one
+        // `gate_id`.
+        let definitions: Vec<_> = ctx
             .gate_definitions
             .values()
-            .find(|d| d.stage == stage && d.candidate == *fp && d.mandatory);
-
-        let Some(def) = definition else {
+            .filter(|d| d.stage == stage && d.candidate == *fp && d.mandatory)
+            .cloned()
+            .collect();
+        if definitions.is_empty() {
             blockers.push(TransitionBlocker::MissingGate(missing_gate_sentinel()));
-            continue;
-        };
-
-        let Some(result) = ctx.gates.get(&def.id) else {
-            blockers.push(TransitionBlocker::MissingGate(def.id));
-            continue;
-        };
-
-        if result.candidate != *fp {
-            blockers.push(TransitionBlocker::CandidateMismatch {
-                expected: fp.clone(),
-                found: result.candidate.clone(),
-            });
             continue;
         }
 
-        match result.status {
-            GateStatus::Pass => {
-                // Always satisfies; no need to check minimum_status
-                // because Pass is the strictest possible result.
+        for def in definitions {
+            let Some(result) = ctx.gates.get(&def.id) else {
+                blockers.push(TransitionBlocker::MissingGate(def.id));
+                continue;
+            };
+
+            if result.candidate != *fp {
+                blockers.push(TransitionBlocker::CandidateMismatch {
+                    expected: fp.clone(),
+                    found: result.candidate.clone(),
+                });
+                continue;
             }
-            GateStatus::NotApplicable => {
-                if def.requirement.minimum_status == RequiredEvidenceStatus::Pass {
+
+            match result.status {
+                GateStatus::Pass => {
+                    // Always satisfies; no need to check minimum_status
+                    // because Pass is the strictest possible result.
+                }
+                GateStatus::NotApplicable => {
+                    if def.requirement.minimum_status == RequiredEvidenceStatus::Pass {
+                        blockers.push(TransitionBlocker::FailedGate(def.id));
+                    }
+                    // PassOrNotApplicable accepts NotApplicable.
+                }
+                GateStatus::NotEvaluated | GateStatus::Blocked => {
+                    blockers.push(TransitionBlocker::IncompleteGate(def.id));
+                }
+                GateStatus::Fail | GateStatus::ReviewRequired => {
                     blockers.push(TransitionBlocker::FailedGate(def.id));
                 }
-                // PassOrNotApplicable accepts NotApplicable.
-            }
-            GateStatus::NotEvaluated | GateStatus::Blocked => {
-                blockers.push(TransitionBlocker::IncompleteGate(def.id));
-            }
-            GateStatus::Fail | GateStatus::ReviewRequired => {
-                blockers.push(TransitionBlocker::FailedGate(def.id));
             }
         }
     }

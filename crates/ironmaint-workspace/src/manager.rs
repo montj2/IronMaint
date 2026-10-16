@@ -299,7 +299,25 @@ impl<S: WorkspaceMetadataStore> WorkspaceManager<S> {
         // references the handle string).
         let mut entries = tokio::fs::read_dir(&dir).await?;
         while let Some(entry) = entries.next_entry().await? {
-            tokio::fs::remove_dir_all(entry.path()).await?;
+            // PHASE-2 PR 2.0-E: the cleanup must dispatch on
+            // the entry's file type because `git clone`
+            // leaves a `.git/` directory AND top-level files
+            // (`README.md`, source tarballs, etc.). On
+            // macOS, `tokio::fs::remove_dir_all` returns
+            // `ENOTDIR` when the leaf is a regular file
+            // (the underlying `remove_dir(2)` syscall does
+            // not accept files). Linux tolerates it; macOS
+            // does not. Dispatch to `remove_file` for files
+            // and `remove_dir_all` for directories / symlinks
+            // — the two paths cover the workspace's import
+            // outputs without depending on the platform.
+            let file_type = entry.file_type().await?;
+            let path = entry.path();
+            if file_type.is_dir() || file_type.is_symlink() {
+                tokio::fs::remove_dir_all(&path).await?;
+            } else {
+                tokio::fs::remove_file(&path).await?;
+            }
         }
         // `git clone` writes the cloned tree into the
         // directory. The command runs from the parent

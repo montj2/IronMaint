@@ -53,6 +53,7 @@ pub mod job;
 pub mod package;
 pub mod repository;
 pub mod schema;
+pub mod source_import;
 
 // Ergonomic re-exports so callers can use `ironmaint_core::JobId` etc.
 // without naming the source module.
@@ -71,6 +72,7 @@ pub use job::{JobProjection, JobState, MaintenanceJob};
 pub use package::{PackageIdentity, PackageName, PackageRevision, PackageVersion};
 pub use repository::{RepoPath, RepositoryRef, VcsKind};
 pub use schema::SchemaVersion;
+pub use source_import::{SourceImportPolicy, SourceImportPolicyError};
 
 // Schema-only newtypes used as `#[schemars(with = "...")]` overrides
 // on wire fields whose underlying type (e.g. `time::OffsetDateTime`)

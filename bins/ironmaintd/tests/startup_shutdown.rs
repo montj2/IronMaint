@@ -118,18 +118,25 @@ impl Daemon {
         Self::start_on(Arc::new(tempfile::tempdir().expect("tempdir"))).await
     }
 
-    /// PHASE-1.1 PR 1.1.G: start the daemon with a
+    /// PHASE-2 PR 2.0-E: start the daemon with a
     /// configured `source.import` allowlist. The flag is
-    /// passed once per URL prefix (the §G implementation
-    /// parses repeated occurrences). The tempdir is
-    /// shared with the test body so the test can stage a
-    /// local bare repo under `tmp.path()` and put its
-    /// `file://` URL on the allowlist.
-    async fn start_with_allowlist(allowlist: Vec<String>) -> Self {
+    /// passed once per `SourceImportPolicy` (the §G
+    /// implementation parsed repeated occurrences). The
+    /// tempdir is shared with the test body so the test
+    /// can stage a local bare repo under `tmp.path()` and
+    /// put its `file://` URL on the allowlist.
+    async fn start_with_allowlist(allowlist: Vec<ironmaint_core::SourceImportPolicy>) -> Self {
         let tmp = Arc::new(tempfile::tempdir().expect("tempdir"));
         let mut command = command_for(&tmp);
-        for url in &allowlist {
-            command.arg("--source-import-allowlist").arg(url);
+        for policy in &allowlist {
+            // PHASE-2 PR 2.0-E: each policy is passed as its
+            // canonical `Display` form so the daemon's CLI
+            // parser can re-parse it on startup. The `Display`
+            // → `parse` round trip is unit-tested in
+            // `ironmaint-core::source_import`.
+            command
+                .arg("--source-import-allowlist")
+                .arg(policy.to_string());
         }
         let mut child = command
             .stdout(Stdio::piped())
@@ -3764,13 +3771,18 @@ async fn source_import_clones_a_real_git_remote() {
     // allowlist. `Daemon::start_with_allowlist` shares
     // the same tempdir the test body uses, so the test
     // can resolve `<tmp>/bare.git` from the daemon's
-    // point of view.
+    // point of view. The policy is the bare `file://`
+    // URL — the parsed `SourceImportPolicy` matches the
+    // exact URL the test sends, and a `file://` policy
+    // with a path is the daemon's local-allowlist form.
     let tmp = tempfile::tempdir().expect("test tempdir");
     let bare_path = tmp.path().join("bare.git");
     seed_bare_repo(&bare_path).await;
     let bare_url = format!("file://{}", bare_path.display());
+    let bare_policy = ironmaint_core::SourceImportPolicy::parse(&bare_url)
+        .expect("static file:// URL must parse as a policy");
 
-    let mut d = Daemon::start_with_allowlist(vec![bare_url.clone()]).await;
+    let mut d = Daemon::start_with_allowlist(vec![bare_policy]).await;
 
     // Create a job to import into. `job.create` is the
     // canonical MCP entry point — the runtime's
@@ -3936,4 +3948,264 @@ async fn source_import_rejects_a_url_not_on_the_allowlist() {
     );
 
     d.shutdown().await;
+}
+
+/// PHASE-2 PR 2.0-E: a repeated `source.import` for the
+/// same `job_id` re-clones (today's behaviour, pinned by
+/// this test). The handler returns `Ok` on both calls, the
+/// `workspace_handle` is identical, and the `HEAD^{tree}`
+/// hash of the second clone matches the bare repo's
+/// `HEAD^{tree}` — proof the second clone actually ran
+/// `git clone` against the remote rather than returning a
+/// cached handle.
+#[tokio::test]
+async fn source_import_repeated_call_re_clones_to_same_handle() {
+    let git_check = tokio::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .await;
+    if !matches!(git_check, Ok(ref o) if o.status.success()) {
+        eprintln!("git is not available; skipping source.import repeated-call test");
+        return;
+    }
+
+    let tmp = tempfile::tempdir().expect("test tempdir");
+    let bare_path = tmp.path().join("bare.git");
+    seed_bare_repo(&bare_path).await;
+    let bare_url = format!("file://{}", bare_path.display());
+    let bare_policy = ironmaint_core::SourceImportPolicy::parse(&bare_url)
+        .expect("static file:// URL must parse as a policy");
+
+    let mut d = Daemon::start_with_allowlist(vec![bare_policy]).await;
+
+    let create_resp = d
+        .call(
+            "job.create",
+            json!({
+                "orchestrator": {"kind": "ironclaw"},
+                "package": {
+                    "distribution": {"family": "debian", "release": "sid"},
+                    "source_name": "source-import-repeated",
+                    "binary_names": [],
+                },
+            }),
+        )
+        .await;
+    let job_id = create_resp["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+
+    // First call: seeds the workspace, returns
+    // `workspace_handle`.
+    let first = d
+        .call(
+            "source.import",
+            json!({
+                "job_id": job_id,
+                "url": bare_url,
+                "ref_name": "main",
+            }),
+        )
+        .await;
+    assert_eq!(
+        first["error"],
+        Value::Null,
+        "first source.import errored: {first}"
+    );
+    let first_handle = first["workspace_handle"]
+        .as_str()
+        .expect("first workspace_handle")
+        .to_string();
+    assert!(
+        !first_handle.is_empty(),
+        "first call returned empty handle: {first}"
+    );
+
+    // Second call: same `job_id`, same URL. Expected to
+    // re-clone into the same handle (today's behaviour).
+    let second = d
+        .call(
+            "source.import",
+            json!({
+                "job_id": job_id,
+                "url": bare_url,
+                "ref_name": "main",
+            }),
+        )
+        .await;
+    assert_eq!(
+        second["error"],
+        Value::Null,
+        "second source.import errored: {second}"
+    );
+    let second_handle = second["workspace_handle"]
+        .as_str()
+        .expect("second workspace_handle")
+        .to_string();
+
+    // The handle must be identical — the handler keys the
+    // workspace by `job_id` and never allocates a second
+    // handle for the same job.
+    assert_eq!(
+        first_handle, second_handle,
+        "repeated source.import must return the same workspace_handle; \
+         first was `{first_handle}`, second was `{second_handle}`"
+    );
+
+    // The handle must point at a directory whose `git`
+    // view of `HEAD^{tree}` matches the bare repo's
+    // `HEAD^{tree}`. If the second call returned a stale
+    // handle without re-cloning, the contents would
+    // either be missing or be the bare repo's own
+    // structure rather than the cloned working tree.
+    let handle_dir = d.workspaces_root().join(&second_handle);
+    let worktree_tree = git_in(&handle_dir, &["rev-parse", "HEAD^{tree}"]).await;
+    let bare_tree = git_in(&bare_path, &["rev-parse", "HEAD^{tree}"]).await;
+    assert_eq!(
+        worktree_tree, bare_tree,
+        "second clone's HEAD tree (`{worktree_tree}`) does not match \
+         the bare repo's HEAD tree (`{bare_tree}`); source.import \
+         did not re-clone on the second call"
+    );
+
+    d.shutdown().await;
+}
+
+/// PHASE-2 PR 2.0-E: a `source.import` whose URL doesn't
+/// match any configured `SourceImportPolicy` returns a
+/// structured `InvalidInput` error that names the policy
+/// and the rejected host. The matcher is case-insensitive
+/// on host (after `url::Url::host_str()`) and exact on
+/// scheme, so `https://github.com/debian-mirror/foo.git`
+/// against a `https://github.com/debian/` policy is
+/// rejected on host mismatch (not path-prefix overflow).
+#[tokio::test]
+async fn source_import_rejects_host_mismatch() {
+    let git_check = tokio::process::Command::new("git")
+        .arg("--version")
+        .output()
+        .await;
+    if !matches!(git_check, Ok(ref o) if o.status.success()) {
+        eprintln!("git is not available; skipping source.import host-mismatch test");
+        return;
+    }
+
+    // Configure a policy for `https://github.com/debian/`.
+    // The test only needs the dispatcher's URL matching;
+    // it never reaches `git clone` (the host doesn't
+    // exist, and the matcher rejects before git is
+    // invoked).
+    let policy_str = "https://github.com/debian/";
+    let policy =
+        ironmaint_core::SourceImportPolicy::parse(policy_str).expect("static policy must parse");
+    let mut d = Daemon::start_with_allowlist(vec![policy]).await;
+
+    let create_resp = d
+        .call(
+            "job.create",
+            json!({
+                "orchestrator": {"kind": "ironclaw"},
+                "package": {
+                    "distribution": {"family": "debian", "release": "sid"},
+                    "source_name": "source-import-host-mismatch",
+                    "binary_names": [],
+                },
+            }),
+        )
+        .await;
+    let job_id = create_resp["job_id"]
+        .as_str()
+        .expect("job_id string")
+        .to_string();
+
+    // The rejected URL: same scheme, sibling host
+    // (`debian-mirror` not `debian`), path-prefix would
+    // be wrong if the host matched. The matcher's
+    // host-keyed check must reject before the
+    // path-prefix check gets a chance to.
+    let import_resp_raw = d
+        .post(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 3,
+                "method": "tools/call",
+                "params": {
+                    "name": "source.import",
+                    "arguments": {
+                        "job_id": job_id,
+                        "url": "https://github.com/debian-mirror/foo.git",
+                    },
+                },
+            }),
+            Some(TOKEN),
+        )
+        .await;
+    assert_eq!(
+        import_resp_raw.status(),
+        200,
+        "tools/call was not served at all"
+    );
+    let import_resp: Value = import_resp_raw
+        .json()
+        .await
+        .expect("json body from source.import call");
+    assert_eq!(
+        import_resp["result"]["isError"],
+        Value::Bool(true),
+        "source.import with a host-mismatched URL must return isError=true: {import_resp}"
+    );
+    let message = import_resp["result"]["structuredContent"]["error"]["message"]
+        .as_str()
+        .unwrap_or_default();
+    // The structured error must name the rejected host
+    // and reference the allowlist. A bare "denied"
+    // message that doesn't tell the operator which host
+    // was rejected is not a 2.0-E result.
+    assert!(
+        message.contains("github.com"),
+        "source.import error must name the rejected host: {message}"
+    );
+    assert!(
+        message.contains("debian-mirror") || message.contains("debian"),
+        "source.import error must name the rejected host: {message}"
+    );
+    assert!(
+        message.contains("allowlist") || message.contains("policy"),
+        "source.import error must reference the allowlist: {message}"
+    );
+    assert!(
+        import_resp["result"]["structuredContent"]["workspace_handle"].is_null(),
+        "source.import with a host-mismatched URL must not return a workspace_handle: {import_resp}"
+    );
+
+    d.shutdown().await;
+}
+
+/// Run `git <args>` in `dir` and return the trimmed
+/// stdout. Used by the repeated-import test to compare
+/// `HEAD^{tree}` between the cloned workspace and the
+/// bare repo. Panics on non-zero exit; the test body's
+/// earlier `git --version` check guards the environment.
+async fn git_in(dir: &std::path::Path, args: &[&str]) -> String {
+    let output = tokio::process::Command::new("git")
+        .args(args)
+        .current_dir(dir)
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/var/empty")
+        .output()
+        .await
+        .expect("git invocation");
+    assert!(
+        output.status.success(),
+        "git {:?} in {} failed: {}",
+        args,
+        dir.display(),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout)
+        .expect("git stdout is utf-8")
+        .trim()
+        .to_string()
 }

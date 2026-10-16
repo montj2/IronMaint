@@ -872,8 +872,231 @@ fn s72_apply_blocked_returns_error() {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// PHASE-2 PR 2.0-E — every mandatory check at a stage is enforced.
+//
+// The engine's `check_gates` loop used to do `.find(...)` on the
+// mandatory `GateDefinition`s for a `(stage, candidate)` pair, so a
+// stage with two mandatory checks only enforced the first. This
+// test inserts two mandatory `GateDefinition`s for the same
+// `(stage, candidate)` and asserts that all three outcomes
+// (one Pass + one absent → blocked; both Pass → allowed; one Pass
+// + one Fail → blocked) are produced.
+//
+// RED state: the test fails on the first sub-case because the
+// engine silently ignores the second mandatory gate. GREEN state:
+// the test passes after `check_gates` iterates all mandatory
+// definitions instead of finding only the first.
+// ─────────────────────────────────────────────────────────────────────────────
+
+#[test]
+fn s72_every_mandatory_check_at_a_stage_is_enforced() {
+    let fp = fp();
+    let engine = TransitionEngine::new();
+    // The transition `EventDetected → Intake` requires the
+    // `SourcePreparation` gate. The same stage with two
+    // mandatory `GateDefinition`s is the test setup.
+    let proj = job(JobState::EventDetected, 1);
+
+    let obligations = ObligationSet::new();
+    let approval_requirements = BTreeMap::new();
+    let approvals = BTreeMap::new();
+    let request = TransitionRequest {
+        job_id: JobId::new(),
+        expected_version: 1,
+        target: JobState::Intake,
+        now: datetime!(2026-01-02 00:00:00 UTC),
+    };
+
+    // ── sub-case 1: gate1 Pass, gate2 absent → blocked with
+    //    IncompleteGate(gate2.id).
+    let (gate_definitions, gates, gate1_id, gate2_id) = make_two_mandatory_gates(
+        &fp,
+        GateStage::SourcePreparation,
+        Some(GateStatus::Pass),
+        None,
+    );
+    let ctx = TransitionContext {
+        current: &proj,
+        active_candidate_fingerprint: Some(fp.clone()),
+        gates: &gates,
+        gate_definitions: &gate_definitions,
+        obligations: &obligations,
+        approval_requirements: &approval_requirements,
+        approvals: &approvals,
+        infrastructure_blocked: false,
+        resume_event: None,
+    };
+    match engine.evaluate(&request, &ctx) {
+        TransitionDecision::Allowed(_) => {
+            panic!("sub-case 1: expected Blocked because gate2 has no result")
+        }
+        TransitionDecision::Blocked(blockers) => {
+            // The two mandatory definitions produce one
+            // `Pass` (no blocker) and one `MissingGate`
+            // (gate2.id — no result at all). The second
+            // blocker proves the engine saw both
+            // definitions.
+            let missing_gate2: Option<GateId> = blockers.iter().find_map(|b| match b {
+                TransitionBlocker::MissingGate(id) => Some(*id),
+                _ => None,
+            });
+            assert_eq!(
+                missing_gate2,
+                Some(gate2_id),
+                "sub-case 1: gate2 should produce a MissingGate blocker (no result yet); blockers={blockers:?}",
+            );
+            // gate1 was Pass and must NOT produce any blocker.
+            assert!(
+                blockers.iter().all(|b| match b {
+                    TransitionBlocker::IncompleteGate(id)
+                    | TransitionBlocker::FailedGate(id)
+                    | TransitionBlocker::MissingGate(id) => *id != gate1_id,
+                    _ => true,
+                }),
+                "sub-case 1: gate1 (Pass) must not produce a blocker; blockers={blockers:?}"
+            );
+        }
+    }
+
+    // ── sub-case 2: both gates Pass → allowed.
+    let (gate_definitions, gates, _gate1_id, _gate2_id) = make_two_mandatory_gates(
+        &fp,
+        GateStage::SourcePreparation,
+        Some(GateStatus::Pass),
+        Some(GateStatus::Pass),
+    );
+    let ctx = TransitionContext {
+        current: &proj,
+        active_candidate_fingerprint: Some(fp.clone()),
+        gates: &gates,
+        gate_definitions: &gate_definitions,
+        obligations: &obligations,
+        approval_requirements: &approval_requirements,
+        approvals: &approvals,
+        infrastructure_blocked: false,
+        resume_event: None,
+    };
+    match engine.evaluate(&request, &ctx) {
+        TransitionDecision::Allowed(_) => {}
+        TransitionDecision::Blocked(blockers) => {
+            panic!("sub-case 2: expected Allowed, got Blocked: {blockers:?}")
+        }
+    }
+
+    // ── sub-case 3: gate1 Pass, gate2 Fail → blocked with
+    //    FailedGate(gate2.id).
+    let (gate_definitions, gates, _gate1_id, gate2_id) = make_two_mandatory_gates(
+        &fp,
+        GateStage::SourcePreparation,
+        Some(GateStatus::Pass),
+        Some(GateStatus::Fail),
+    );
+    let ctx = TransitionContext {
+        current: &proj,
+        active_candidate_fingerprint: Some(fp.clone()),
+        gates: &gates,
+        gate_definitions: &gate_definitions,
+        obligations: &obligations,
+        approval_requirements: &approval_requirements,
+        approvals: &approvals,
+        infrastructure_blocked: false,
+        resume_event: None,
+    };
+    match engine.evaluate(&request, &ctx) {
+        TransitionDecision::Allowed(_) => {
+            panic!("sub-case 3: expected Blocked because gate2 is Fail")
+        }
+        TransitionDecision::Blocked(blockers) => {
+            let failed_gate2: Option<GateId> = blockers.iter().find_map(|b| match b {
+                TransitionBlocker::FailedGate(id) => Some(*id),
+                _ => None,
+            });
+            assert_eq!(
+                failed_gate2,
+                Some(gate2_id),
+                "sub-case 3: gate2 should produce a FailedGate blocker; blockers={blockers:?}",
+            );
+        }
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Test helpers
 // ─────────────────────────────────────────────────────────────────────────────
+
+/// Build two mandatory `GateDefinition`s for the same
+/// `(stage, candidate)` pair, each with its own `GateResult`
+/// (or no result, if `status2` is `None`). The two definitions
+/// differ only in their `id` (the constructor mints a fresh
+/// `GateId`); the engine must enforce BOTH.
+///
+/// `status1`/`status2` accept the same set of statuses as
+/// [`make_gate_pair`]. Returns the two gate ids alongside the
+/// maps so callers can assert on the blocker that names
+/// gate2 specifically.
+#[allow(clippy::too_many_lines)]
+fn make_two_mandatory_gates(
+    candidate: &CandidateFingerprint,
+    stage: GateStage,
+    status1: Option<GateStatus>,
+    status2: Option<GateStatus>,
+) -> (
+    BTreeMap<GateId, GateDefinition>,
+    BTreeMap<GateId, GateResult>,
+    GateId,
+    GateId,
+) {
+    let def1 = GateDefinition::new(
+        candidate.clone(),
+        stage,
+        GateRequirement::new(
+            ironmaint_evidence::EvidenceKind::Build,
+            RequiredEvidenceStatus::Pass,
+        ),
+        true,
+    );
+    let def2 = GateDefinition::new(
+        candidate.clone(),
+        stage,
+        GateRequirement::new(
+            ironmaint_evidence::EvidenceKind::SourcePreparation,
+            RequiredEvidenceStatus::Pass,
+        ),
+        true,
+    );
+    let gate1_id = def1.id;
+    let gate2_id = def2.id;
+    let mut defs = BTreeMap::new();
+    defs.insert(def1.id, def1);
+    defs.insert(def2.id, def2);
+
+    let mut results = BTreeMap::new();
+    for (def_id, status) in [(gate1_id, status1), (gate2_id, status2)] {
+        let Some(status) = status else { continue };
+        let result = match status {
+            GateStatus::Pass => GateResult::pass(
+                def_id,
+                candidate.clone(),
+                vec![],
+                datetime!(2026-01-01 00:00:00 UTC),
+            ),
+            GateStatus::Fail => GateResult::fail(
+                def_id,
+                candidate.clone(),
+                vec![],
+                datetime!(2026-01-01 00:00:00 UTC),
+            ),
+            GateStatus::NotApplicable => GateResult::not_applicable(
+                def_id,
+                candidate.clone(),
+                datetime!(2026-01-01 00:00:00 UTC),
+            ),
+            other => panic!("make_two_mandatory_gates: unsupported status {other:?}"),
+        };
+        results.insert(def_id, result);
+    }
+    (defs, results, gate1_id, gate2_id)
+}
 
 #[allow(clippy::too_many_lines)]
 fn make_gate_pair(
