@@ -26,6 +26,7 @@
 
 pub mod activate;
 pub mod apply;
+pub mod build_input;
 pub mod capture;
 pub mod changelog;
 pub mod error;
@@ -36,6 +37,7 @@ pub mod path;
 pub mod read;
 pub mod revision;
 
+pub use build_input::BuildInputHandle;
 pub use error::{WorkspaceError, WorkspaceErrorKind};
 pub use id::WorkspaceId;
 pub use manager::WorkspaceManager;

@@ -3,11 +3,13 @@
 use std::path::PathBuf;
 use std::str::FromStr;
 
+use ironmaint_adapter_api::BuildInputDescriptor;
 use ironmaint_core::JobId;
 use ironmaint_store::WorkspaceMetadataStore;
 use ironmaint_store::workspace::WorkspaceState;
 use time::OffsetDateTime;
 
+use crate::BuildInputHandle;
 use crate::error::{WorkspaceError, WorkspaceErrorKind};
 use crate::git::GitInvocation;
 use crate::id::WorkspaceId;
@@ -412,5 +414,30 @@ impl<S: WorkspaceMetadataStore> WorkspaceManager<S> {
             path: frozen_path,
             repo_root: ws_root,
         })
+    }
+
+    /// PHASE-2 PR 2.0-D: stage the candidate into a
+    /// disposable build input. See `doc/PHASE-2-D.md`
+    /// and `crate::build_input::BuildInputHandle`.
+    ///
+    /// The 2.0-D slice is **quilt only**. The full
+    /// implementation lands in the GREEN commit; the
+    /// RED commit leaves this as a stub that returns
+    /// a typed `WorkspaceError` so the type signature
+    /// is in place and the conformance test (which
+    /// asserts the staging succeeds) can fail with a
+    /// useful message.
+    #[allow(unused_variables)]
+    pub fn stage_build_input(
+        &self,
+        job_id: &JobId,
+        descriptor: &BuildInputDescriptor,
+    ) -> Result<BuildInputHandle, WorkspaceError> {
+        Err(WorkspaceError::new(WorkspaceErrorKind::Other(
+            "stage_build_input: not yet implemented in 2.0-D red commit (GREEN commit \
+             replaces this body with the git-archive + tar + git-write-tree staging; \
+             see doc/PHASE-2-D.md)"
+                .to_string(),
+        )))
     }
 }

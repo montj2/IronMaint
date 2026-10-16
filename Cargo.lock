@@ -1469,10 +1469,12 @@ dependencies = [
 name = "ironmaint-workspace"
 version = "0.1.0"
 dependencies = [
+ "ironmaint-adapter-api",
  "ironmaint-core",
  "ironmaint-store",
  "schemars 0.8.22",
  "serde",
+ "sha2 0.10.9",
  "tempfile",
  "thiserror",
  "time",
