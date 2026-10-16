@@ -30,6 +30,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod build;
+mod build_target;
 pub mod descriptor;
 pub mod issues;
 pub mod package_model;

@@ -126,6 +126,28 @@ pub struct RuntimeConfig {
     /// `BTS_HELPER` in its now-closed env, so the subcommand
     /// returns the hard-coded fixture). Default: `None`.
     pub bts_helper: Option<PathBuf>,
+    /// PHASE-2 PR 2.0-C (lock the build execution model,
+    /// `doc/PHASE-2-C.md` §2): the directory under which
+    /// `sbuild` creates its schroots on first use. The
+    /// `containers/debian-tools` compose service mounts
+    /// the named volume `ironmaint_sbuild-buildroots` at
+    /// this path; the daemon's startup line records the
+    /// resolved value. Operator-overridable via
+    /// `--sbuild-buildroot-dir` (env-var fallback
+    /// `IRONMAINT_SBUILD_BUILDROOT_DIR`). Default:
+    /// `/var/lib/sbuild`.
+    pub sbuild_buildroot_dir: PathBuf,
+    /// PHASE-2 PR 2.0-C (`doc/PHASE-2-C.md` §5): whether
+    /// `sbuild` runs under unprivileged user namespaces
+    /// (the `sbuild --unshare` backend). Default: `true`
+    /// (unprivileged). The operator can opt out with
+    /// `--no-sbuild-unprivileged` (env-var fallback
+    /// `IRONMAINT_SBUILD_UNPRIVILEGED=false`), in which
+    /// case the schroot backend is used and the container
+    /// must be run with `--privileged`. The default is
+    /// the unprivileged mode; the opt-out is for runtimes
+    /// whose user-namespace support is disabled.
+    pub sbuild_unprivileged: bool,
 }
 
 impl RuntimeConfig {
@@ -167,6 +189,18 @@ impl RuntimeConfig {
         // (the same precedence as `--source-import-allowlist`
         // vs `IRONMAINT_SOURCE_IMPORT_ALLOWLIST`).
         let mut bts_helper: Option<PathBuf> = None;
+        // PHASE-2 PR 2.0-C: the build-execution knobs
+        // (buildroot dir + sandbox mode). Same precedence
+        // as the other flags: flag beats env var beats
+        // default. The unprivileged mode is the
+        // explicit-default + opt-out shape: the flag
+        // carries an `Option<bool>` (`Some(true)` or
+        // `Some(false)`), the env var carries a string
+        // the parser maps to bool, and the default is
+        // `true` (the unprivileged mode is what the
+        // compose service expects).
+        let mut sbuild_buildroot_dir: Option<PathBuf> = None;
+        let mut sbuild_unprivileged: Option<bool> = None;
 
         // Flags whose value may be given as `--flag=value` or
         // `--flag value`. Hand-rolled because §86 does not
@@ -235,6 +269,16 @@ impl RuntimeConfig {
                 "--bts-helper" => {
                     bts_helper = Some(PathBuf::from(take("--bts-helper")?));
                 }
+                // PHASE-2 PR 2.0-C: build-execution
+                // knobs. `--sbuild-buildroot-dir` takes a
+                // path; `--sbuild-unprivileged` and its
+                // negator `--no-sbuild-unprivileged` carry
+                // no value.
+                "--sbuild-buildroot-dir" => {
+                    sbuild_buildroot_dir = Some(PathBuf::from(take("--sbuild-buildroot-dir")?));
+                }
+                "--sbuild-unprivileged" => sbuild_unprivileged = Some(true),
+                "--no-sbuild-unprivileged" => sbuild_unprivileged = Some(false),
                 other => {
                     return Err(ConfigError::Argument(format!("unknown flag `{other}`")));
                 }
@@ -319,6 +363,31 @@ impl RuntimeConfig {
         {
             bts_helper = Some(PathBuf::from(raw));
         }
+        // PHASE-2 PR 2.0-C: env-var fallbacks for the
+        // build-execution knobs. The flag, if given, takes
+        // precedence; the env var is the fallback; the
+        // default is the compiled-in value. The
+        // `IRONMAINT_SBUILD_UNPRIVILEGED` env var carries
+        // `true` / `false` / `1` / `0` / `yes` / `no`
+        // (case-insensitive); anything else is treated as
+        // unset, so a typo does not silently flip the
+        // sandbox mode.
+        let sbuild_buildroot_dir = sbuild_buildroot_dir
+            .or_else(|| get_env("IRONMAINT_SBUILD_BUILDROOT_DIR").map(PathBuf::from))
+            .unwrap_or_else(|| PathBuf::from("/var/lib/sbuild"));
+        if sbuild_unprivileged.is_none()
+            && let Some(raw) = get_env("IRONMAINT_SBUILD_UNPRIVILEGED")
+        {
+            sbuild_unprivileged =
+                Some(
+                    parse_boolish(&raw).ok_or_else(|| ConfigError::InvalidValue {
+                        what: "IRONMAINT_SBUILD_UNPRIVILEGED",
+                        value: raw.clone(),
+                        why: "expected true/false, yes/no, 1/0 (case-insensitive)".to_string(),
+                    })?,
+                );
+        }
+        let sbuild_unprivileged = sbuild_unprivileged.unwrap_or(true);
 
         // Existence is checked here rather than at the point of
         // use, so the operator gets every missing path in one
@@ -348,6 +417,8 @@ impl RuntimeConfig {
             log_filter,
             source_import_allowlist,
             bts_helper,
+            sbuild_buildroot_dir,
+            sbuild_unprivileged,
         })))
     }
 }
@@ -375,6 +446,21 @@ pub enum ConfigOutcome {
 /// first agent call.
 fn default_migrations_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../migrations")
+}
+
+/// Parse a "boolish" string (true/false, yes/no, 1/0,
+/// case-insensitive). Returns `None` for any other
+/// value, so an unparseable env var is treated as
+/// unset rather than silently flipped. The shape is
+/// the same as `clap`'s `BoolishValueParser`; we
+/// hand-roll it because §86 does not sanction a CLI
+/// parser dep, and the four-state parsing is small.
+fn parse_boolish(raw: &str) -> Option<bool> {
+    match raw.trim().to_ascii_lowercase().as_str() {
+        "true" | "yes" | "1" | "on" => Some(true),
+        "false" | "no" | "0" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 /// Default fixture binary: a sibling of this executable.
@@ -454,6 +540,24 @@ OPTIONS:
                            path is config-supplied, not picked
                            up from the daemon's ambient env.
                            [IRONMAINT_BTS_HELPER, unset]
+    --sbuild-buildroot-dir PATH
+                           Directory under which `sbuild`
+                           creates its schroots on first use
+                           (2.0-C). The `debian-tools` compose
+                           service mounts the named volume
+                           `ironmaint_sbuild-buildroots` here.
+                           [IRONMAINT_SBUILD_BUILDROOT_DIR, /var/lib/sbuild]
+    --sbuild-unprivileged  Use unprivileged user namespaces
+                           for `sbuild` (the `sbuild --unshare`
+                           backend). The default; preferred.
+                           [IRONMAINT_SBUILD_UNPRIVILEGED, true]
+    --no-sbuild-unprivileged
+                           Disable unprivileged user namespaces;
+                           fall back to the schroot backend
+                           (requires `--privileged` on the
+                           container). For runtimes whose
+                           user-namespace support is disabled.
+                           [IRONMAINT_SBUILD_UNPRIVILEGED, true]
     --log FILTER           tracing filter directive.
                            [IRONMAINT_LOG, info]
     -h, --help             Print this help.

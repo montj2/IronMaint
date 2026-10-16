@@ -13,13 +13,11 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use ironmaint_adapter_api::{
-    BuildTarget, BuildTargetProvider, CandidateContext, host_arch,
-};
+use ironmaint_adapter_api::{BuildTarget, BuildTargetProvider, CandidateContext, host_arch};
 use ironmaint_core::{
-    DistributionFamily, DistributionRef, DistributionRelease, GitHashAlgorithm, GitObjectId,
-    JobId, PackageIdentity, PackageName, PackageRevision, PackageVersion, RepositoryRef,
-    SourceCandidate, VcsKind,
+    DistributionFamily, DistributionRef, DistributionRelease, GitHashAlgorithm, GitObjectId, JobId,
+    PackageIdentity, PackageName, PackageRevision, PackageVersion, RepositoryRef, SourceCandidate,
+    VcsKind,
 };
 use time::macros::datetime;
 use url::Url;

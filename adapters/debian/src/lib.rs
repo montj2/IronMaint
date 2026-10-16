@@ -33,6 +33,7 @@
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod authority_manifest;
+mod build_target;
 mod descriptor;
 mod inspection;
 mod issues;

@@ -348,6 +348,9 @@ fn usage_names_every_flag_the_parser_accepts() {
         "--artifacts-root",
         "--fixture-bin",
         "--debian-tool-bin",
+        "--sbuild-buildroot-dir",
+        "--sbuild-unprivileged",
+        "--no-sbuild-unprivileged",
         "--log",
         "--help",
         "--version",
@@ -448,9 +451,7 @@ fn sbuild_unprivileged_can_be_disabled_by_flag() {
     // namespaces falls back to the schroot backend, which
     // requires `--privileged` on the container.
     let f = Fixture::new();
-    let config = f
-        .parse(&["--no-sbuild-unprivileged"], &[])
-        .expect("parse");
+    let config = f.parse(&["--no-sbuild-unprivileged"], &[]).expect("parse");
     assert!(
         !config.sbuild_unprivileged,
         "--no-sbuild-unprivileged switches to the schroot backend"

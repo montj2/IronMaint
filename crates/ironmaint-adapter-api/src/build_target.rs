@@ -154,8 +154,8 @@ pub fn host_arch() -> String {
 /// entries land here as the workspace's
 /// target-arch matrix grows.
 const KNOWN_DEBIAN_ARCHES: &[&str] = &[
-    "amd64", "arm64", "armel", "armhf", "i386", "mips", "mips64el", "mipsel", "ppc64el",
-    "s390x", "riscv64",
+    "amd64", "arm64", "armel", "armhf", "i386", "mips", "mips64el", "mipsel", "ppc64el", "s390x",
+    "riscv64",
 ];
 
 fn is_known_debian_arch(arch: &str) -> bool {
