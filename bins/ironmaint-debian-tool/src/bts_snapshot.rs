@@ -187,11 +187,29 @@ fn run_live(
     input: &CandidateInput,
     helper_path: &str,
 ) -> Result<crate::report::DebianIssueReportV1, BtsError> {
+    // PHASE-1.1 PR 1.1.I: seal the env boundary. The helper
+    // script must not see the ironmaintd daemon's ambient
+    // env (`IRONMAINT_*`, `AWS_*`, `LD_*`, proxy vars,
+    // ...). Without `env_clear()` every var the parent
+    // process was started with leaks through to the
+    // `bts-helper.py` subprocess. The 1.1.I fix on the
+    // executor side (cmd.env_clear() before per-tool env) is
+    // the *outer* boundary — but `ironmaint-debian-tool` is
+    // a separate binary spawned by the executor, and the
+    // bts-snapshot subcommand shells out to the helper as a
+    // *second* subprocess on top of that. The inner spawn
+    // here is therefore sealed independently, with the same
+    // minimal allow-list the executor uses. The Python
+    // helper needs no env to do its job.
     let output = Command::new(helper_path)
         .arg(&input.package.name)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
+        .env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", "/var/empty")
+        .env("LC_ALL", "C.UTF-8")
         .output()
         .map_err(BtsError::Transport)?;
     if !output.status.success() {

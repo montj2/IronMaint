@@ -347,6 +347,26 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
     // to the shim, opt-in only — not in §97).
     let bts_snapshot_key = ToolCapabilityKey::new("debian.issue.bts_snapshot")
         .map_err(|e| StartupError::Serve(format!("debian.issue.bts_snapshot key: {e}")))?;
+    // PHASE-1.1 PR 1.1.I: when the operator has configured
+    // a helper path (via `--bts-helper` or
+    // `IRONMAINT_BTS_HELPER`), inject it as the bts-snapshot
+    // tool's per-tool env. The executor's `process.rs:255-`
+    // applies it after `env_clear()` + the baseline, so the
+    // `bts-snapshot` subcommand sees a closed env with exactly
+    // the helper path the operator configured. When unset, the
+    // tool's env is empty and the subcommand's existing hermetic
+    // fallback fires (no `BTS_HELPER` in the now-closed env).
+    let bts_env = match config.bts_helper.as_ref() {
+        Some(path) => {
+            let mut env = std::collections::BTreeMap::new();
+            env.insert(
+                "BTS_HELPER".to_string(),
+                path.to_string_lossy().into_owned(),
+            );
+            env
+        }
+        None => std::collections::BTreeMap::new(),
+    };
     let bts_snapshot = ironmaint_executor::ToolDefinitionRecord::new(
         bts_snapshot_key.clone(),
         &config.debian_tool_bin,
@@ -359,6 +379,7 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
         },
     )
     .with_input_mode(ironmaint_executor::ToolInputMode::JsonStdin)
+    .with_env(bts_env)
     .with_normalizer(std::sync::Arc::new(
         ironmaint_debian_tool::DebianBtsSnapshotNormalizer::new(),
     ));

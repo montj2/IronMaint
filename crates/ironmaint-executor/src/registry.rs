@@ -45,6 +45,18 @@ pub trait ToolDefinition: Send + Sync {
     fn input_mode(&self) -> ToolInputMode {
         ToolInputMode::default()
     }
+    /// Per-tool environment allow-list (PHASE-1.1 PR 1.1.I).
+    /// Returned entries are applied AFTER `env_clear()` and
+    /// AFTER the `ProcessEnvironment` baseline
+    /// (`PATH`/`HOME`/`LC_ALL`); they are the only way a tool
+    /// can declare *which* env keys it needs. Default: empty
+    /// (the tool needs no env). The bts-snapshot tool
+    /// overrides this to inject `BTS_HELPER=<configured path>`,
+    /// so the helper script's path is no longer picked up
+    /// from ambient env.
+    fn env(&self) -> BTreeMap<String, String> {
+        BTreeMap::new()
+    }
 }
 
 #[derive(Default)]

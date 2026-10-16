@@ -217,6 +217,13 @@ truncation, signal interrupt, privilege escalation attempt, and
 - `ProcessExecutor` runs registered tools with `env_clear()` + a minimal
   allowlisted environment. No shell interpretation (§4.6): the command and
   argv are fixed by the `ToolDefinitionRecord`; there is no `sh -c` path.
+  (PHASE-1.1 PR 1.1.I: the `env_clear()` line was missing on `master` at
+  `6218fc9`; the doc claim was aspirational. 1.1.I adds the `env_clear()`
+  call, the per-tool `ToolDefinition::env()` allow-list, and a closed-allow-list
+  test that pins the executor's child env to
+  `{PATH, HOME, LC_ALL} ∪ tool.env() ∪ request.env_overrides`. The bts-snapshot
+  tool's `env()` now injects `BTS_HELPER=<configured path>`; the helper script
+  path is config-supplied, not picked up from ambient env.)
 - `ExecutionLimits` are enforced per job: `timeout`, `stdout_max_bytes`,
   `stderr_max_bytes`. Exceeding the byte cap sets `truncated = true` on the
   `ExecutionRecord` rather than failing the run (§15).
