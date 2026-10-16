@@ -467,6 +467,23 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
         "adapter registry loaded"
     );
 
+    // PHASE-2 PR 2.0-C (lock the build execution model,
+    // `doc/PHASE-2-C.md`): log the resolved build-execution
+    // knobs at startup so the operator can confirm the
+    // compose service's mounts and the daemon's
+    // expectations agree. The two fields are
+    // operator-overridable; the default-mode log line is
+    // what an unmodified `debian-tools` compose service
+    // produces. The default build target (sid + host
+    // arch) is logged alongside; the per-candidate
+    // override is 2A.x.
+    tracing::info!(
+        sbuild_buildroot_dir = %config.sbuild_buildroot_dir.display(),
+        sbuild_unprivileged = config.sbuild_unprivileged,
+        default_build_target = %format!("sid/{}", ironmaint_adapter_api::host_arch()),
+        "build execution mode"
+    );
+
     // --- runtime service ---
     let service = Arc::new(
         RuntimeService::new(

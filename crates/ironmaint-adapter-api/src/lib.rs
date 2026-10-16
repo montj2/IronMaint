@@ -34,6 +34,7 @@
 )]
 
 pub mod build;
+pub mod build_target;
 pub mod contexts;
 pub mod descriptor;
 pub mod error;
@@ -46,6 +47,7 @@ pub mod tool_key;
 pub mod versioning;
 
 pub use build::{BuildCapability, BuildPlan, PlannedCheck, QaPlan};
+pub use build_target::{BuildTarget, BuildTargetProvider, host_arch};
 pub use contexts::{CandidateContext, PolicyContext, PublicationContext, ReleaseContext};
 pub use descriptor::{AdapterCapabilities, AdapterCapability, AdapterDescriptor};
 pub use error::{AdapterError, AdapterErrorKind};

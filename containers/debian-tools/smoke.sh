@@ -211,4 +211,62 @@ bts_kind=$(printf '%s' "$bts_out" | python3 -c 'import json,sys; d=json.load(sys
 [ -n "$bts_kind" ] || fail "bts --self-test example JSON has no report_kind field"
 ok "bts --self-test example emitted canonical JSON (report_kind=$bts_kind)"
 
+# ---- 8. unprivileged `sbuild --version` (PHASE-2 PR 2.0-C) --------------
+# Spec §4.3 / `doc/PHASE-2-C.md` §5: the default sandbox mode
+# is unprivileged user namespaces (`sbuild --unshare`). The
+# operator can opt out with `--no-sbuild-unprivileged`, but
+# the default is what smoke asserts.
+#
+# `unshare -U` creates a user namespace; `sbuild --version`
+# inside it must exit 0 without `CAP_SYS_ADMIN`. If the
+# runtime's user-namespace support is disabled, this test
+# fails with a clear error and the operator can fall back to
+# the schroot backend (which requires `--privileged`).
+set +e
+unshare_out=$(unshare -U sbuild --version 2>&1)
+unshare_rc=$?
+set -e
+if [ "$unshare_rc" -ne 0 ]; then
+  fail "unshare -U sbuild --version exited $unshare_rc (PHASE-2 2.0-C: default sandbox mode is unprivileged user namespaces; pass --no-sbuild-unprivileged on ironmaintd to fall back to --privileged). Output: $unshare_out"
+fi
+# Surface the first line of the version output so the operator
+# sees what mode actually engaged.
+unshare_first=$(printf '%s\n' "$unshare_out" | head -1)
+ok "sbuild --version under unshare -U exited 0 (PHASE-2 2.0-C default mode): $unshare_first"
+
+# ---- 9. /var/lib/sbuild is writable by ironmaint (2.0-C) -----------------
+# Spec `doc/PHASE-2-C.md` §2: the named volume
+# `ironmaint_sbuild-buildroots` is mounted at
+# `/var/lib/sbuild` inside the `debian-tools` service. The
+# directory is created by the `sbuild` first-use provisioning
+# on the volume; this assertion only checks the *mount target*
+# is writable by `ironmaint`. (The smoke runs as `ironmaint`;
+# the root-owned `/var/lib/sbuild` is bind-mounted from the
+# named volume, which honours the container's uid.)
+#
+# The test creates a sentinel file and removes it, so a
+# read-only mount produces a clear error.
+sbuild_root="/var/lib/sbuild"
+[ -d "$sbuild_root" ] || fail "$sbuild_root is not a directory; the debian-tools compose service must mount ironmaint_sbuild-buildroots there"
+sentinel="$sbuild_root/.ironmaint-smoke-$$"
+if ! (umask 077 && : > "$sentinel") 2>/dev/null; then
+  fail "$sbuild_root is not writable by ironmaint; the named volume must be :U or otherwise owned by uid 1000"
+fi
+rm -f "$sentinel"
+ok "$sbuild_root is writable by ironmaint (compose service: ironmaint_sbuild-buildroots → /var/lib/sbuild)"
+
+# ---- 10. debootstrap on PATH (2.0-C §2) ---------------------------------
+# Spec `doc/PHASE-2-C.md` §2: first-use sbuild provisioning
+# uses `debootstrap` (the sbuild default on trixie). The
+# binary must be on PATH; the binary-presence check above
+# already passes, but a --version assertion is the shape
+# the §97 set uses elsewhere, and matches the 2.0-C claim
+# that the buildroot creator is in the image.
+set +e
+deb_out=$(debootstrap --version 2>&1 | head -1)
+deb_rc=$?
+set -e
+[ "$deb_rc" -eq 0 ] || fail "debootstrap --version exited $deb_rc (output: $deb_out)"
+ok "debootstrap --version: $deb_out"
+
 echo "ironmaint/debian-tools:0.1 — SMOKE OK"

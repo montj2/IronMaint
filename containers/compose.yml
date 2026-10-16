@@ -24,6 +24,18 @@
 #       --migrations-dir /work/migrations \
 #       --token-file /run/secrets/token
 #
+# To run the full real-build stack (PHASE-2 PR 2.0-C, `doc/PHASE-2-C.md`):
+#
+#   echo "test-token-1234" > /tmp/ironmaint-token
+#   docker compose --profile runtime run --rm \
+#     -v /tmp/ironmaint-token:/run/secrets/token:ro \
+#     debian-tools
+#
+# The `runtime` profile gates the `debian-tools` service so the §97 gate
+# (which only knows the `workspace` profile) is not affected. A bare
+# `compose run --rm debian-tools` will fail with "no service selected";
+# that is the gate, not an oversight.
+#
 # Note on platforms: the `platform: linux/arm64` pin below assumes the
 # dev machine is aarch64 macOS (verified: spec §8). To run on an amd64
 # host, pass a SECOND compose file that overrides it —
@@ -117,8 +129,68 @@ services:
       # passed `--state-dir=/var/ironmaint-state` at run time.
       - ironmaint-state:/var/ironmaint-state:U
 
+  # PHASE-2 PR 2.0-C (lock the build execution model,
+  # `doc/PHASE-2-C.md`). The real-build image, with
+  # `sbuild`/`lintian`/`piuparts`/`autopkgtest`/`debootstrap`/
+  # `schroot`/`uidmap` installed. Runs `ironmaintd` with
+  # `--sbuild-buildroot-dir=/var/lib/sbuild`. Buildroots are
+  # NOT baked into the image — they're created on first use
+  # by `mmdebstrap` (spec §4.3) into the named volume below,
+  # then reused.
+  #
+  # The `runtime` profile gates the service so the §97 gate
+  # (which only knows the `workspace` profile) is unaffected.
+  # Invoke with `docker compose --profile runtime …`.
+  #
+  # Default sandbox mode is unprivileged user namespaces
+  # (`--sbuild-unprivileged`, i.e. `sbuild --unshare`). If
+  # the runtime's user-namespace support is disabled
+  # (e.g. some Docker runtimes), pass
+  # `--no-sbuild-unprivileged` here to fall back to the
+  # schroot backend, which requires the container to run
+  # with `--privileged`. The smoke test in
+  # `containers/debian-tools/smoke.sh` asserts the
+  # unprivileged mode actually works on the target runtime.
+  debian-tools:
+    image: ironmaint/debian-tools:0.1
+    platform: linux/arm64
+    init: true
+    working_dir: /work
+    profiles: ["runtime"]
+    command:
+      - ironmaintd
+      - --state-dir
+      - /var/ironmaint-state
+      - --migrations-dir
+      - /work/migrations
+      - --token-file
+      - /run/secrets/token
+      - --sbuild-buildroot-dir
+      - /var/lib/sbuild
+      - --sbuild-unprivileged
+    environment:
+      IRONMAINT_LOG: ${IRONMAINT_LOG:-info}
+      CARGO_HOME: /var/cargo
+      CARGO_TARGET_DIR: /var/cargo-target
+      CARGO_TERM_COLOR: always
+      RUST_BACKTRACE: "1"
+    volumes:
+      - type: bind
+        source: ..
+        target: /work
+      - cargo-target:/var/cargo-target:U
+      - ironmaint-state:/var/ironmaint-state:U
+      # The sbuild buildroots (created on first use by
+      # `mmdebstrap` into `<suite>-<arch>` chroots, per
+      # spec §4.3 — "Buildroots are NOT baked in").
+      - ironmaint_sbuild-buildroots:/var/lib/sbuild:U
+
 volumes:
   cargo-registry:
   cargo-git:
   cargo-target:
   ironmaint-state:
+  # PHASE-2 PR 2.0-C: persistent sbuild buildroots.
+  # `sbuild` creates its schroots into this volume on
+  # first use. Reused across `compose run` invocations.
+  ironmaint_sbuild-buildroots:
