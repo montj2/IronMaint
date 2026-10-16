@@ -19,6 +19,8 @@ use std::ffi::OsString;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+use ironmaint_core::SourceImportPolicy;
+
 /// Default MCP listen address (PHASE-0B.md §50: `127.0.0.1`).
 ///
 /// The port is 7341 and is overridable; the *host* is not,
@@ -106,14 +108,13 @@ pub struct RuntimeConfig {
     pub debian_tool_bin: PathBuf,
     /// `tracing` filter directive (e.g. `info`, `ironmaintd=debug`).
     pub log_filter: String,
-    /// PHASE-1.1 PR 1.1.G (source import, P2 #3): URL
-    /// prefixes the `source.import` MCP tool will accept.
+    /// PHASE-2 PR 2.0-E: parsed `SourceImportPolicy` set for
+    /// the `source.import` MCP tool. Each entry is built via
+    /// `SourceImportPolicy::parse`; see `ironmaint-core`'s
+    /// `source_import` module for the policy grammar.
     /// Empty by default — the tool rejects every URL out
-    /// of the box. The match is a `String::starts_with`
-    /// prefix check; a future PR can introduce a real
-    /// `UrlPattern` type without changing the dispatcher
-    /// signature.
-    pub source_import_allowlist: Vec<String>,
+    /// of the box.
+    pub source_import_allowlist: Vec<SourceImportPolicy>,
     /// PHASE-1.1 PR 1.1.I (executor env boundary): path to
     /// the `bts-helper.py` subprocess. When set, the
     /// `debian.issue.bts_snapshot` `ToolDefinition` carries
@@ -175,11 +176,15 @@ impl RuntimeConfig {
         let mut fixture_bin: Option<PathBuf> = None;
         let mut debian_tool_bin: Option<PathBuf> = None;
         let mut log_filter: Option<String> = None;
-        // PHASE-1.1 PR 1.1.G: repeatable CLI flag, one URL
-        // prefix per occurrence. The env var is comma-separated
-        // so an operator with several prefixes does not have to
-        // set the flag N times in a unit file.
-        let mut source_import_allowlist: Vec<String> = Vec::new();
+        // PHASE-2 PR 2.0-E: repeatable CLI flag, one
+        // `SourceImportPolicy` per occurrence, parsed via
+        // `SourceImportPolicy::parse`. The env var is
+        // comma-separated so an operator with several
+        // policies does not have to set the flag N times
+        // in a unit file. A parse failure is a startup
+        // error, not a per-call error — the operator must
+        // fix the config and restart.
+        let mut source_import_allowlist: Vec<SourceImportPolicy> = Vec::new();
         // PHASE-1.1 PR 1.1.I: the bts-helper path is
         // config-supplied; the daemon passes it to the
         // bts-snapshot tool's per-tool env so the helper
@@ -262,9 +267,18 @@ impl RuntimeConfig {
                 // PHASE-1.1 PR 1.1.G: repeatable; each
                 // occurrence adds one URL prefix to the
                 // allowlist. `take` consumes the next
-                // argument and advances `index`.
+                // argument and advances `index`. Each entry
+                // is parsed via `SourceImportPolicy::parse`;
+                // a parse failure is a startup error.
                 "--source-import-allowlist" => {
-                    source_import_allowlist.push(take("--source-import-allowlist")?);
+                    let raw = take("--source-import-allowlist")?;
+                    source_import_allowlist.push(SourceImportPolicy::parse(&raw).map_err(|e| {
+                        ConfigError::InvalidValue {
+                            what: "--source-import-allowlist",
+                            value: raw.clone(),
+                            why: e.to_string(),
+                        }
+                    })?);
                 }
                 "--bts-helper" => {
                     bts_helper = Some(PathBuf::from(take("--bts-helper")?));
@@ -340,19 +354,30 @@ impl RuntimeConfig {
         let log_filter = log_filter
             .or_else(|| get_env("IRONMAINT_LOG"))
             .unwrap_or_else(|| "info".to_string());
-        // PHASE-1.1 PR 1.1.G: the env var is comma-separated
+        // PHASE-2 PR 2.0-E: the env var is comma-separated
         // (the flag is repeatable). Whitespace around entries
         // is trimmed so a config file with newlines survives
-        // the parse. The flag, if given, takes precedence;
-        // the env var is only consulted when no flag was set.
+        // the parse. Each entry is parsed via
+        // `SourceImportPolicy::parse`; a parse failure is a
+        // startup error. The flag, if given, takes
+        // precedence; the env var is only consulted when no
+        // flag was set.
         if source_import_allowlist.is_empty()
             && let Some(raw) = get_env("IRONMAINT_SOURCE_IMPORT_ALLOWLIST")
         {
-            source_import_allowlist = raw
-                .split(',')
-                .map(|s| s.trim().to_string())
-                .filter(|s| !s.is_empty())
-                .collect();
+            for entry in raw.split(',') {
+                let trimmed = entry.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                source_import_allowlist.push(SourceImportPolicy::parse(trimmed).map_err(|e| {
+                    ConfigError::InvalidValue {
+                        what: "IRONMAINT_SOURCE_IMPORT_ALLOWLIST",
+                        value: trimmed.to_string(),
+                        why: e.to_string(),
+                    }
+                })?);
+            }
         }
         // PHASE-1.1 PR 1.1.I: the bts-helper path can also
         // come from the `IRONMAINT_BTS_HELPER` env var. The

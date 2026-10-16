@@ -1,13 +1,31 @@
 //! Debian adapter descriptor (§45).
 //!
-//! The Debian stub advertises the capabilities §44 lists as belonging
-//! to a packaging-only adapter: `VersionComparison`,
-//! `PackageQaPlanning`, `BuildPlanning`, `IssueRead`, `IssueWrite`,
-//! `ReleaseMetadata`, `PublicationPlanning`. Source inspection and
-//! upstream discovery are deliberately absent — the Phase 0A.5
-//! conformance suite will use that absence to assert the consumer
-//! reads capabilities from the descriptor, not from a static
-//! switch on family name.
+//! The Debian stub advertises the four capabilities a Phase 2
+//! packaging-only adapter exposes through the trait:
+//! `VersionComparison`, `PolicyDerivation`, `PackageQaPlanning`,
+//! and `IssueRead`. `BuildPlanning` is not advertised —
+//! re-enabling it is PR 2A.2's call (it must round-trip a real
+//! `BuildPlan`).
+//!
+//! Capabilities that have no production caller as of Phase 2 are
+//! deliberately NOT advertised:
+//!
+//! - `FunctionalTestPlanning`, `UpgradeTestPlanning`,
+//!   `ReproducibilityPlanning` — test-planning, not
+//!   packaging.
+//! - `IssueWrite` — only `IssueRead` is needed for the Phase 2
+//!   policy-evaluation read path.
+//! - `ReleaseMetadata`, `PublicationPlanning` — out of scope
+//!   for Phase 2 per `doc/PHASE-2.md` §226 (no automatic
+//!   signing/upload).
+//! - `SourceInspection` and `UpstreamDiscovery` — outside the
+//!   packaging-only contract.
+//!
+//! The conformance arm in `ironmaint-testkit` enforces the
+//! descriptor ↔ trait-method cross-check: any capability the
+//! stubs advertise must have a matching `Some(...)` on the
+//! trait. The trimmed set listed above is the complete
+//! production-pinned set for Phase 2.
 
 use std::sync::LazyLock;
 
@@ -21,15 +39,8 @@ fn build_descriptor() -> AdapterDescriptor {
     for c in [
         AdapterCapability::VersionComparison,
         AdapterCapability::PolicyDerivation,
-        AdapterCapability::BuildPlanning,
         AdapterCapability::PackageQaPlanning,
-        AdapterCapability::FunctionalTestPlanning,
-        AdapterCapability::UpgradeTestPlanning,
-        AdapterCapability::ReproducibilityPlanning,
         AdapterCapability::IssueRead,
-        AdapterCapability::IssueWrite,
-        AdapterCapability::ReleaseMetadata,
-        AdapterCapability::PublicationPlanning,
     ] {
         caps.insert(c);
     }
@@ -82,11 +93,35 @@ mod tests {
         let d = debian_descriptor();
         let names: Vec<&str> = d.capabilities.iter().map(AdapterCapability::name).collect();
         assert!(names.contains(&"version_comparison"));
-        assert!(names.contains(&"build_planning"));
+        assert!(names.contains(&"policy_derivation"));
         assert!(names.contains(&"package_qa_planning"));
         assert!(names.contains(&"issue_read"));
-        assert!(names.contains(&"issue_write"));
-        assert!(names.contains(&"publication_planning"));
+    }
+
+    #[test]
+    fn capability_set_does_not_advertise_phase_2_no_callers() {
+        // PHASE-2 PR 2.0-E: reconcile the stub's advertised
+        // capability set with the runtime's actual callers.
+        // The seven capabilities below have NO production
+        // caller as of Phase 2 — `cargo run -p xtask --
+        // verify-architecture` cannot forbid them on stubs
+        // (the S6 seam check constrains production
+        // adapters), so the stubs trim them by hand.
+        let d = debian_descriptor();
+        for removed in [
+            AdapterCapability::BuildPlanning,
+            AdapterCapability::FunctionalTestPlanning,
+            AdapterCapability::UpgradeTestPlanning,
+            AdapterCapability::ReproducibilityPlanning,
+            AdapterCapability::IssueWrite,
+            AdapterCapability::ReleaseMetadata,
+            AdapterCapability::PublicationPlanning,
+        ] {
+            assert!(
+                !d.capabilities.contains(&removed),
+                "{removed:?} must NOT be advertised by debian-stub; it has no production caller"
+            );
+        }
     }
 
     #[test]

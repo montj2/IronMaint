@@ -12,6 +12,7 @@
 
 use std::sync::Arc;
 
+use ironmaint_core::SourceImportPolicy;
 use ironmaint_executor::Executor;
 use ironmaint_runtime::{RuntimeCommand, RuntimeQuery, RuntimeService};
 use ironmaint_store::IronMaintStore;
@@ -33,12 +34,13 @@ use crate::schema::McpToolName;
 pub struct McpRuntime<S: IronMaintStore + ?Sized, E: Executor + ?Sized> {
     service: Arc<RuntimeService<S, E>>,
     workspace: Option<Arc<WorkspaceManager<Arc<S>>>>,
-    // PHASE-1.1 PR 1.1.G (source import, P2 #3): the URL
-    // prefixes `source.import` will accept. Closed by
-    // default — a `Vec<String>` of `[]` rejects every URL.
-    // The match is a `String::starts_with` prefix check; a
-    // future PR can introduce a real `UrlPattern` type.
-    source_import_allowlist: Vec<String>,
+    // PHASE-2 PR 2.0-E: parsed `SourceImportPolicy` set the
+    // `source.import` tool will accept. The PHASE-1.1
+    // 1.1.G `Vec<String>` `starts_with` policy was replaced
+    // because it matched `https://github.com/debian/` to
+    // `https://github.com/debian-mirror/foo` (a phishing-
+    // shaped false negative). Empty by default (deny-all).
+    source_import_allowlist: Vec<SourceImportPolicy>,
 }
 
 /// Hand-written rather than `#[derive(Clone)]`: every field is an
@@ -74,11 +76,12 @@ impl<S: IronMaintStore + ?Sized, E: Executor + ?Sized> McpRuntime<S, E> {
         self
     }
 
-    /// PHASE-1.1 PR 1.1.G: the URL prefixes the `source.import`
-    /// tool will accept. Empty by default (deny-all), set via
+    /// PHASE-2 PR 2.0-E: the parsed `SourceImportPolicy` set
+    /// the `source.import` tool will accept. Empty by default
+    /// (deny-all), set via
     /// `RuntimeConfig::source_import_allowlist` from the daemon.
     #[must_use]
-    pub fn with_source_import_allowlist(mut self, allowlist: Vec<String>) -> Self {
+    pub fn with_source_import_allowlist(mut self, allowlist: Vec<SourceImportPolicy>) -> Self {
         self.source_import_allowlist = allowlist;
         self
     }
@@ -629,36 +632,40 @@ async fn dispatch_evidence_artifact_read<S: IronMaintStore + ?Sized, E: Executor
     serde_json::to_value(out).map_err(|e| McpError::Other(e.to_string()))
 }
 
-// PHASE-1.1 PR 1.1.G (source import, P2 #3). GREEN
-// body: the URL is checked against the runtime's
-// allowlist (deny-all by default), then the workspace is
-// resolved and the `WorkspaceManager::import_git_remote`
-// call does the `git clone --depth 1 --branch <ref>
-// <url>`. The handle string the manager returns is
-// echoed back so the caller can drive the next
-// `candidate.capture` against the same path.
+// PHASE-2 PR 2.0-E: the `source.import` URL is parsed via
+// `url::Url::parse` and matched against the configured
+// `SourceImportPolicy` set (a parsed replacement for the
+// PHASE-1.1 PR 1.1.G `Vec<String>` `starts_with` allowlist).
+// The parse failure surfaces as `McpError::InvalidInput` so
+// the agent sees a typed error. A repeated call for the
+// same `job_id` re-clones (PHASE-2 PR 2.0-E user decision);
+// `WorkspaceManager::import_git_remote` is the policy-agnostic
+// primitive that performs the clone.
 async fn dispatch_source_import<S: IronMaintStore + ?Sized, E: Executor + ?Sized>(
     runtime: &McpRuntime<S, E>,
     input: serde_json::Value,
 ) -> Result<serde_json::Value, McpError> {
     let input: crate::tools::workspace::SourceImportInput =
         serde_json::from_value(input).map_err(|e| McpError::InvalidInput(e.to_string()))?;
-    // Closed-by-default allowlist: a `Vec<String>` of
-    // `[]` rejects every URL. The check is a prefix
-    // match, so an entry of `https://github.com/debian/`
-    // accepts any path beneath that host. A future PR
-    // can introduce a real `UrlPattern` type without
-    // changing the dispatcher signature.
+    let parsed_url = url::Url::parse(&input.url).map_err(|e| {
+        McpError::InvalidInput(format!("url `{}` is not a valid URL: {e}", input.url))
+    })?;
+    // Closed-by-default allowlist: an empty `Vec` rejects
+    // every URL. The match is `SourceImportPolicy::matches`,
+    // which is case-insensitive on scheme+host, exact on
+    // port (or default), and a literal anchored prefix on
+    // path with the trailing-slash disambiguating "directory
+    // prefix" from "broader prefix" semantics.
     let allowed = runtime
         .source_import_allowlist
         .iter()
-        .any(|prefix| input.url.starts_with(prefix.as_str()));
+        .any(|policy| policy.matches(&parsed_url));
     if !allowed {
         return Err(McpError::InvalidInput(format!(
             "url `{}` is not on the source.import allowlist; \
              configure --source-import-allowlist (or the \
              IRONMAINT_SOURCE_IMPORT_ALLOWLIST env var) to \
-             add a prefix it starts with",
+             add a policy that matches it",
             input.url
         )));
     }

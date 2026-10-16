@@ -1509,6 +1509,7 @@ dependencies = [
  "fedora-stub",
  "ironmaint-adapter-api",
  "ironmaint-artifacts",
+ "ironmaint-core",
  "ironmaint-debian-tool",
  "ironmaint-executor",
  "ironmaint-fixture",

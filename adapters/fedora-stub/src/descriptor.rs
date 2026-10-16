@@ -1,9 +1,25 @@
 //! Fedora adapter descriptor (§45).
 //!
-//! Capability set mirrors the Debian stub minus SourceInspection and
-//! PolicyDerivation, plus an explicit `SourceInspection` listing
-//! (Fedora-side `rpm -i --dry-run` introspection). The cross-stub
-//! acceptance test asserts descriptor families differ.
+//! The Fedora stub advertises three capabilities a Phase 2
+//! packaging-only adapter exposes through the trait:
+//! `SourceInspection`, `VersionComparison`, and `PackageQaPlanning`.
+//!
+//! Capabilities that have no production caller as of Phase 2 are
+//! deliberately NOT advertised:
+//!
+//! - `BuildPlanning` — re-enabling is PR 2A.2's call.
+//! - `FunctionalTestPlanning`, `UpgradeTestPlanning`,
+//!   `ReproducibilityPlanning` — test-planning, not
+//!   packaging.
+//! - `IssueRead`, `IssueWrite` — out of Phase 2 scope for
+//!   Fedora; the read path is Debian-only.
+//! - `ReleaseMetadata`, `PublicationPlanning` — out of scope
+//!   for Phase 2 per `doc/PHASE-2.md` §226 (no automatic
+//!   signing/upload).
+//! - `UpstreamDiscovery` — outside the packaging-only contract;
+//!   PHASE-2 PR 2.0-E removes it from the stub set.
+//! - `PolicyDerivation` — not yet wired into the Fedora
+//!   policy plan; it will land in 1B.4.
 
 use std::sync::LazyLock;
 
@@ -17,16 +33,7 @@ fn build_descriptor() -> AdapterDescriptor {
     for c in [
         AdapterCapability::SourceInspection,
         AdapterCapability::VersionComparison,
-        AdapterCapability::UpstreamDiscovery,
-        AdapterCapability::BuildPlanning,
         AdapterCapability::PackageQaPlanning,
-        AdapterCapability::FunctionalTestPlanning,
-        AdapterCapability::UpgradeTestPlanning,
-        AdapterCapability::ReproducibilityPlanning,
-        AdapterCapability::IssueRead,
-        AdapterCapability::IssueWrite,
-        AdapterCapability::ReleaseMetadata,
-        AdapterCapability::PublicationPlanning,
     ] {
         caps.insert(c);
     }
@@ -44,6 +51,8 @@ fn static_family() -> DistributionFamily {
         .expect("static literal \"fedora\" must satisfy DistributionFamily::new")
 }
 
+/// Returns the static Fedora descriptor. Tests and consumers hold a
+/// `&'static AdapterDescriptor`.
 #[must_use]
 pub fn fedora_descriptor() -> AdapterDescriptor {
     DESCRIPTOR.clone()
@@ -73,6 +82,31 @@ mod tests {
             d.capabilities
                 .contains(&AdapterCapability::SourceInspection)
         );
+    }
+
+    #[test]
+    fn capability_set_does_not_advertise_phase_2_no_callers() {
+        // PHASE-2 PR 2.0-E: reconcile the stub's advertised
+        // capability set with the runtime's actual callers.
+        // The eight capabilities below have NO production
+        // caller as of Phase 2.
+        let d = fedora_descriptor();
+        for removed in [
+            AdapterCapability::UpstreamDiscovery,
+            AdapterCapability::BuildPlanning,
+            AdapterCapability::FunctionalTestPlanning,
+            AdapterCapability::UpgradeTestPlanning,
+            AdapterCapability::ReproducibilityPlanning,
+            AdapterCapability::IssueRead,
+            AdapterCapability::IssueWrite,
+            AdapterCapability::ReleaseMetadata,
+            AdapterCapability::PublicationPlanning,
+        ] {
+            assert!(
+                !d.capabilities.contains(&removed),
+                "{removed:?} must NOT be advertised by fedora-stub; it has no production caller"
+            );
+        }
     }
 
     #[test]
