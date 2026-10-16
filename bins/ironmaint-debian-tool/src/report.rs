@@ -1084,20 +1084,35 @@ pub struct DebianPolicyDeltaReviewV1 {
     /// values are missing.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub comparison_outcome: Option<StandardsVersionComparison>,
-    /// The §20 upgrading-checklist entries that
-    /// sit between the candidate's
-    /// `Standards-Version` and the manifest's
-    /// `standards_version_target`. Populated
-    /// only when `comparison_outcome` is
-    /// `BelowBaseline` (the operator's
-    /// remediation is the entries' narrative).
-    /// Empty for `AtBaseline`, `AboveBaseline`,
-    /// and `None`.
+    /// The §20 upgrading-checklist entries
+    /// whose interval lies *on* the path from
+    /// the candidate's `Standards-Version` to
+    /// the manifest's `standards_version_target`
+    /// — containment
+    /// (`from >= candidate && to <= baseline`).
+    /// Populated only when
+    /// `comparison_outcome` is `BelowBaseline`
+    /// (the operator's remediation is the
+    /// entries' narrative). Empty for
+    /// `AtBaseline`, `AboveBaseline`, and `None`.
     ///
     /// PHASE-1.1 PR 1.1.D (policy baseline
     /// correctness) added this field. The pre-1.1.D
     /// report did not carry the §20 promise; the
     /// 1.1.D-corrected report does.
+    ///
+    /// PHASE-1.1 PR 1.1.J (policy delta evidence)
+    /// tightened the predicate from *overlap*
+    /// (`to >= candidate && from <= baseline`) to
+    /// *containment* (`from >= candidate &&
+    /// to <= baseline`). The overlap predicate
+    /// returned entries whose interval was
+    /// entirely *above* the candidate (e.g. the
+    /// bundled `4.7.4 → 4.7.4.1` entry when the
+    /// candidate is `4.6.0` and the baseline is
+    /// `4.7.4`); containment returns only the
+    /// entries whose interval sits on the
+    /// candidate-to-baseline path.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub intervening_checklist_entries: Vec<ChecklistEntry>,
 }
