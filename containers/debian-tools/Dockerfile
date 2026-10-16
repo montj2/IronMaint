@@ -129,7 +129,7 @@ COPY --chmod=0755 bts-helper.py /usr/local/bin/bts
 
 # ---- labels --------------------------------------------------------------
 LABEL org.opencontainers.image.title="ironmaint/debian-tools" \
-      org.opencontainers.image.description="Debian packaging toolchain for IronMaint: sbuild, lintian, autopkgtest, dpkg-dev, debhelper, gbp, devscripts, diffoscope, reprotest, piuparts. Buildroots are NOT baked in; sbuild creates its schroot into a mounted volume on first use. Requires --privileged or SYS_ADMIN+user namespaces for the buildroot. Runs as uid 1000 (ironmaint). The base image is the source of truth for CA roots, git, bash, curl, python3." \
+      org.opencontainers.image.description="Debian packaging toolchain for IronMaint: sbuild, lintian, autopkgtest, dpkg-dev, debhelper, gbp, devscripts, diffoscope, reprotest, piuparts. Buildroots are NOT baked in; sbuild creates its schroot into a mounted volume on first use. Default sandbox mode is unprivileged user namespaces (sbuild --unshare); pass --no-sbuild-unprivileged on ironmaintd to fall back to the schroot backend, which requires the container to run with --privileged. Runs as uid 1000 (ironmaint). The base image is the source of truth for CA roots, git, bash, curl, python3." \
       org.opencontainers.image.source="https://github.com/montj2/IronMaint" \
       org.opencontainers.image.documentation="https://github.com/montj2/IronMaint/blob/develop/doc/CONTAINER-IMAGES.md" \
       org.opencontainers.image.licenses="(see repo LICENSE)" \

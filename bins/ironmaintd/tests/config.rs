@@ -364,3 +364,95 @@ fn usage_names_every_flag_the_parser_accepts() {
          scripts and the e2e harness parse it"
     );
 }
+
+// ---------------------------------------------------------------------------
+// sbuild (build-execution) configuration — PHASE-2 PR 2.0-C
+//
+// `doc/PHASE-2-C.md` §2 + §5: the daemon gains a
+// `--sbuild-buildroot-dir` flag (env-var fallback
+// `IRONMAINT_SBUILD_BUILDROOT_DIR`, default `/var/lib/sbuild`)
+// and a `--sbuild-unprivileged` boolean (env-var fallback
+// `IRONMAINT_SBUILD_UNPRIVILEGED`, default `true`).
+//
+// The defaults are what the `containers/debian-tools`
+// compose service assumes; the operator override is the
+// `--sbuild-buildroot-dir` flag and the
+// `--no-sbuild-unprivileged` opt-out (PR 2.0-C). The first
+// slice is build-on-host; the architecture of the build
+// (arm64 / amd64) is decided by the adapter via
+// `BuildTargetProvider`, not by the operator — that is
+// 2A.x's runtime integration. 2.0-C only defines the
+// path / mode knobs.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn sbuild_buildroot_dir_defaults_to_var_lib_sbuild() {
+    // The `containers/compose.yml` `debian-tools` service
+    // mounts `ironmaint_sbuild-buildroots` at
+    // `/var/lib/sbuild`. The compiled-in default must match
+    // so a daemon that starts with no flag works in the
+    // expected container layout.
+    let f = Fixture::new();
+    let config = f.parse(&[], &[]).expect("parse");
+    assert_eq!(
+        config.sbuild_buildroot_dir,
+        PathBuf::from("/var/lib/sbuild")
+    );
+}
+
+#[test]
+fn sbuild_buildroot_dir_can_be_overridden_by_flag() {
+    // The operator may need to redirect sbuild's buildroots
+    // (e.g. into an ephemeral disk for a CI job, or onto a
+    // scratch volume that is faster than the host's
+    // `/var/lib/sbuild`).
+    let f = Fixture::new();
+    let config = f
+        .parse(&["--sbuild-buildroot-dir", "/srv/sbuild"], &[])
+        .expect("parse");
+    assert_eq!(config.sbuild_buildroot_dir, PathBuf::from("/srv/sbuild"));
+}
+
+#[test]
+fn sbuild_buildroot_dir_env_var_falls_through_when_no_flag() {
+    // Same precedence as the other runtime flags: flag beats
+    // env var beats default. A test exercising the
+    // env-var-only path proves the fallback is wired.
+    let f = Fixture::new();
+    let config = f
+        .parse(&[], &[("IRONMAINT_SBUILD_BUILDROOT_DIR", "/srv/sbuild")])
+        .expect("parse");
+    assert_eq!(config.sbuild_buildroot_dir, PathBuf::from("/srv/sbuild"));
+}
+
+#[test]
+fn sbuild_unprivileged_defaults_to_true() {
+    // `doc/PHASE-2-C.md` §5: the default sandbox mode is
+    // unprivileged user namespaces (`sbuild --unshare`).
+    // The operator can opt out with
+    // `--no-sbuild-unprivileged` (e.g. on a runtime whose
+    // user-namespace support is disabled), but the default
+    // is what an unmodified compose service uses.
+    let f = Fixture::new();
+    let config = f.parse(&[], &[]).expect("parse");
+    assert!(
+        config.sbuild_unprivileged,
+        "default sandbox mode is unprivileged (sbuild --unshare); \
+         opt out with --no-sbuild-unprivileged"
+    );
+}
+
+#[test]
+fn sbuild_unprivileged_can_be_disabled_by_flag() {
+    // The opt-out path. A runtime that disables user
+    // namespaces falls back to the schroot backend, which
+    // requires `--privileged` on the container.
+    let f = Fixture::new();
+    let config = f
+        .parse(&["--no-sbuild-unprivileged"], &[])
+        .expect("parse");
+    assert!(
+        !config.sbuild_unprivileged,
+        "--no-sbuild-unprivileged switches to the schroot backend"
+    );
+}
