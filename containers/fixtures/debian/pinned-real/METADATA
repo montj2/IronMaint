@@ -47,3 +47,17 @@ expected_bts_verdict: "pass"
 # not in the §97 gate path; 1.1.C's hermetic mode
 # emits `pass` regardless of which source package the
 # candidate names).
+
+# PHASE-2 PR 2.0-D: a small synthetic orig tarball is
+# committed alongside the source tree so the
+# `stage_build_input` primitive (PHASE-2.md §2.0-D)
+# has a hermetic upstream to stage without a network
+# fetch. The tarball is a 1-file `hello-2.10/hello.c`
+# gzip-compressed archive; its `hello.c` is the same
+# hermetic hello-world the source tree's `hello.c`
+# contains. The SHA-256 below is the on-disk hash of
+# the committed file; the staging primitive re-hashes
+# at stage time and refuses a mismatch.
+upstream_tarball: hello_2.10.orig.tar.gz
+upstream_tarball_sha256: 280bb02ba1f55671eb7ffe5c2426d66e6f9632404a0a5e0c8a89e68ad95fa8f9
+upstream_tarball_size_bytes: 770

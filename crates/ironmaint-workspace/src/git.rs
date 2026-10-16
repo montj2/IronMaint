@@ -581,4 +581,168 @@ impl GitInvocation {
         }
         Ok(())
     }
+
+    /// PHASE-2 PR 2.0-D: `git archive <commit>` piped to
+    /// `tar -xC <target>`. Materialises the candidate's
+    /// tree at `<commit>` into a clean directory at
+    /// `target`. Used by `WorkspaceManager::stage_build_input`
+    /// to populate the staged build input from the
+    /// candidate's commit.
+    ///
+    /// The pipe is two processes: `git archive` writes
+    /// the tar to its stdout, and `tar` reads stdin
+    /// and extracts into `target`. We spawn `git archive`
+    /// with `Stdio::piped()` and stream its stdout into
+    /// `tar`'s stdin via a `tokio::io::copy`. On any
+    /// failure the error is folded into a typed
+    /// `WorkspaceError`.
+    pub async fn archive_to(&self, commit: &str, target: &Path) -> Result<(), WorkspaceError> {
+        // `git archive` writes a tar to stdout.
+        let mut archive = tokio::process::Command::new("git")
+            .args(["archive", "--format=tar", commit])
+            .current_dir(&self.workspace_root)
+            .env_clear()
+            .envs(&self.env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                    "git archive spawn: {e}"
+                )))
+            })?;
+        let archive_stdout = archive.stdout.take().ok_or_else(|| {
+            WorkspaceError::new(WorkspaceErrorKind::Command(
+                "git archive stdout was not piped".to_string(),
+            ))
+        })?;
+        let archive_stderr = archive.stderr.take();
+
+        // `tar` reads the archive on stdin and extracts
+        // into `target`. The `-x` flag says "extract".
+        // The `--no-same-owner` flag says "do not try to
+        // chown the extracted files" (tar's default
+        // behaviour would attempt a no-op chown that
+        // may fail under unprivileged user namespaces;
+        // 2.0-D's sandbox is the unprivileged
+        // user-namespace mode, so the no-op is the
+        // robust choice).
+        let mut tar = tokio::process::Command::new("tar")
+            .args([
+                "-x",
+                "--no-same-owner",
+                "-C",
+                target.to_str().ok_or_else(|| {
+                    WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                        "staging target path is not UTF-8: {}",
+                        target.display()
+                    )))
+                })?,
+            ])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                WorkspaceError::new(WorkspaceErrorKind::Command(format!("tar spawn: {e}")))
+            })?;
+        let mut tar_stdin = tar.stdin.take().ok_or_else(|| {
+            WorkspaceError::new(WorkspaceErrorKind::Command(
+                "tar stdin was not piped".to_string(),
+            ))
+        })?;
+
+        // Pump `git archive`'s stdout into `tar`'s stdin.
+        let mut piped = archive_stdout;
+        let copy_result = tokio::io::copy(&mut piped, &mut tar_stdin).await;
+        // Drop tar_stdin to close the pipe; tar then
+        // sees EOF and finishes.
+        drop(tar_stdin);
+
+        let copy_err = match copy_result {
+            Ok(_) => None,
+            Err(e) => Some(format!("copy from git archive to tar stdin: {e}")),
+        };
+
+        let archive_status = archive.wait().await.map_err(|e| {
+            WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git archive wait: {e}"
+            )))
+        })?;
+        let tar_status = tar.wait().await.map_err(|e| {
+            WorkspaceError::new(WorkspaceErrorKind::Command(format!("tar wait: {e}")))
+        })?;
+
+        if let Some(msg) = copy_err {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(msg)));
+        }
+        if !archive_status.success() {
+            let stderr = read_pipe_to_string(archive_stderr).await;
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git archive of {commit} failed: {stderr}"
+            ))));
+        }
+        if !tar_status.success() {
+            // tar wrote to its own stderr; we don't
+            // have the bytes here, but tar prints a
+            // useful error on failure.
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "tar extraction into {} failed (exit {:?})",
+                target.display(),
+                tar_status.code()
+            ))));
+        }
+        Ok(())
+    }
+
+    /// PHASE-2 PR 2.0-D: `git init` a fresh repo at
+    /// `path`, `git add -A`, and `git write-tree`. The
+    /// returned OID is the staged workdir's tree OID;
+    /// the staging primitive compares it to the
+    /// candidate's tree OID to assert the staging
+    /// was lossless.
+    pub async fn write_tree_from(&self, path: &Path) -> Result<String, WorkspaceError> {
+        // Re-use the sanitised env. The `--initial-branch`
+        // flag avoids the `git init` warning about
+        // defaulting to `master` on older git versions.
+        let inv = GitInvocation::sanitised_env(path);
+        inv.init().await?;
+        let add_out =
+            inv.cmd().arg("add").arg("-A").output().await.map_err(|e| {
+                WorkspaceError::new(WorkspaceErrorKind::Command(format!("wait: {e}")))
+            })?;
+        if !add_out.status.success() {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git add -A in {} failed: {}",
+                path.display(),
+                String::from_utf8_lossy(&add_out.stderr)
+            ))));
+        }
+        let out =
+            inv.cmd().arg("write-tree").output().await.map_err(|e| {
+                WorkspaceError::new(WorkspaceErrorKind::Command(format!("wait: {e}")))
+            })?;
+        if !out.status.success() {
+            return Err(WorkspaceError::new(WorkspaceErrorKind::Command(format!(
+                "git write-tree in {} failed: {}",
+                path.display(),
+                String::from_utf8_lossy(&out.stderr)
+            ))));
+        }
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    }
+}
+
+/// Read a child's stderr pipe to a `String` for inclusion
+/// in error messages. We can't read it before the child
+/// has finished, so this is called after `wait().await`.
+async fn read_pipe_to_string(pipe: Option<tokio::process::ChildStderr>) -> String {
+    use tokio::io::AsyncReadExt;
+    let Some(mut pipe) = pipe else {
+        return String::new();
+    };
+    let mut buf = Vec::new();
+    let _ = pipe.read_to_end(&mut buf).await;
+    String::from_utf8_lossy(&buf).into_owned()
 }
