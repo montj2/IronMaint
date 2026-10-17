@@ -54,11 +54,6 @@ use ironmaint_testkit::{fixture_binary_path, fixtures, register_fixture_tools};
 /// rather than a plan, and where it will be argued with.
 const ALLOWLIST: &[(&str, &str)] = &[
     (
-        "debian.build.sbuild",
-        "Phase 1 — `doc/CONTAINER-IMAGES.md` §4.3. The build image does not \
-         exist yet; sbuild runs in the container that §4.3 specifies.",
-    ),
-    (
         "debian.qa.lintian",
         "Phase 1 — same image as `debian.build.sbuild`. Lintian runs against \
          the built package, so it cannot ship before the build image does.",
@@ -104,9 +99,23 @@ const ALLOWLIST: &[(&str, &str)] = &[
 /// Not a list of literals: if the daemon gains a tool, this set gains
 /// it in the same build, and any allowlist entry for that key becomes
 /// a stale claim that this test can then catch.
+///
+/// 2A.1: the S3 test now calls `ironmaintd::register_debian_tools`
+/// so the `debian.build.sbuild` (and the five sibling
+/// `debian.inspect.*` / `debian.policy.delta_review` /
+/// `debian.issue.bts_snapshot`) `ToolDefinition` records the
+/// daemon registers are visible here. The `debian_tool_bin`
+/// path is `/nonexistent/ironmaint-debian-tool` — the registry
+/// does not execute the binary, only record its location, so
+/// the path being unreadable does not matter. The `bts_helper`
+/// is `None` because the operator has not configured one in
+/// the test; the `bts-snapshot` tool's env stays empty.
 fn daemon_registered_tools() -> ToolRegistry {
     let mut registry = ToolRegistry::new();
     register_fixture_tools(&mut registry, &fixture_binary_path());
+    let debian_tool_bin = std::path::PathBuf::from("/nonexistent/ironmaint-debian-tool");
+    ironmaintd::register_debian_tools(&mut registry, &debian_tool_bin, None)
+        .expect("register_debian_tools must succeed against a fresh ToolRegistry");
     registry
 }
 

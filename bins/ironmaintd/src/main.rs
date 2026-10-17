@@ -43,7 +43,6 @@
 use std::process::ExitCode;
 use std::sync::Arc;
 
-use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaint_artifacts::{ArtifactRoot, ArtifactStore};
 use ironmaint_executor::{
     LimitsConfig, ProcessEnvironment, ProcessExecutor, ToolRegistry, factory_from_config,
@@ -214,178 +213,31 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
     let mut tools = ToolRegistry::new();
     let keys = register_synthetic_tools(&mut tools, &config.fixture_bin)
         .map_err(|e| StartupError::Serve(format!("tool registry: {e}")))?;
-    // 1C.1: register the production Debian inspection tool.
-    // The path is the configured `--debian-tool-bin`, which
-    // defaults to `/nonexistent/ironmaint-debian-tool`; the
-    // executor's pre-flight `check_launchable` rejects that
-    // path, so a `check.run` against the key on a build that
-    // does not include the binary returns
-    // `InfrastructureFailed` rather than silently running a
-    // different tool. The 1B.3 GREEN test asserts the
-    // tool-not-found refusal still names the missing key
-    // (so an agent can tell which gate is blocked).
-    let source_preparation_key = ToolCapabilityKey::new("debian.inspect.source_preparation")
-        .map_err(|e| StartupError::Serve(format!("debian.inspect.source_preparation key: {e}")))?;
-    let source_preparation = ironmaint_executor::ToolDefinitionRecord::new(
-        source_preparation_key.clone(),
+    // PHASE-2 PR 2A.1: register the six real Debian
+    // tools (1C.1, 1C.2, 1C.3, 1D.2, 1E.2, and the new
+    // 2A.1 `debian.build.sbuild`). The helper
+    // `ironmaintd::register_debian_tools` does the
+    // in-line work that used to live here; the
+    // hermetic test
+    // `bins/ironmaintd/tests/build_tool_registration.rs`
+    // calls the same helper to assert
+    // `debian.build.sbuild` is registered.
+    //
+    // The `--debian-tool-bin` defaults to
+    // `/nonexistent/ironmaint-debian-tool`; the
+    // executor's pre-flight `check_launchable` rejects
+    // that path, so a `check.run` against any Debian
+    // key on a build that does not include the binary
+    // returns `InfrastructureFailed` rather than
+    // silently running a different tool. The 1B.3 GREEN
+    // test asserts the tool-not-found refusal still
+    // names the missing key.
+    ironmaintd::register_debian_tools(
+        &mut tools,
         &config.debian_tool_bin,
-        vec![std::ffi::OsString::from("source-preparation")],
-        ironmaint_executor::ExecutionClass::Check,
-        ironmaint_executor::ExecutionLimits {
-            timeout: std::time::Duration::from_secs(30),
-            stdout_max_bytes: 256 * 1024,
-            stderr_max_bytes: 64 * 1024,
-        },
+        config.bts_helper.as_deref(),
     )
-    .with_input_mode(ironmaint_executor::ToolInputMode::JsonStdin)
-    .with_normalizer(std::sync::Arc::new(
-        ironmaint_debian_tool::DebianSourcePreparationNormalizer::new(),
-    ));
-    tools
-        .register(Box::new(source_preparation))
-        .map_err(|e| StartupError::Serve(format!("debian.inspect.source_preparation: {e}")))?;
-    // 1C.2: register the comprehensive `source-analysis` tool.
-    // Same binary, second subcommand; same `JsonStdin` input,
-    // same `Check` class, same 30s / 256 KiB stdout / 64 KiB
-    // stderr budget. The normalizer maps the
-    // `debian.source_analysis_v1` report's verdict to
-    // `EvidenceStatus::{Pass, Fail}` or to
-    // `ExecutorError::InfrastructureFailed` (the §17
-    // distinction). The fixture-driven integration test in
-    // `bins/ironmaintd/tests/startup_shutdown.rs` exercises
-    // the binary on the hermetic `example-1.0` fixture and
-    // asserts the comprehensive fields are populated.
-    let source_analysis_key = ToolCapabilityKey::new("debian.inspect.source_analysis")
-        .map_err(|e| StartupError::Serve(format!("debian.inspect.source_analysis key: {e}")))?;
-    let source_analysis = ironmaint_executor::ToolDefinitionRecord::new(
-        source_analysis_key.clone(),
-        &config.debian_tool_bin,
-        vec![std::ffi::OsString::from("source-analysis")],
-        ironmaint_executor::ExecutionClass::Check,
-        ironmaint_executor::ExecutionLimits {
-            timeout: std::time::Duration::from_secs(30),
-            stdout_max_bytes: 256 * 1024,
-            stderr_max_bytes: 64 * 1024,
-        },
-    )
-    .with_input_mode(ironmaint_executor::ToolInputMode::JsonStdin)
-    .with_normalizer(std::sync::Arc::new(
-        ironmaint_debian_tool::DebianSourceAnalysisNormalizer::new(),
-    ));
-    tools
-        .register(Box::new(source_analysis))
-        .map_err(|e| StartupError::Serve(format!("debian.inspect.source_analysis: {e}")))?;
-    // 1C.3: register the `maintenance-context` tool.
-    // Same binary, third subcommand. The §13 routing
-    // matrix names the key `debian.inspect.maintenance_context`,
-    // the evidence kind `EvidenceKind::Maintenance` (already
-    // present), and the gate mandatory. The §19 contract
-    // is the comprehensive maintenance-context report —
-    // patches, tests, watch, gbp, maintainer scripts, and
-    // upstream-relationship metadata — re-emitted by the
-    // 1C.2 helpers in the binary's `maintenance_context::run`.
-    let maintenance_context_key = ToolCapabilityKey::new("debian.inspect.maintenance_context")
-        .map_err(|e| StartupError::Serve(format!("debian.inspect.maintenance_context key: {e}")))?;
-    let maintenance_context = ironmaint_executor::ToolDefinitionRecord::new(
-        maintenance_context_key.clone(),
-        &config.debian_tool_bin,
-        vec![std::ffi::OsString::from("maintenance-context")],
-        ironmaint_executor::ExecutionClass::Check,
-        ironmaint_executor::ExecutionLimits {
-            timeout: std::time::Duration::from_secs(30),
-            stdout_max_bytes: 256 * 1024,
-            stderr_max_bytes: 64 * 1024,
-        },
-    )
-    .with_input_mode(ironmaint_executor::ToolInputMode::JsonStdin)
-    .with_normalizer(std::sync::Arc::new(
-        ironmaint_debian_tool::DebianMaintenanceContextNormalizer::new(),
-    ));
-    tools
-        .register(Box::new(maintenance_context))
-        .map_err(|e| StartupError::Serve(format!("debian.inspect.maintenance_context: {e}")))?;
-    // 1D.2: `debian.policy.delta_review` is the §22
-    // Standards-Version delta evaluator. The
-    // evidence kind is `EvidenceKind::PolicyEvaluation`
-    // (already present), the gate is mandatory, and
-    // the normalizer is
-    // `DebianPolicyDeltaReviewNormalizer`. The §19
-    // `baseline_policy_version` is read at run time
-    // by the binary's `policy_delta::run` via
-    // `debian::authority_manifest::baseline_policy_version()`.
-    let policy_delta_key = ToolCapabilityKey::new("debian.policy.delta_review")
-        .map_err(|e| StartupError::Serve(format!("debian.policy.delta_review key: {e}")))?;
-    let policy_delta = ironmaint_executor::ToolDefinitionRecord::new(
-        policy_delta_key.clone(),
-        &config.debian_tool_bin,
-        vec![std::ffi::OsString::from("policy-delta")],
-        ironmaint_executor::ExecutionClass::Check,
-        ironmaint_executor::ExecutionLimits {
-            timeout: std::time::Duration::from_secs(30),
-            stdout_max_bytes: 256 * 1024,
-            stderr_max_bytes: 64 * 1024,
-        },
-    )
-    .with_input_mode(ironmaint_executor::ToolInputMode::JsonStdin)
-    .with_normalizer(std::sync::Arc::new(
-        ironmaint_debian_tool::DebianPolicyDeltaReviewNormalizer::new(),
-    ));
-    tools
-        .register(Box::new(policy_delta))
-        .map_err(|e| StartupError::Serve(format!("debian.policy.delta_review: {e}")))?;
-    // 1E.2: `debian.issue.bts_snapshot` is the §23
-    // BTS read-only transport + §24 tri-state verdict
-    // normalizer. The evidence kind is
-    // `EvidenceKind::IssueCorrelation` (already
-    // present), the gate is mandatory, and the
-    // normalizer is `DebianBtsSnapshotNormalizer`.
-    // The 1E.1 `bts-helper.py` shim (in
-    // `ironmaint/debian-tools:0.1`) is the SOAP
-    // client; the binary's `bts-snapshot` subcommand
-    // consumes the shim's output (hermetic mode emits
-    // a hard-coded fixture; live mode would shell out
-    // to the shim, opt-in only — not in §97).
-    let bts_snapshot_key = ToolCapabilityKey::new("debian.issue.bts_snapshot")
-        .map_err(|e| StartupError::Serve(format!("debian.issue.bts_snapshot key: {e}")))?;
-    // PHASE-1.1 PR 1.1.I: when the operator has configured
-    // a helper path (via `--bts-helper` or
-    // `IRONMAINT_BTS_HELPER`), inject it as the bts-snapshot
-    // tool's per-tool env. The executor's `process.rs:255-`
-    // applies it after `env_clear()` + the baseline, so the
-    // `bts-snapshot` subcommand sees a closed env with exactly
-    // the helper path the operator configured. When unset, the
-    // tool's env is empty and the subcommand's existing hermetic
-    // fallback fires (no `BTS_HELPER` in the now-closed env).
-    let bts_env = match config.bts_helper.as_ref() {
-        Some(path) => {
-            let mut env = std::collections::BTreeMap::new();
-            env.insert(
-                "BTS_HELPER".to_string(),
-                path.to_string_lossy().into_owned(),
-            );
-            env
-        }
-        None => std::collections::BTreeMap::new(),
-    };
-    let bts_snapshot = ironmaint_executor::ToolDefinitionRecord::new(
-        bts_snapshot_key.clone(),
-        &config.debian_tool_bin,
-        vec![std::ffi::OsString::from("bts-snapshot")],
-        ironmaint_executor::ExecutionClass::Check,
-        ironmaint_executor::ExecutionLimits {
-            timeout: std::time::Duration::from_secs(30),
-            stdout_max_bytes: 256 * 1024,
-            stderr_max_bytes: 64 * 1024,
-        },
-    )
-    .with_input_mode(ironmaint_executor::ToolInputMode::JsonStdin)
-    .with_env(bts_env)
-    .with_normalizer(std::sync::Arc::new(
-        ironmaint_debian_tool::DebianBtsSnapshotNormalizer::new(),
-    ));
-    tools
-        .register(Box::new(bts_snapshot))
-        .map_err(|e| StartupError::Serve(format!("debian.issue.bts_snapshot: {e}")))?;
+    .map_err(|e| StartupError::Serve(format!("debian tools: {e}")))?;
     tracing::info!(
         validate = %keys.validate,
         fail = %keys.fail,
@@ -393,11 +245,6 @@ async fn run(config: RuntimeConfig) -> Result<(), StartupError> {
         truncate = %keys.truncate,
         interrupt = %keys.interrupt,
         infra_fail = %keys.infra_fail,
-        source_preparation = %source_preparation_key,
-        source_analysis = %source_analysis_key,
-        maintenance_context = %maintenance_context_key,
-        policy_delta = %policy_delta_key,
-        bts_snapshot = %bts_snapshot_key,
         fixture = %config.fixture_bin.display(),
         debian_tool_bin = %config.debian_tool_bin.display(),
         "tool registry loaded"

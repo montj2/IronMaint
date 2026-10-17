@@ -31,8 +31,9 @@ use ironmaint_executor::{
 };
 
 use crate::report::{
-    DebianIssueReportV1, DebianMaintenanceContextV1, DebianPolicyDeltaReviewV1,
-    DebianSourcePreparationV1, DebianSourceReportV1, IssueVerdict, Verdict,
+    BuildOutcome, DebianBuildReportV1, DebianIssueReportV1, DebianMaintenanceContextV1,
+    DebianPolicyDeltaReviewV1, DebianSourcePreparationV1, DebianSourceReportV1, IssueVerdict,
+    Verdict,
 };
 
 /// The 1C.1 normalizer. Stateless; cheap to construct.
@@ -673,5 +674,250 @@ mod bts_snapshot_tests {
             matches!(err, NormalizationError::Unclassifiable(_)),
             "malformed JSON is `Unclassifiable` per §24, got {err:?}"
         );
+    }
+}
+
+// =============================================================================
+// PHASE-2 PR 2A.1 — `DebianBuildReportNormalizer`.
+//
+// The 2A.1 build normalizer. The `BuildOutcome` enum
+// has 4 variants; the normalizer maps each to a
+// `NormalizedResult` (Pass / Fail) or to a
+// `NormalizationError::Unclassifiable`. The normalizer
+// also recognises two normalizer-only cases:
+//
+// - **Malformed** — stdout is not parseable as
+//   `DebianBuildReportV1` →
+//   `NormalizationError::Malformed(...)` (runtime →
+//   `Outcome::Fail` — a defect, not an outage).
+// - **MissingTool** — stdout is empty and exit_code
+//   is 127 (POSIX "command not found") →
+//   `NormalizationError::Unclassifiable(...)` (runtime
+//   → `Outcome::InfrastructureFailed` → `Blocked`).
+//
+// The spec's "Unknown failure modes must not be
+// silently classified as package defects" rule is
+// honoured by mapping `BuildOutcome::Unknown(_)` to
+// `Unclassifiable`, not `Fail`. A tool that does not
+// know what went wrong is never reported as a
+// package defect.
+// =============================================================================
+
+/// The 2A.1 `ResultNormalizer` implementation.
+pub struct DebianBuildReportNormalizer;
+
+impl DebianBuildReportNormalizer {
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for DebianBuildReportNormalizer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl ResultNormalizer for DebianBuildReportNormalizer {
+    fn normalize(&self, record: &ExecutionRecord) -> Result<NormalizedResult, NormalizationError> {
+        // Normalizer-only case: MissingTool. The executor's
+        // `check_launchable` would normally return
+        // `InfrastructureFailed` before this normalizer is
+        // called, but the `MissingTool` arm is a defensive
+        // belt-and-braces check: if the tool is found but
+        // exits 127 with no stdout (e.g. sbuild shells out
+        // to a missing helper), the normalizer still
+        // classifies the failure correctly.
+        if record.stdout.is_empty() && record.exit_code == 127 {
+            return Err(NormalizationError::Unclassifiable(
+                "debian.build.sbuild: missing tool (exit 127, empty stdout)".to_string(),
+            ));
+        }
+
+        // Normalizer-only case: Malformed. Stdout is not
+        // parseable as `DebianBuildReportV1`. Maps to
+        // `Malformed` (the runtime turns this into
+        // `Outcome::Fail` — a defect, not an outage). The
+        // type-level distinction from `Unclassifiable` lets
+        // a reader tell "the tool produced garbage"
+        // specifically.
+        let report: DebianBuildReportV1 =
+            serde_json::from_str(record.stdout.as_str()).map_err(|e| {
+                NormalizationError::Malformed(format!(
+                    "could not parse DebianBuildReportV1 from tool stdout: {e}"
+                ))
+            })?;
+
+        let observations = report
+            .diagnostics
+            .iter()
+            .map(|d| Observation {
+                kind: d.code.clone(),
+                message: d.message.clone(),
+            })
+            .collect();
+
+        let evidence_status = match report.outcome {
+            BuildOutcome::Pass => EvidenceStatus::Pass,
+            BuildOutcome::PackageBuildFailed => EvidenceStatus::Fail,
+            BuildOutcome::InfrastructureFailed => {
+                return Err(NormalizationError::Unclassifiable(
+                    "debian.build.sbuild: infrastructure failure".to_string(),
+                ));
+            }
+            // Per the spec: "Unknown failure modes must not
+            // be silently classified as package defects."
+            // Map `Unknown(_)` to `Unclassifiable`, never
+            // `Fail`. The `reason` string is preserved in
+            // the error message so an operator can see
+            // what the tool saw.
+            BuildOutcome::Unknown(reason) => {
+                return Err(NormalizationError::Unclassifiable(format!(
+                    "debian.build.sbuild: unknown failure mode: {reason}"
+                )));
+            }
+        };
+
+        Ok(NormalizedResult {
+            evidence_status,
+            output_truncated: record.truncated,
+            observations,
+            invalidations: Vec::new(),
+        })
+    }
+}
+
+#[cfg(test)]
+mod build_report_tests {
+    use super::*;
+    use crate::report::{BUILD_REPORT_KIND, BUILD_REPORT_SCHEMA_VERSION, BuildProducer};
+    use ironmaint_adapter_api::ToolCapabilityKey;
+    use ironmaint_executor::RetryClass;
+    use time::macros::datetime;
+
+    fn make_record(stdout: &str, exit_code: i32) -> ExecutionRecord {
+        ExecutionRecord {
+            tool_key: ToolCapabilityKey::new("debian.build.sbuild").unwrap(),
+            retry_class: RetryClass::Safe,
+            started_at: datetime!(2026-01-01 00:00:00 UTC),
+            finished_at: datetime!(2026-01-01 00:00:01 UTC),
+            exit_code,
+            stdout: stdout.to_string(),
+            stderr: String::new(),
+            retries_exhausted: false,
+            truncated: false,
+            artifacts: Vec::new(),
+            artifacts_dropped: Vec::new(),
+        }
+    }
+
+    fn pass_report() -> DebianBuildReportV1 {
+        DebianBuildReportV1 {
+            schema_version: BUILD_REPORT_SCHEMA_VERSION,
+            report_kind: BUILD_REPORT_KIND.to_string(),
+            outcome: BuildOutcome::Pass,
+            producer: BuildProducer {
+                name: "ironmaint-debian-tool".to_string(),
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                ..BuildProducer::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    /// A `BuildOutcome::Pass` report normalises to
+    /// `EvidenceStatus::Pass` with no observations.
+    #[test]
+    fn build_pass_report_normalises_to_pass() {
+        let report = pass_report();
+        let json = serde_json::to_string(&report).unwrap();
+        let result = DebianBuildReportNormalizer::new()
+            .normalize(&make_record(&json, 0))
+            .unwrap();
+        assert_eq!(result.evidence_status, EvidenceStatus::Pass);
+        assert!(result.observations.is_empty());
+        assert!(result.invalidations.is_empty());
+        assert!(!result.output_truncated);
+    }
+
+    /// A `BuildOutcome::PackageBuildFailed` report
+    /// normalises to `EvidenceStatus::Fail` with the
+    /// report's diagnostics propagated as observations.
+    #[test]
+    fn build_package_fail_report_normalises_to_fail() {
+        let report = DebianBuildReportV1 {
+            outcome: BuildOutcome::PackageBuildFailed,
+            diagnostics: vec![crate::report::Diagnostic {
+                code: "E_BUILD_RULES_FAILED".to_string(),
+                message: "debian/rules build returned exit 2".to_string(),
+                path: Some(std::path::PathBuf::from("debian/rules")),
+            }],
+            ..pass_report()
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        let result = DebianBuildReportNormalizer::new()
+            .normalize(&make_record(&json, 2))
+            .unwrap();
+        assert_eq!(result.evidence_status, EvidenceStatus::Fail);
+        assert_eq!(result.observations.len(), 1);
+        assert_eq!(result.observations[0].kind, "E_BUILD_RULES_FAILED");
+        assert!(
+            result.observations[0]
+                .message
+                .contains("debian/rules build returned exit 2")
+        );
+        assert!(result.invalidations.is_empty());
+    }
+
+    /// A `BuildOutcome::InfrastructureFailed` report
+    /// normalises to
+    /// `Err(NormalizationError::Unclassifiable(...))`.
+    /// The runtime's normalizer-error path turns this
+    /// into `ExecutorError::InfrastructureFailed` →
+    /// `GateStatus::Blocked`.
+    #[test]
+    fn build_infra_fail_report_normalises_to_unclassifiable() {
+        let report = DebianBuildReportV1 {
+            outcome: BuildOutcome::InfrastructureFailed,
+            diagnostics: vec![crate::report::Diagnostic {
+                code: "E_INFRA_SCHROOT".to_string(),
+                message: "schroot chroot not found at /var/lib/sbuild/sid-amd64".to_string(),
+                path: None,
+            }],
+            ..pass_report()
+        };
+        let json = serde_json::to_string(&report).unwrap();
+        let err = DebianBuildReportNormalizer::new()
+            .normalize(&make_record(&json, 0))
+            .unwrap_err();
+        assert!(matches!(err, NormalizationError::Unclassifiable(_)));
+    }
+
+    /// A stdout that is not valid JSON is a `Malformed`
+    /// error (the runtime turns this into `Outcome::Fail`
+    /// — a defect, not an outage). The type-level
+    /// distinction from `Unclassifiable` lets a reader
+    /// tell "the tool produced garbage" specifically.
+    #[test]
+    fn build_malformed_stdout_normalises_to_malformed() {
+        let err = DebianBuildReportNormalizer::new()
+            .normalize(&make_record("not valid json", 0))
+            .unwrap_err();
+        assert!(matches!(err, NormalizationError::Malformed(_)));
+    }
+
+    /// A `MissingTool` scenario (empty stdout, exit 127
+    /// — POSIX "command not found") normalises to
+    /// `Err(NormalizationError::Unclassifiable(...))`.
+    /// The runtime's normalizer-error path turns this
+    /// into `ExecutorError::InfrastructureFailed` →
+    /// `GateStatus::Blocked`.
+    #[test]
+    fn build_missing_tool_normalises_to_unclassifiable() {
+        let err = DebianBuildReportNormalizer::new()
+            .normalize(&make_record("", 127))
+            .unwrap_err();
+        assert!(matches!(err, NormalizationError::Unclassifiable(_)));
     }
 }

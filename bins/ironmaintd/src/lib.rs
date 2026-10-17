@@ -23,5 +23,7 @@
 )]
 
 pub mod config;
+pub mod tools;
 
 pub use config::{ConfigError, ConfigOutcome, RuntimeConfig};
+pub use tools::register_debian_tools;

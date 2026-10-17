@@ -29,6 +29,13 @@ fedora-stub = { path = "../../adapters/fedora-stub" }
 # layer -- which would be the wrong way round.
 ironmaint-executor = { path = "../ironmaint-executor" }
 ironmaint-testkit = { path = "../../crates/ironmaint-testkit" }
+# 2A.1: the S3 test must reflect what `bins/ironmaintd` actually
+# registers so a `debian.build.sbuild` allowlist entry is
+# automatically stale the day the daemon's `register_debian_tools`
+# helper ships the new `ToolDefinition`. The dev-dep cycle
+# (adapter-api -> ironmaintd -> adapter-api) is permitted by
+# `verify-architecture`'s dev-dep exemption.
+ironmaintd = { path = "../../bins/ironmaintd" }
 time = { workspace = true, features = ["macros"] }
 url = { workspace = true }
 
