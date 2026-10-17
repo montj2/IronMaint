@@ -131,40 +131,64 @@ The normalizer goes in
 extends it with one more report and one more
 verdict tri-state.
 
-### 2. The `BuildOutcome` enum and its 6 variants
+### 2. The `BuildOutcome` enum (4 variants) + 2 normalizer-only cases
 
-**Decision.** `BuildOutcome` is a 6-variant enum:
+**Decision.** `BuildOutcome` is a 4-variant enum that
+the tool sets in its report:
 
-- `Pass` — exit 0, report parseable, normalizer
-  returns `EvidenceStatus::Pass`.
-- `PackageBuildFailed` — exit non-zero, report
-  parseable, no infra markers, normalizer returns
-  `EvidenceStatus::Fail` with `diagnostics` as
-  observations.
-- `InfrastructureFailed` — report parseable, exit
-  0/non-zero with `E_INFRA_*` markers, normalizer
-  returns `NormalizationError::Unclassifiable(...)`
-  (runtime maps to `Outcome::InfrastructureFailed`
-  → `GateStatus::Blocked`).
-- `Malformed` — stdout does not parse to
-  `DebianBuildReportV1`; normalizer returns
-  `NormalizationError::Malformed(...)` (runtime maps
-  to `Outcome::Fail` — a defect, not an outage).
-- `MissingTool` — executor's `check_launchable`
-  returned `Err` or `record.exit_code == -1 && stdout.is_empty()
-  && stderr.is_empty()`; normalizer returns
-  `NormalizationError::Unclassifiable(...)`.
-- `Unknown(String)` — catch-all; normalizer returns
-  `NormalizationError::Unclassifiable("debian.build.sbuild:
-  unknown failure mode …")`. **Never `Fail`**, per
-  the spec's "Unknown failure modes must not be
-  silently classified as package defects."
+- `Pass` — the build succeeded. Normalizer returns
+  `EvidenceStatus::Pass`.
+- `PackageBuildFailed` — the build failed for a
+  package-defect reason (compile error, missing
+  build-dep, etc.). Normalizer returns
+  `EvidenceStatus::Fail` with the report's
+  `diagnostics` as observations.
+- `InfrastructureFailed` — the build failed for an
+  infrastructure reason (sbuild chroot missing,
+  network down, etc.). Normalizer returns
+  `NormalizationError::Unclassifiable(...)`, which
+  the runtime maps to
+  `Outcome::InfrastructureFailed` →
+  `GateStatus::Blocked`.
+- `Unknown(String)` — catch-all. The tool saw a
+  failure it could not classify. Normalizer returns
+  `NormalizationError::Unclassifiable(...)` —
+  **never `Fail`**, per the spec's "Unknown failure
+  modes must not be silently classified as package
+  defects."
 
-The 6 variants cover everything the spec names
+In addition, the normalizer recognises two
+**normalizer-only** cases that no real tool ever
+emits in the `outcome` field:
+
+- **Malformed** — the tool's stdout did not parse as
+  `DebianBuildReportV1`. Normalizer returns
+  `NormalizationError::Malformed(...)` (the runtime
+  maps this to `Outcome::Fail` — a defect, not an
+  outage). The type-level distinction from
+  `Unclassifiable` lets a reader tell "the tool
+  produced garbage" specifically.
+- **MissingTool** — the executor's `check_launchable`
+  returned `Err` or the record carries
+  `exit_code == -1 && stdout.is_empty() &&
+  stderr.is_empty()`. Normalizer returns
+  `NormalizationError::Unclassifiable(...)` (the
+  runtime maps this to
+  `Outcome::InfrastructureFailed` →
+  `GateStatus::Blocked`).
+
+Together the 4 enum variants and the 2 normalizer
+cases cover every scenario the spec names
 ("successful builds, package build failures,
 infrastructure failures, malformed output, and
-missing tools") plus the catch-all `Unknown` that the
-spec explicitly demands.
+missing tools") plus the catch-all `Unknown` that
+the spec explicitly demands. The 5 hermetic tests
+in `bins/ironmaint-debian-tool/tests/build_report.rs`
+cover all 6: `Pass`, `PackageBuildFailed`,
+`InfrastructureFailed`, the `Malformed` normalizer
+case, the `MissingTool` normalizer case, and (via
+the `Unknown(_)` arm of the normalizer's match) the
+catch-all.
 
 ### 3. The `Malformed` mapping
 

@@ -1,0 +1,237 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "DebianBuildReportV1",
+  "description": "The full 2A.1 build report.\n\nThe 2A.1 stub fills `schema_version`, `report_kind`, `outcome: Pass`, and `producer: { name, version }`; the rest is `Default::default()`. 2A.3 fills every field from real sbuild output.",
+  "type": "object",
+  "required": [
+    "outcome",
+    "report_kind",
+    "schema_version"
+  ],
+  "properties": {
+    "diagnostics": {
+      "description": "Per-check failure / informational lines. Empty when `outcome` is `Pass`. The normalizer propagates these as `Observation`s on the `NormalizedResult` for the `BuildValidation` gate's evidence row.",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/Diagnostic"
+      }
+    },
+    "exit_code": {
+      "description": "The tool's exit code. The 2A.1 stub always reports `0`; 2A.3 reports the real sbuild exit code.",
+      "default": 0,
+      "type": "integer",
+      "format": "int32"
+    },
+    "finished_at": {
+      "description": "RFC 3339 UTC timestamp of build finish. The 2A.1 stub leaves this empty; 2A.3 fills from the tool's `finished_at` clock.",
+      "type": "string"
+    },
+    "outcome": {
+      "description": "The tool's classification of the build outcome. The normalizer reads this field and maps it to an `EvidenceStatus` or `NormalizationError`.",
+      "allOf": [
+        {
+          "$ref": "#/definitions/BuildOutcome"
+        }
+      ]
+    },
+    "producer": {
+      "description": "The producer block (tool name + version + build-environment id).",
+      "default": {},
+      "allOf": [
+        {
+          "$ref": "#/definitions/BuildProducer"
+        }
+      ]
+    },
+    "provenance": {
+      "description": "The candidate identity block.",
+      "default": {},
+      "allOf": [
+        {
+          "$ref": "#/definitions/BuildProvenance"
+        }
+      ]
+    },
+    "references": {
+      "description": "References to build artifacts (build log, `.changes`, `.buildinfo`, binary debs).",
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/ArtifactRef"
+      }
+    },
+    "report_kind": {
+      "description": "Discriminator. Always `BUILD_REPORT_KIND` (= `\"debian.build_report_v1\"`).",
+      "type": "string"
+    },
+    "schema_version": {
+      "description": "Wire-format version. Always `BUILD_REPORT_SCHEMA_VERSION` (= 1).",
+      "type": "integer",
+      "format": "uint32",
+      "minimum": 0.0
+    },
+    "source_package": {
+      "description": "The source-package identity block.",
+      "default": {},
+      "allOf": [
+        {
+          "$ref": "#/definitions/BuildSourcePackage"
+        }
+      ]
+    },
+    "started_at": {
+      "description": "RFC 3339 UTC timestamp of build start. The 2A.1 stub leaves this empty; 2A.3 fills from the tool's `started_at` clock.",
+      "type": "string"
+    },
+    "target": {
+      "description": "The build target (suite + arch).",
+      "default": {},
+      "allOf": [
+        {
+          "$ref": "#/definitions/BuildTargetInfo"
+        }
+      ]
+    }
+  },
+  "definitions": {
+    "ArtifactRef": {
+      "description": "One reference to a build artifact (the build log, the `.changes`, the `.buildinfo`, the generated `.deb`s). The 2A.1 stub leaves `references` empty; 2A.3 populates it with the build log + `.changes` + `.buildinfo` (binary debs come in 2A.x follow-on).",
+      "type": "object",
+      "properties": {
+        "kind": {
+          "description": "The kind of artifact (`build_log`, `changes`, `buildinfo`, `binary_deb`, etc.).",
+          "type": "string"
+        },
+        "path": {
+          "description": "The on-disk path of the artifact (relative to the build output dir).",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "The artifact's SHA-256 digest (hex).",
+          "type": "string"
+        }
+      }
+    },
+    "BuildOutcome": {
+      "description": "The tool's classification of the build outcome. The normalizer reads this field and maps it to an `EvidenceStatus` (Pass / Fail) or to a `NormalizationError` (Unclassifiable for the non-defect cases, per the spec's \"Unknown failure modes must not be silently classified as package defects\" rule).\n\nNote: `Malformed` and `MissingTool` are **normalizer-only** cases, not `BuildOutcome` variants. The tool never emits `outcome: \"malformed\"` or `outcome: \"missing_tool\"` in its JSON; the normalizer detects those cases from the `ExecutionRecord`'s `stdout` / `exit_code` fields before parsing the report.",
+      "oneOf": [
+        {
+          "description": "The build succeeded. Normalizer returns `EvidenceStatus::Pass`.",
+          "type": "string",
+          "enum": [
+            "pass"
+          ]
+        },
+        {
+          "description": "The build failed for a package-defect reason (compile error, missing build-dep, etc.). Normalizer returns `EvidenceStatus::Fail` with the report's `diagnostics` as observations.",
+          "type": "string",
+          "enum": [
+            "package_build_failed"
+          ]
+        },
+        {
+          "description": "The build failed for an infrastructure reason (sbuild chroot missing, network down, etc.). Normalizer returns `NormalizationError::Unclassifiable(...)`, which the runtime maps to `Outcome::InfrastructureFailed` → `GateStatus::Blocked`.",
+          "type": "string",
+          "enum": [
+            "infrastructure_failed"
+          ]
+        },
+        {
+          "description": "Catch-all. The tool saw a failure it could not classify. Normalizer returns `NormalizationError::Unclassifiable(...)` — **never `Fail`**, per the spec. The `String` payload is the tool's reason text.",
+          "type": "object",
+          "required": [
+            "unknown"
+          ],
+          "properties": {
+            "unknown": {
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
+        }
+      ]
+    },
+    "BuildProducer": {
+      "description": "The producer block. The 2A.1 stub sets `name: \"ironmaint-debian-tool\"` and `version: env!(\"CARGO_PKG_VERSION\")`; 2A.3 sets `name: \"sbuild\"` and the real sbuild version.",
+      "type": "object",
+      "properties": {
+        "build_environment_id": {
+          "description": "A stable identifier for the build environment (e.g. a container image SHA-256, or a `sbuild` schroot identifier). The 2A.1 stub leaves this empty.",
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    },
+    "BuildProvenance": {
+      "description": "The provenance block. The candidate fingerprint, commit, and tree are the candidate's identity; the 2A.1 stub fills these from `BUILD_FINGERPRINT` / `BUILD_COMMIT` / `BUILD_TREE_SHA` env vars (which the runtime will inject in 2A.2; the 2A.1 stub leaves them empty when the env is unset).",
+      "type": "object",
+      "properties": {
+        "candidate_fingerprint": {
+          "description": "The candidate's BLAKE3 fingerprint (hex).",
+          "type": "string"
+        },
+        "commit": {
+          "description": "The candidate's Git commit OID (hex).",
+          "type": "string"
+        },
+        "tree_sha": {
+          "description": "The candidate's Git tree OID (hex).",
+          "type": "string"
+        }
+      }
+    },
+    "BuildSourcePackage": {
+      "description": "The source-package identity block. Populated from `debian/control` `Source:` and `debian/changelog` in 2A.3; the 2A.1 stub leaves them empty.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string"
+        }
+      }
+    },
+    "BuildTargetInfo": {
+      "description": "The build target. Same shape as `BuildTarget` (the 2.0-C adapter-api type). The 2A.1 stub fills from `BUILD_TARGET_SUITE` / `BUILD_TARGET_ARCH` env vars.",
+      "type": "object",
+      "properties": {
+        "arch": {
+          "type": "string"
+        },
+        "suite": {
+          "type": "string"
+        }
+      }
+    },
+    "Diagnostic": {
+      "description": "A single failure or informational line from the tool.",
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "description": "A stable, machine-readable error code, e.g. `E_DEBIAN_DIR_MISSING`. Future tools can match on this without parsing the message.",
+          "type": "string"
+        },
+        "message": {
+          "description": "Human-readable explanation. The tool does not embed the offending value (a) to keep PII out of the report and (b) so the same diagnostic text can serve any fixture.",
+          "type": "string"
+        },
+        "path": {
+          "description": "The on-disk path that triggered the diagnostic, when applicable (e.g. `debian/`, `debian/changelog`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    }
+  }
+}

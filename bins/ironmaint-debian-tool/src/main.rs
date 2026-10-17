@@ -42,7 +42,8 @@ use ironmaint_debian_tool::policy_delta::{
     self as policy_delta_run, CandidateInput as PolicyDeltaInput,
 };
 use ironmaint_debian_tool::report::{
-    BTS_SNAPSHOT_REPORT_KIND, BTS_SNAPSHOT_SCHEMA_VERSION, BugSummary, IssueVerdict,
+    BTS_SNAPSHOT_REPORT_KIND, BTS_SNAPSHOT_SCHEMA_VERSION, BugSummary, DebianBuildReportV1,
+    IssueVerdict,
 };
 use ironmaint_debian_tool::source_analysis::{
     self as source_analysis_run, CandidateInput as AnalysisInput,
@@ -101,6 +102,16 @@ enum Sub {
     /// in the §97 gate).
     #[command(name = "bts-snapshot")]
     BtsSnapshot,
+    /// PHASE-2 PR 2A.1. The 2A.1 build subcommand.
+    /// The body is a stub that emits a hard-coded
+    /// `DebianBuildReportV1 { outcome: Pass, .. }`.
+    /// 2A.3 replaces this body with a real `sbuild`
+    /// invocation. The subcommand literal `"build"`
+    /// and the `BUILD_*` env-var contract (read but
+    /// not yet consumed by the stub) are what 2A.3
+    /// must honour.
+    #[command(name = "build")]
+    Build,
 }
 
 fn main() -> ExitCode {
@@ -144,6 +155,13 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(err) => {
                 eprintln!("ironmaint-debian-tool: bts-snapshot: {err:#}");
+                ExitCode::FAILURE
+            }
+        },
+        Sub::Build => match run_build_cmd() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(err) => {
+                eprintln!("ironmaint-debian-tool: build: {err:#}");
                 ExitCode::FAILURE
             }
         },
@@ -260,6 +278,69 @@ fn run_bts_snapshot_cmd() -> Result<()> {
         }
     };
     write_stdout_json(&report).context("writing DebianIssueReportV1 to stdout")?;
+    Ok(())
+}
+
+/// Run the `build` subcommand (PHASE-2 PR 2A.1).
+///
+/// 2A.1's body is a stub: it reads the v3 candidate
+/// input from stdin, reads the `BUILD_*` env vars (which
+/// the runtime will inject per-call in 2A.2), and emits
+/// a hard-coded `DebianBuildReportV1 { outcome: Pass, .. }`.
+/// 2A.3 replaces the body with a real `sbuild`
+/// invocation. The subcommand literal `"build"` and
+/// the env-var contract are what 2A.3 must honour.
+///
+/// The env vars read (but currently unused by the stub):
+///
+/// - `BUILD_INPUT_DIR` — the staged source root.
+/// - `BUILD_OUTPUT_DIR` — the sibling output dir.
+/// - `BUILD_TARGET_SUITE` — the build target's suite.
+/// - `BUILD_TARGET_ARCH` — the build target's arch.
+/// - `BUILD_FINGERPRINT` — the candidate's BLAKE3 fingerprint.
+/// - `BUILD_COMMIT` — the candidate's Git commit OID.
+/// - `BUILD_TREE_SHA` — the candidate's Git tree OID.
+fn run_build_cmd() -> Result<()> {
+    // The 2A.1 stub reads (and discards) the candidate
+    // input so the executor's `JsonStdin` wiring is
+    // exercised end-to-end. 2A.3 will parse the input
+    // and use it to seed the sbuild invocation.
+    let _input: BtsInput =
+        read_stdin_json().context("reading ironmaint.candidate_input.v3 from stdin")?;
+
+    // Touch each `BUILD_*` env var so the contract is
+    // exercised. The stub does not use the values; 2A.3
+    // populates the report's `provenance`, `target`,
+    // `source_package`, `started_at`, and `finished_at`
+    // from these.
+    for key in [
+        "BUILD_INPUT_DIR",
+        "BUILD_OUTPUT_DIR",
+        "BUILD_TARGET_SUITE",
+        "BUILD_TARGET_ARCH",
+        "BUILD_FINGERPRINT",
+        "BUILD_COMMIT",
+        "BUILD_TREE_SHA",
+    ] {
+        let _ = std::env::var(key);
+    }
+
+    // The 2A.1 stub emits a hard-coded pass report. 2A.3
+    // replaces this with a real sbuild invocation and
+    // populates every field from real sbuild output.
+    let report = DebianBuildReportV1 {
+        schema_version: ironmaint_debian_tool::report::BUILD_REPORT_SCHEMA_VERSION,
+        report_kind: ironmaint_debian_tool::report::BUILD_REPORT_KIND.to_string(),
+        outcome: ironmaint_debian_tool::report::BuildOutcome::Pass,
+        producer: ironmaint_debian_tool::report::BuildProducer {
+            name: "ironmaint-debian-tool".to_string(),
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            ..Default::default()
+        },
+        exit_code: 0,
+        ..Default::default()
+    };
+    write_stdout_json(&report).context("writing DebianBuildReportV1 to stdout")?;
     Ok(())
 }
 

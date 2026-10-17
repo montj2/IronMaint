@@ -170,6 +170,14 @@ fn generate_all() -> Result<BTreeMap<String, String>, Box<dyn Error>> {
             ironmaint_debian_tool::DebianIssueReportV1
         ))?,
     );
+    // PHASE-2 PR 2A.1: the `debian.build.sbuild` report.
+    // `doc/phases/PHASE-2.md` §82–96.
+    out.insert(
+        "DebianBuildReportV1.json".into(),
+        serde_json::to_string_pretty(&schemars::schema_for!(
+            ironmaint_debian_tool::DebianBuildReportV1
+        ))?,
+    );
     Ok(out)
 }
 

@@ -30,15 +30,16 @@ pub use bts_snapshot::BtsError;
 pub use bts_snapshot::run as run_bts_snapshot;
 pub use maintenance_context::run as run_maintenance_context;
 pub use normalizer::{
-    DebianBtsSnapshotNormalizer, DebianMaintenanceContextNormalizer,
+    DebianBtsSnapshotNormalizer, DebianBuildReportNormalizer, DebianMaintenanceContextNormalizer,
     DebianPolicyDeltaReviewNormalizer, DebianSourceAnalysisNormalizer,
     DebianSourcePreparationNormalizer,
 };
 pub use policy_delta::run as run_policy_delta;
 pub use report::{
-    DebianIssueReportV1, DebianMaintenanceContextV1, DebianPolicyDeltaReviewV1,
-    DebianSourcePreparationV1, DebianSourceReportV1, IssueVerdict, StandardsVersionComparison,
-    UpstreamRelationship, Verdict,
+    ArtifactRef, BuildOutcome, BuildProducer, BuildProvenance, BuildSourcePackage, BuildTargetInfo,
+    DebianBuildReportV1, DebianIssueReportV1, DebianMaintenanceContextV1,
+    DebianPolicyDeltaReviewV1, DebianSourcePreparationV1, DebianSourceReportV1, Diagnostic,
+    IssueVerdict, StandardsVersionComparison, UpstreamRelationship, Verdict,
 };
 pub use source_analysis::run as run_source_analysis;
 pub use source_preparation::run as run_source_preparation;

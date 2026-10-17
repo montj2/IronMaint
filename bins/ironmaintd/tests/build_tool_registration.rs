@@ -15,6 +15,8 @@
 //! GREEN commit lands the helper and the new
 //! registration, the test compiles and passes.
 
+#![allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+
 use ironmaint_adapter_api::ToolCapabilityKey;
 use ironmaintd::register_debian_tools;
 use std::path::PathBuf;

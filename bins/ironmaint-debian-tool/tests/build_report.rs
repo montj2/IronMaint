@@ -28,11 +28,9 @@
 //! normalizer, the tests compile and pass.
 
 use ironmaint_adapter_api::ToolCapabilityKey;
-use ironmaint_debian_tool::{
-    BuildOutcome, DebianBuildReportNormalizer, DebianBuildReportV1,
-};
+use ironmaint_debian_tool::{BuildOutcome, DebianBuildReportNormalizer, DebianBuildReportV1};
 use ironmaint_evidence::EvidenceStatus;
-use ironmaint_executor::{ExecutionRecord, NormalizationError, RetryClass};
+use ironmaint_executor::{ExecutionRecord, NormalizationError, ResultNormalizer, RetryClass};
 use time::macros::datetime;
 
 /// Build a minimal `ExecutionRecord` for normalizer

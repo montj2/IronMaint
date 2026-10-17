@@ -1403,3 +1403,234 @@ impl DebianIssueReportV1 {
         }
     }
 }
+
+// =============================================================================
+// PHASE-2 PR 2A.1 — `debian.build.sbuild` + the
+// `DebianBuildReportV1` schema (PHASE-2.md §82-96).
+//
+// 2A.1 is the build *contract*: the versioned, structured
+// sbuild report and the normalizer that classifies it
+// (Pass / PackageBuildFailed / InfrastructureFailed /
+// Malformed / MissingTool / Unknown). 2A.1 does NOT
+// run real sbuild (that is 2A.3) and does NOT
+// implement the `BuildCapability` trait on the
+// production Debian adapter (that is 2A.2). The
+// `ironmaint-debian-tool` binary's `build` subcommand
+// is a 2A.1 stub that emits a hard-coded
+// `DebianBuildReportV1 { outcome: Pass, .. }`; 2A.3
+// replaces the stub with a real sbuild invocation.
+//
+// The report's 4-variant `BuildOutcome` enum represents
+// the tool's classification. The normalizer recognises
+// two additional **normalizer-only** cases —
+// `Malformed` (stdout is not parseable JSON) and
+// `MissingTool` (stdout empty + exit 127) — that no
+// real tool ever emits in the `outcome` field. Together
+// the 4 enum variants + 2 normalizer cases cover every
+// scenario the spec names.
+// =============================================================================
+
+/// Discriminator for the 2A.1 build report. Always
+/// `"debian.build_report_v1"`. Distinct from the five
+/// existing Debian reports' discriminators.
+pub const BUILD_REPORT_KIND: &str = "debian.build_report_v1";
+
+/// Wire-format version. Bump on incompatible wire-format
+/// changes.
+pub const BUILD_REPORT_SCHEMA_VERSION: u32 = 1;
+
+/// The tool's classification of the build outcome. The
+/// normalizer reads this field and maps it to an
+/// `EvidenceStatus` (Pass / Fail) or to a
+/// `NormalizationError` (Unclassifiable for the
+/// non-defect cases, per the spec's "Unknown failure
+/// modes must not be silently classified as package
+/// defects" rule).
+///
+/// Note: `Malformed` and `MissingTool` are
+/// **normalizer-only** cases, not `BuildOutcome`
+/// variants. The tool never emits
+/// `outcome: "malformed"` or `outcome: "missing_tool"`
+/// in its JSON; the normalizer detects those cases
+/// from the `ExecutionRecord`'s `stdout` / `exit_code`
+/// fields before parsing the report.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum BuildOutcome {
+    /// The build succeeded. Normalizer returns
+    /// `EvidenceStatus::Pass`.
+    #[default]
+    Pass,
+    /// The build failed for a package-defect reason
+    /// (compile error, missing build-dep, etc.).
+    /// Normalizer returns `EvidenceStatus::Fail` with
+    /// the report's `diagnostics` as observations.
+    PackageBuildFailed,
+    /// The build failed for an infrastructure reason
+    /// (sbuild chroot missing, network down, etc.).
+    /// Normalizer returns
+    /// `NormalizationError::Unclassifiable(...)`, which
+    /// the runtime maps to
+    /// `Outcome::InfrastructureFailed` →
+    /// `GateStatus::Blocked`.
+    InfrastructureFailed,
+    /// Catch-all. The tool saw a failure it could not
+    /// classify. Normalizer returns
+    /// `NormalizationError::Unclassifiable(...)` —
+    /// **never `Fail`**, per the spec. The
+    /// `String` payload is the tool's reason text.
+    Unknown(String),
+}
+
+/// The provenance block. The candidate fingerprint,
+/// commit, and tree are the candidate's identity; the
+/// 2A.1 stub fills these from `BUILD_FINGERPRINT` /
+/// `BUILD_COMMIT` / `BUILD_TREE_SHA` env vars (which
+/// the runtime will inject in 2A.2; the 2A.1 stub
+/// leaves them empty when the env is unset).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BuildProvenance {
+    /// The candidate's BLAKE3 fingerprint (hex).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub candidate_fingerprint: String,
+    /// The candidate's Git commit OID (hex).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub commit: String,
+    /// The candidate's Git tree OID (hex).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tree_sha: String,
+}
+
+/// The source-package identity block. Populated from
+/// `debian/control` `Source:` and `debian/changelog`
+/// in 2A.3; the 2A.1 stub leaves them empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BuildSourcePackage {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
+}
+
+/// The build target. Same shape as `BuildTarget` (the
+/// 2.0-C adapter-api type). The 2A.1 stub fills from
+/// `BUILD_TARGET_SUITE` / `BUILD_TARGET_ARCH` env vars.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BuildTargetInfo {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub suite: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub arch: String,
+}
+
+/// The producer block. The 2A.1 stub sets
+/// `name: "ironmaint-debian-tool"` and
+/// `version: env!("CARGO_PKG_VERSION")`; 2A.3 sets
+/// `name: "sbuild"` and the real sbuild version.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct BuildProducer {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub version: String,
+    /// A stable identifier for the build environment
+    /// (e.g. a container image SHA-256, or a
+    /// `sbuild` schroot identifier). The 2A.1 stub
+    /// leaves this empty.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub build_environment_id: String,
+}
+
+/// One reference to a build artifact (the build log,
+/// the `.changes`, the `.buildinfo`, the generated
+/// `.deb`s). The 2A.1 stub leaves `references` empty;
+/// 2A.3 populates it with the build log + `.changes` +
+/// `.buildinfo` (binary debs come in 2A.x follow-on).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct ArtifactRef {
+    /// The kind of artifact (`build_log`, `changes`,
+    /// `buildinfo`, `binary_deb`, etc.).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub kind: String,
+    /// The on-disk path of the artifact (relative to
+    /// the build output dir).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub path: String,
+    /// The artifact's SHA-256 digest (hex).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sha256: String,
+}
+
+/// The full 2A.1 build report.
+///
+/// The 2A.1 stub fills `schema_version`, `report_kind`,
+/// `outcome: Pass`, and `producer: { name, version }`;
+/// the rest is `Default::default()`. 2A.3 fills every
+/// field from real sbuild output.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct DebianBuildReportV1 {
+    /// Wire-format version. Always
+    /// `BUILD_REPORT_SCHEMA_VERSION` (= 1).
+    pub schema_version: u32,
+    /// Discriminator. Always `BUILD_REPORT_KIND` (=
+    /// `"debian.build_report_v1"`).
+    pub report_kind: String,
+    /// The tool's classification of the build
+    /// outcome. The normalizer reads this field and
+    /// maps it to an `EvidenceStatus` or
+    /// `NormalizationError`.
+    pub outcome: BuildOutcome,
+    /// The candidate identity block.
+    #[serde(default)]
+    pub provenance: BuildProvenance,
+    /// The source-package identity block.
+    #[serde(default)]
+    pub source_package: BuildSourcePackage,
+    /// The build target (suite + arch).
+    #[serde(default)]
+    pub target: BuildTargetInfo,
+    /// The producer block (tool name + version +
+    /// build-environment id).
+    #[serde(default)]
+    pub producer: BuildProducer,
+    /// RFC 3339 UTC timestamp of build start.
+    /// The 2A.1 stub leaves this empty; 2A.3 fills
+    /// from the tool's `started_at` clock.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub started_at: String,
+    /// RFC 3339 UTC timestamp of build finish.
+    /// The 2A.1 stub leaves this empty; 2A.3 fills
+    /// from the tool's `finished_at` clock.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub finished_at: String,
+    /// The tool's exit code. The 2A.1 stub always
+    /// reports `0`; 2A.3 reports the real sbuild exit
+    /// code.
+    #[serde(default)]
+    pub exit_code: i32,
+    /// References to build artifacts (build log,
+    /// `.changes`, `.buildinfo`, binary debs).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub references: Vec<ArtifactRef>,
+    /// Per-check failure / informational lines.
+    /// Empty when `outcome` is `Pass`. The normalizer
+    /// propagates these as `Observation`s on the
+    /// `NormalizedResult` for the
+    /// `BuildValidation` gate's evidence row.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+impl DebianBuildReportV1 {
+    /// The schema-version constant for the type.
+    #[must_use]
+    pub const fn schema_version() -> u32 {
+        BUILD_REPORT_SCHEMA_VERSION
+    }
+
+    /// The report-kind constant for the type.
+    #[must_use]
+    pub const fn report_kind() -> &'static str {
+        BUILD_REPORT_KIND
+    }
+}
